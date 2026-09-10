@@ -88,7 +88,6 @@ func recordCount(entries map[any][]shared.RID) int {
 
 
 func (idx *Index) Insert(key any, rid shared.RID) error {
-	// TODO: ver pasos en el comentario del struct.
 	hashedKey := hashKey(key)
 	dirIndex := idx.directoryIndex(key)
 	idx.directory[dirIndex].entries[key] = append(idx.directory[dirIndex].entries[key], rid)
@@ -151,8 +150,22 @@ func (idx *Index) RangeSearch(keyMin, keyMax any) ([]shared.RID, error) {
 }
 
 func (idx *Index) Delete(key any, rid shared.RID) (bool, error) {
-	// TODO: ubicar bucket, quitar el RID de la lista de esa key.
-	return false, errNotImplemented
+	i:= idx.directoryIndex(key)
+	b := idx.directory[i]
+	rids, exists := b.entries[key]
+	if !exists {
+		return false, nil
+	}
+	for j, r := range rids {
+		if r == rid {
+			b.entries[key] = append(rids[:j], rids[j+1:]...)
+			if len(b.entries[key]) == 0 {
+				delete(b.entries, key)
+			}
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (idx *Index) SupportsRange() bool {
