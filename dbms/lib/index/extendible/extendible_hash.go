@@ -94,13 +94,13 @@ func (idx *Index) Insert(key any, rid shared.RID) error {
 
 	for{
 		globalDepthLeastSignificantBits := hashedKey & ((1 << uint(idx.globalDepth)) - 1)
-		bucket := idx.directory[globalDepthLeastSignificantBits]
-		if bucket.recordCount() <= idx.bucketSize {
+		b := idx.directory[globalDepthLeastSignificantBits]
+		if b.recordCount() <= idx.bucketSize {
 			return nil
 		}
 
 		// Split the bucket
-		if bucket.localDepth == idx.globalDepth{
+		if b.localDepth == idx.globalDepth{
 			// Duplicate the bucket directory
 			newDirectory := make([]*bucket, len(idx.directory)*2)
 			copy(newDirectory, idx.directory)
@@ -108,20 +108,20 @@ func (idx *Index) Insert(key any, rid shared.RID) error {
 			idx.directory = newDirectory
 			idx.globalDepth++
 		}
-		bucket1 := newBucket(bucket.localDepth+1)
-		bucket2 := newBucket(bucket.localDepth+1)
+		bucket1 := newBucket(b.localDepth+1)
+		bucket2 := newBucket(b.localDepth+1)
 		bucket1.entries = make(map[any][]shared.RID)
 		bucket2.entries = make(map[any][]shared.RID)
 		// Re-distribute entries
-		for k, v := range bucket.entries {
-			splitBit := uint32(1) << uint(bucket.localDepth)
+		for k, v := range b.entries {
+			splitBit := uint32(1) << uint(b.localDepth)
 			if hashKey(k)&splitBit == 0 {
 				bucket1.entries[k] = v
 			} else {
 				bucket2.entries[k] = v
 			}
 		}
-		localDepth := bucket.localDepth // capturar ANTES de que bucket1/bucket2 tomen localDepth+1
+		localDepth := b.localDepth // capturar ANTES de que bucket1/bucket2 tomen localDepth+1
 		splitBit := uint32(1) << uint(localDepth)
 		lowMask := uint32(1)<<uint(localDepth) - 1
 		lowBits := globalDepthLeastSignificantBits & lowMask
