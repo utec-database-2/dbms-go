@@ -2,6 +2,7 @@ import { useState } from "react";
 import Header from "./components/Header";
 import Toolbar from "./components/Toolbar";
 import FilePanel from "./components/FilePanel";
+import QueryPanel from "./components/QueryPanel"; 
 import "./App.css";
 
 function App() {
@@ -19,6 +20,8 @@ function App() {
 
       <main className="main-content">
         <FilePanel />
+
+        <QueryPanel />
       </main>
     </div>
   );
