@@ -277,3 +277,424 @@ body {
     display: none;
   }
 }
+
+
+/*------------------------------------------------*/
+
+/* =================================
+   PANEL DE ARCHIVOS
+================================= */
+
+.file-panel {
+  background: var(--surface);
+
+  border: 1px solid var(--border);
+  border-radius: 8px;
+
+  overflow: hidden;
+}
+
+/* CABECERA */
+
+.panel-title {
+  height: 58px;
+
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+
+  padding: 0 18px;
+
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-title h2 {
+  margin: 0;
+
+  font-size: 16px;
+  font-weight: 600;
+
+  text-transform: uppercase;
+}
+
+.panel-title p {
+  margin: 3px 0 0;
+
+  font-size: 12px;
+  color: var(--secondary-text);
+}
+
+/* CONTENIDO */
+
+.file-content {
+  display: grid;
+
+  grid-template-columns: 260px 1fr;
+
+  min-height: 500px;
+}
+
+/* =================================
+   ÁRBOL
+================================= */
+
+.file-tree {
+
+  padding: 14px;
+
+  border-right: 1px solid var(--border);
+
+  background: var(--surface);
+}
+
+/* BASE DE DATOS */
+
+.tree-database {
+
+  display: flex;
+  align-items: center;
+
+  gap: 8px;
+
+  padding: 9px 8px;
+
+  margin-bottom: 10px;
+
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* SECCIONES */
+
+.tree-section {
+  margin-bottom: 12px;
+}
+
+.tree-section-header {
+
+  width: 100%;
+
+  display: flex;
+  align-items: center;
+
+  gap: 5px;
+
+  padding: 7px;
+
+  border: none;
+
+  background: transparent;
+
+  color: var(--text);
+
+  font-size: 12px;
+  font-weight: 600;
+
+  text-align: left;
+
+  cursor: pointer;
+}
+
+.tree-section-header:hover {
+  background: var(--surface-hover);
+}
+
+/* ELEMENTOS */
+
+.tree-items {
+  padding-left: 9px;
+}
+
+.tree-item {
+
+  width: 100%;
+
+  display: flex;
+  align-items: center;
+
+  gap: 8px;
+
+  padding: 8px 10px;
+
+  border: none;
+  border-radius: 5px;
+
+  background: transparent;
+
+  color: var(--secondary-text);
+
+  font-size: 13px;
+
+  text-align: left;
+
+  cursor: pointer;
+}
+
+.tree-item:hover {
+  background: var(--surface-hover);
+}
+
+.tree-item.selected {
+
+  background: #2563eb;
+
+  color: white;
+}
+
+.tree-item.index-item {
+  cursor: default;
+
+  font-size: 11px;
+}
+
+.tree-item.index-item:hover {
+  background: transparent;
+}
+
+/* =================================
+   INFORMACIÓN TABLA
+================================= */
+
+.table-info {
+  padding: 18px;
+}
+
+/* HEADER TABLA */
+
+.table-info-header {
+
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+
+  margin-bottom: 15px;
+}
+
+.info-label {
+
+  color: var(--secondary-text);
+
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.table-info-header h3 {
+
+  margin: 4px 0 0;
+
+  font-size: 20px;
+}
+
+/* =================================
+   TABLA ESTRUCTURA
+================================= */
+
+.structure-table {
+
+  border: 1px solid var(--border);
+
+  border-radius: 6px;
+
+  overflow: hidden;
+}
+
+.structure-header,
+.structure-row {
+
+  display: grid;
+
+  grid-template-columns: 1.5fr 1.5fr 80px;
+
+  align-items: center;
+}
+
+.structure-header {
+
+  background: var(--surface-hover);
+
+  color: var(--secondary-text);
+
+  font-size: 11px;
+
+  font-weight: 600;
+
+  text-transform: uppercase;
+}
+
+.structure-header span,
+.structure-row span {
+
+  padding: 10px 12px;
+}
+
+.structure-row {
+
+  border-top: 1px solid var(--border);
+
+  font-size: 13px;
+}
+
+.structure-row:hover {
+  background: var(--surface-hover);
+}
+
+.column-type {
+
+  color: #60a5fa;
+
+  font-family: monospace;
+}
+
+.primary-key {
+  color: #facc15;
+}
+
+/* =================================
+   INFORMACIÓN DE ALMACENAMIENTO
+================================= */
+
+.storage-info,
+.table-indexes {
+
+  margin-top: 18px;
+
+  padding: 15px;
+
+  border: 1px solid var(--border);
+
+  border-radius: 6px;
+}
+
+.storage-title {
+
+  display: flex;
+  align-items: center;
+
+  gap: 7px;
+
+  margin-bottom: 12px;
+
+  font-size: 12px;
+
+  font-weight: 600;
+}
+
+.storage-grid {
+
+  display: grid;
+
+  grid-template-columns:
+    repeat(4, 1fr);
+
+  gap: 10px;
+}
+
+.storage-card {
+
+  padding: 10px;
+
+  background: var(--surface-hover);
+
+  border-radius: 5px;
+}
+
+.storage-card span {
+
+  display: block;
+
+  margin-bottom: 5px;
+
+  color: var(--secondary-text);
+
+  font-size: 10px;
+
+  text-transform: uppercase;
+}
+
+.storage-card strong {
+
+  font-size: 13px;
+}
+
+/* =================================
+   ÍNDICES
+================================= */
+
+.selected-index-list {
+
+  display: flex;
+
+  flex-direction: column;
+
+  gap: 8px;
+}
+
+.selected-index {
+
+  display: flex;
+  align-items: center;
+
+  gap: 9px;
+
+  padding: 9px;
+
+  border-radius: 5px;
+
+  background: var(--surface-hover);
+}
+
+.selected-index svg {
+  color: #facc15;
+}
+
+.selected-index div {
+
+  display: flex;
+
+  flex-direction: column;
+
+  gap: 2px;
+}
+
+.selected-index strong {
+  font-size: 12px;
+}
+
+.selected-index span {
+
+  color: var(--secondary-text);
+
+  font-size: 10px;
+}
+
+.no-indexes {
+
+  color: var(--secondary-text);
+
+  font-size: 12px;
+}
+
+/* =================================
+   RESPONSIVE
+================================= */
+
+@media (max-width: 800px) {
+
+  .file-content {
+    grid-template-columns: 1fr;
+  }
+
+  .file-tree {
+
+    border-right: none;
+
+    border-bottom: 1px solid var(--border);
+  }
+
+  .storage-grid {
+
+    grid-template-columns:
+      repeat(2, 1fr);
+  }
+}
+
