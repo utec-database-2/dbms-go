@@ -4,6 +4,7 @@ import Toolbar from "./components/Toolbar";
 import FilePanel from "./components/FilePanel";
 import QueryPanel from "./components/QueryPanel"; 
 import ResultPanel from "./components/ResultPanel";
+import ExecutionPlanPanel from "./components/ExecutionPlanPanel";
 import "./App.css";
 
 function App() {
@@ -19,12 +20,14 @@ function App() {
 
       <Toolbar />
 
-      <main className="main-content">
+      <main className="dashboard-grid">
         <FilePanel />
 
         <QueryPanel />
 
         <ResultPanel />
+
+        <ExecutionPlanPanel />
       </main>
     </div>
   );
