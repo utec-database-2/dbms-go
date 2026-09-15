@@ -3,6 +3,7 @@ import Header from "./components/Header";
 import Toolbar from "./components/Toolbar";
 import FilePanel from "./components/FilePanel";
 import QueryPanel from "./components/QueryPanel"; 
+import ResultPanel from "./components/ResultPanel";
 import "./App.css";
 
 function App() {
@@ -22,6 +23,8 @@ function App() {
         <FilePanel />
 
         <QueryPanel />
+
+        <ResultPanel />
       </main>
     </div>
   );

@@ -1023,3 +1023,388 @@ body {
 
   margin-left: auto;
 }
+
+/*------------------------------------------------*/
+
+/* =================================
+   PANEL DE RESULTADOS
+================================= */
+
+.result-panel {
+
+  margin-top: 18px;
+
+  background: var(--surface);
+
+  border: 1px solid var(--border);
+
+  border-radius: 8px;
+
+  overflow: hidden;
+}
+
+/* =================================
+   CABECERA
+================================= */
+
+.result-header {
+
+  display: flex;
+
+  align-items: center;
+
+  justify-content: space-between;
+
+  padding: 14px 18px;
+
+  border-bottom: 1px solid var(--border);
+}
+
+.result-title {
+
+  display: flex;
+
+  align-items: center;
+
+  gap: 10px;
+}
+
+.result-title > svg {
+
+  color: #60a5fa;
+}
+
+.result-title h2 {
+
+  margin: 0;
+
+  font-size: 16px;
+
+  font-weight: 600;
+
+  text-transform: uppercase;
+}
+
+.result-title p {
+
+  margin: 3px 0 0;
+
+  font-size: 12px;
+
+  color: var(--secondary-text);
+}
+
+/* =================================
+   ESTADO
+================================= */
+
+.result-status {
+
+  display: flex;
+
+  align-items: center;
+
+  gap: 6px;
+
+  padding: 5px 9px;
+
+  border-radius: 5px;
+
+  background: rgba(34, 197, 94, 0.10);
+
+  color: #4ade80;
+
+  font-size: 11px;
+}
+
+/* =================================
+   TOOLBAR
+================================= */
+
+.result-toolbar {
+
+  display: flex;
+
+  justify-content: space-between;
+
+  align-items: center;
+
+  gap: 10px;
+
+  padding: 10px 14px;
+
+  border-bottom: 1px solid var(--border);
+}
+
+/* BUSCADOR */
+
+.result-search {
+
+  display: flex;
+
+  align-items: center;
+
+  gap: 7px;
+
+  width: 280px;
+
+  padding: 8px 10px;
+
+  border: 1px solid var(--border);
+
+  border-radius: 5px;
+
+  background: var(--surface-hover);
+
+  color: var(--secondary-text);
+}
+
+.result-search input {
+
+  width: 100%;
+
+  border: none;
+
+  outline: none;
+
+  background: transparent;
+
+  color: var(--text);
+
+  font-size: 12px;
+}
+
+.result-search input::placeholder {
+
+  color: var(--secondary-text);
+}
+
+/* BOTÓN EXPORTAR */
+
+.result-button {
+
+  display: flex;
+
+  align-items: center;
+
+  gap: 6px;
+
+  padding: 8px 11px;
+
+  border: 1px solid var(--border);
+
+  border-radius: 5px;
+
+  background: transparent;
+
+  color: var(--text);
+
+  font-size: 12px;
+
+  cursor: pointer;
+
+  transition: 0.2s;
+}
+
+.result-button:hover {
+
+  background: var(--surface-hover);
+}
+
+/* =================================
+   INFORMACIÓN
+================================= */
+
+.result-info {
+
+  display: flex;
+
+  gap: 25px;
+
+  padding: 9px 14px;
+
+  border-bottom: 1px solid var(--border);
+
+  color: var(--secondary-text);
+
+  font-size: 11px;
+}
+
+.result-info strong {
+
+  color: var(--text);
+}
+
+/* =================================
+   TABLA
+================================= */
+
+.result-table-wrapper {
+
+  width: 100%;
+
+  overflow-x: auto;
+}
+
+.result-table {
+
+  width: 100%;
+
+  border-collapse: collapse;
+
+  min-width: 650px;
+}
+
+.result-table th {
+
+  padding: 10px 12px;
+
+  background: var(--surface-hover);
+
+  color: var(--secondary-text);
+
+  border-bottom: 1px solid var(--border);
+
+  font-size: 11px;
+
+  font-weight: 600;
+
+  text-align: left;
+
+  text-transform: uppercase;
+}
+
+.result-table td {
+
+  padding: 10px 12px;
+
+  border-bottom: 1px solid var(--border);
+
+  font-size: 12px;
+
+  color: var(--text);
+}
+
+.result-table tbody tr:hover {
+
+  background: var(--surface-hover);
+}
+
+/* ACCIONES */
+
+.actions-column {
+
+  width: 70px;
+
+  text-align: center !important;
+}
+
+.row-action-cell {
+
+  text-align: center;
+}
+
+.copy-row-button {
+
+  display: inline-flex;
+
+  align-items: center;
+
+  justify-content: center;
+
+  width: 28px;
+
+  height: 28px;
+
+  border: 1px solid var(--border);
+
+  border-radius: 4px;
+
+  background: transparent;
+
+  color: var(--secondary-text);
+
+  cursor: pointer;
+}
+
+.copy-row-button:hover {
+
+  color: var(--text);
+
+  background: var(--surface-hover);
+}
+
+/* SIN RESULTADOS */
+
+.empty-results {
+
+  height: 120px;
+
+  text-align: center;
+
+  color: var(--secondary-text) !important;
+}
+
+/* =================================
+   FOOTER / PAGINACIÓN
+================================= */
+
+.result-footer {
+
+  display: flex;
+
+  align-items: center;
+
+  justify-content: space-between;
+
+  padding: 9px 14px;
+}
+
+.page-info {
+
+  color: var(--secondary-text);
+
+  font-size: 11px;
+}
+
+.pagination {
+
+  display: flex;
+
+  gap: 5px;
+}
+
+.pagination-button {
+
+  width: 29px;
+
+  height: 29px;
+
+  display: flex;
+
+  align-items: center;
+
+  justify-content: center;
+
+  border: 1px solid var(--border);
+
+  border-radius: 5px;
+
+  background: transparent;
+
+  color: var(--text);
+
+  cursor: pointer;
+}
+
+.pagination-button:hover:not(:disabled) {
+
+  background: var(--surface-hover);
+}
+
+.pagination-button:disabled {
+
+  opacity: 0.4;
+
+  cursor: not-allowed;
+}
