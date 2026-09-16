@@ -145,6 +145,29 @@ func (s *KWayMergeSorter) Sort(input iterator.RecordIterator, keyFn iterator.Key
 //     para abrir todos a la vez, mergear en rondas.
 */	
 
+	var h recordHeap
+	h.keyFn = keyFn
+
+	decoders := make([]*gob.Decoder, len(runPaths))
+	files := make([]*os.File, len(runPaths))
+
+	for i, path := range runPaths {
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		files[i] = f
+		decoders[i] = gob.NewDecoder(f)
+		var rec shared.Record
+		if err := decoders[i].Decode(&rec); err != nil {
+			return nil, err
+		}
+		h.items = append(h.items, heapItem{rec: rec, runIndex: i})
+	}
+	heap.Init(&h)
+	
+	// Crear archivo temporal para el resultado final
+
 /*  3. Devolver un iterator.RecordIterator que lea el resultado final
 //     de a un registro por vez — no cargarlo todo en un slice.
 */	
