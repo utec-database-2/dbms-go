@@ -2,12 +2,14 @@
 package sorting
 
 import (
+	"container/heap"
 	"encoding/gob"
 	"os"
 	"errors"
 	"fmt"
 	"io"
 	"sort"
+	
 	"github.com/dbms-go/v2/dbms/lib/external/iterator"
 	"github.com/dbms-go/v2/dbms/lib/shared"
 )
@@ -68,6 +70,30 @@ func (it *fileIterator) Next() (shared.Record, bool, error) {
 	return rec, true, nil
 }
 
+type heapItem struct {
+	rec      shared.Record
+	runIndex int // de qué decoder salió este record
+}
+
+type recordHeap struct {
+	items  []heapItem
+	keyFn  iterator.KeyFunc
+}
+
+func (h *recordHeap) Len() int { return len(h.items) }
+func (h *recordHeap) Less(i, j int) bool {
+	return lessKey(h.keyFn(h.items[i].rec), h.keyFn(h.items[j].rec))
+}
+func (h *recordHeap) Swap(i, j int) { h.items[i], h.items[j] = h.items[j], h.items[i] }
+func (h *recordHeap) Push(x any)    { h.items = append(h.items, x.(heapItem)) }
+func (h *recordHeap) Pop() any {
+	old := h.items
+	n := len(old)
+	item := old[n-1]
+	h.items = old[:n-1]
+	return item
+}
+
 func (s *KWayMergeSorter) Sort(input iterator.RecordIterator, keyFn iterator.KeyFunc) (iterator.RecordIterator, error) {
 
 /*  1. Fase de runs: leer el input de a MemoryBufferSize registros,
@@ -99,8 +125,12 @@ func (s *KWayMergeSorter) Sort(input iterator.RecordIterator, keyFn iterator.Key
 		if err != nil {
 			return nil, err
 		}
-		if err := gob.NewEncoder(f).Encode(buffer); err != nil {
-			return nil, err
+		enc := gob.NewEncoder(f)
+		for _, r := range buffer {
+			if err := enc.Encode(r); err != nil {
+				f.Close()
+				return nil, err
+			}
 		}
 		f.Close()
 		runPaths = append(runPaths, f.Name())
@@ -119,7 +149,7 @@ func (s *KWayMergeSorter) Sort(input iterator.RecordIterator, keyFn iterator.Key
 //     de a un registro por vez — no cargarlo todo en un slice.
 */	
 	tempiterator := &fileIterator{
-		dec: nil, // pendiente inicializacion del decoder
+		dec: gob.NewDecoder(nil), // pendiente inicializacion del decoder
 		f: nil,   // pendiente inicializacion del archivo final
 	}
 
