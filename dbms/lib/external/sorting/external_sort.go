@@ -167,14 +167,41 @@ func (s *KWayMergeSorter) Sort(input iterator.RecordIterator, keyFn iterator.Key
 	heap.Init(&h)
 	
 	// Crear archivo temporal para el resultado final
+	outFile, err := os.CreateTemp(s.TempDir, "sorted-*")
+	if err != nil {
+		return nil, err
+	}
+	outEnc := gob.NewEncoder(outFile)
+
+	for h.Len() > 0 {
+		item := heap.Pop(&h).(heapItem)
+		if err := outEnc.Encode(item.rec); err != nil {
+			return nil, err
+		}
+		var next shared.Record
+		err := decoders[item.runIndex].Decode(&next)
+		if err == nil {
+			heap.Push(&h, heapItem{rec: next, runIndex: item.runIndex})
+		} else if err != io.EOF {
+			return nil, err
+		}
+	}
+
+	for i, f := range files {
+		f.Close()
+		os.Remove(runPaths[i])
+	}
+	outFile.Close()
 
 /*  3. Devolver un iterator.RecordIterator que lea el resultado final
 //     de a un registro por vez — no cargarlo todo en un slice.
 */	
-	tempiterator := &fileIterator{
-		dec: gob.NewDecoder(nil), // pendiente inicializacion del decoder
-		f: nil,   // pendiente inicializacion del archivo final
+	outFile, err = os.Open(outFile.Name())
+	if err != nil {
+		return nil, err
 	}
-
-	return tempiterator, errNotImplemented
+	return &fileIterator{
+		dec: gob.NewDecoder(outFile),
+		f: outFile,
+	}, nil
 }
