@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"os"
 	"sync"
+
+	"github.com/dbms-go/v2/dbms/lib/storage"
 )
 
 var (
@@ -35,6 +37,18 @@ const (
 // KV: par clave/payload vivo, retornado por los scans.
 type KV struct {
 	Key     int64
+	Payload []byte
+}
+
+// RecordID: identidad canónica de registro. Se fuerza el RID unificado del
+// storage para que ambos motores (heap y secuencial) compartan tipo.
+type RecordID = storage.RID
+
+// RecordInfo: clave, RID y payload de un registro vivo, tal y como se entrega
+// en un scan con localización física.
+type RecordInfo struct {
+	Key     int64
+	RID     storage.RID
 	Payload []byte
 }
 
@@ -361,9 +375,32 @@ func (s *SeqFile) routePage(key int64) int32 {
 func (s *SeqFile) Insert(key int64, payload []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	_, _, err := s.insertLocked(key, payload)
+	return err
+}
 
+// InsertRecord agrega un par clave/payload y devuelve el RID lógico asignado.
+//
+// El RID es (página, ordinal): la página principal y la posición del registro
+// dentro del orden de claves vivo de esa página (main + overflow fusionados).
+// Es una vista válida del estado en el momento de retornarlo: cualquier mutación
+// posterior dentro de la misma página (insert o delete que desplace el orden)
+// invalida RIDs previos. Un índice agrupado debe re-reconstruirse tras esas
+// mutaciones (Rebuild/ScanRecords) o usar el RID inmediatamente.
+func (s *SeqFile) InsertRecord(key int64, payload []byte) (storage.RID, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pid, ordinal, err := s.insertLocked(key, payload)
+	if err != nil {
+		return storage.RID{}, err
+	}
+	return storage.RID{PageID: uint32(pid), SlotID: uint16(ordinal)}, nil
+}
+
+// insertLocked asume s.mu tomado; devuelve (página, ordinal) al insertar.
+func (s *SeqFile) insertLocked(key int64, payload []byte) (int32, int, error) {
 	if err := validatePayloadSize(payload, s.payloadSize); err != nil {
-		return err
+		return 0, 0, err
 	}
 
 	if s.numPages == 0 {
@@ -372,35 +409,38 @@ func (s *SeqFile) Insert(key int64, payload []byte) error {
 		mainSlotEncode(slot, false, key, payload)
 		page.slots = append(page.slots, slot)
 		if err := s.writePage(0, page); err != nil {
-			return err
+			return 0, 0, err
 		}
 		s.numPages = 1
 		s.pageMinKey = []int64{key}
 		s.liveCount++
-		return s.writeMeta()
+		if err := s.writeMeta(); err != nil {
+			return 0, 0, err
+		}
+		return 0, 0, nil
 	}
 
 	pid := s.routePage(key)
 	page, err := s.readPage(pid)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 
 	// rechaza duplicados: revisa slots principales y luego la cadena de overflow
 	for _, slot := range page.slots {
 		deleted, k, _ := mainSlotDecode(slot)
 		if !deleted && k == key {
-			return ErrKeyExists
+			return 0, 0, ErrKeyExists
 		}
 	}
 	cur := page.ovfHead
 	for cur != ovfNone {
 		deleted, k, next, _, err := s.readOvf(cur)
 		if err != nil {
-			return err
+			return 0, 0, err
 		}
 		if !deleted && k == key {
-			return ErrKeyExists
+			return 0, 0, ErrKeyExists
 		}
 		cur = next
 	}
@@ -427,7 +467,7 @@ func (s *SeqFile) Insert(key int64, payload []byte) error {
 		page.count++
 
 		if err := s.writePage(pid, page); err != nil {
-			return err
+			return 0, 0, err
 		}
 		// solo la página 0 puede recibir una clave menor a su mínimo actual
 		// (el ruteo cae en la página 0 para claves fuera de rango)
@@ -435,52 +475,59 @@ func (s *SeqFile) Insert(key int64, payload []byte) error {
 			s.pageMinKey[0] = key
 		}
 		s.liveCount++
-		return s.writeMeta()
-	}
-
-	// si no hay espacio, inserta en la cadena de overflow ordenada de la página
-	idx, err := s.allocOvf()
-	if err != nil {
-		return err
-	}
-
-	var prevIdx int64 = ovfNone
-	cur = page.ovfHead
-	for cur != ovfNone {
-		_, k, next, _, err := s.readOvf(cur)
-		if err != nil {
-			return err
-		}
-		if k > key {
-			break
-		}
-		prevIdx = cur
-		cur = next
-	}
-
-	if err := s.writeOvf(idx, false, key, cur, payload); err != nil {
-		return err
-	}
-	if prevIdx == ovfNone {
-		page.ovfHead = idx
-		if err := s.writePage(pid, page); err != nil {
-			return err
+		if err := s.writeMeta(); err != nil {
+			return 0, 0, err
 		}
 	} else {
-		_, pk, _, pp, err := s.readOvf(prevIdx)
+		// si no hay espacio, inserta en la cadena de overflow ordenada de la página
+		idx, err := s.allocOvf()
 		if err != nil {
-			return err
+			return 0, 0, err
 		}
-		if err := s.writeOvf(prevIdx, false, pk, idx, pp); err != nil {
-			return err
+
+		var prevIdx int64 = ovfNone
+		cur = page.ovfHead
+		for cur != ovfNone {
+			_, k, next, _, err := s.readOvf(cur)
+			if err != nil {
+				return 0, 0, err
+			}
+			if k > key {
+				break
+			}
+			prevIdx = cur
+			cur = next
+		}
+
+		if err := s.writeOvf(idx, false, key, cur, payload); err != nil {
+			return 0, 0, err
+		}
+		if prevIdx == ovfNone {
+			page.ovfHead = idx
+			if err := s.writePage(pid, page); err != nil {
+				return 0, 0, err
+			}
+		} else {
+			_, pk, _, pp, err := s.readOvf(prevIdx)
+			if err != nil {
+				return 0, 0, err
+			}
+			if err := s.writeOvf(prevIdx, false, pk, idx, pp); err != nil {
+				return 0, 0, err
+			}
+		}
+
+		s.liveCount++
+		if err := s.writeMeta(); err != nil {
+			return 0, 0, err
 		}
 	}
 
-	s.liveCount++
-	if err := s.writeMeta(); err != nil {
-		return err
+	ordinal, err := s.ordinalOfLocked(pid, key)
+	if err != nil {
+		return 0, 0, err
 	}
-	return nil
+	return pid, ordinal, nil
 }
 
 func (s *SeqFile) Search(key int64) ([]byte, bool, error) {
@@ -519,6 +566,162 @@ func (s *SeqFile) searchLocked(key int64) ([]byte, bool, error) {
 		cur = next
 	}
 	return nil, false, nil
+}
+
+// locEntry: registro vivo resuelto dentro de una página, con su ubicación
+// física (slot principal o nodo de overflow) para poder leerlo o borrarlo.
+type locEntry struct {
+	key      int64
+	payload  []byte
+	mainSlot int   // índice en page.slots; -1 si vive en overflow
+	ovfIdx   int64 // índice del nodo de overflow; ovfNone si vive en main
+	next     int64 // enlace next del nodo de overflow (no usado si vive en main)
+}
+
+// pageLiveEntriesLocked devuelve, en orden de clave, los registros vivos de la
+// página pid (main + overflow fusionados), cada uno con su localización física.
+func (s *SeqFile) pageLiveEntriesLocked(pid int32) ([]locEntry, error) {
+	page, err := s.readPage(pid)
+	if err != nil {
+		return nil, err
+	}
+
+	type chainNode struct {
+		idx     int64
+		key     int64
+		next    int64
+		payload []byte
+	}
+	var chain []chainNode
+	cur := page.ovfHead
+	for cur != ovfNone {
+		deleted, k, next, payload, err := s.readOvf(cur)
+		if err != nil {
+			return nil, err
+		}
+		if !deleted {
+			chain = append(chain, chainNode{idx: cur, key: k, next: next, payload: payload})
+		}
+		cur = next
+	}
+
+	var out []locEntry
+	i, j := 0, 0
+	for i < len(page.slots) || j < len(chain) {
+		if i < len(page.slots) {
+			deleted, k, payload := mainSlotDecode(page.slots[i])
+			if deleted {
+				i++
+				continue
+			}
+if j < len(chain) && chain[j].key < k {
+			out = append(out, locEntry{key: chain[j].key, payload: chain[j].payload, mainSlot: -1, ovfIdx: chain[j].idx, next: chain[j].next})
+			j++
+			continue
+		}
+			out = append(out, locEntry{key: k, payload: payload, mainSlot: i, ovfIdx: ovfNone})
+			i++
+			continue
+		}
+		out = append(out, locEntry{key: chain[j].key, payload: chain[j].payload, mainSlot: -1, ovfIdx: chain[j].idx, next: chain[j].next})
+		j++
+	}
+	return out, nil
+}
+
+// ordinalOfLocked devuelve la posición de key en el orden de claves vivas de la
+// página pid (índice usado como SlotID del RID). Asume que key acaba de insertarse.
+func (s *SeqFile) ordinalOfLocked(pid int32, key int64) (int, error) {
+	entries, err := s.pageLiveEntriesLocked(pid)
+	if err != nil {
+		return 0, err
+	}
+	for i, e := range entries {
+		if e.key == key {
+			return i, nil
+		}
+	}
+	return 0, ErrNotFound
+}
+
+// ScanRecords recorre el archivo en orden de clave y entrega cada registro vivo
+// con su RID lógico (página, ordinal).
+func (s *SeqFile) ScanRecords() ([]RecordInfo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []RecordInfo
+	for pid := int32(0); pid < s.numPages; pid++ {
+		entries, err := s.pageLiveEntriesLocked(pid)
+		if err != nil {
+			return nil, err
+		}
+		for ordinal, e := range entries {
+			out = append(out, RecordInfo{
+				Key:     e.key,
+				RID:     storage.RID{PageID: uint32(pid), SlotID: uint16(ordinal)},
+				Payload: e.payload,
+			})
+		}
+	}
+	return out, nil
+}
+
+// Read devuelve el payload del registro identificado por rid.
+func (s *SeqFile) Read(rid storage.RID) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rid.PageID >= uint32(s.numPages) {
+		return nil, ErrNotFound
+	}
+	entries, err := s.pageLiveEntriesLocked(int32(rid.PageID))
+	if err != nil {
+		return nil, err
+	}
+	if int(rid.SlotID) >= len(entries) {
+		return nil, ErrNotFound
+	}
+	return entries[rid.SlotID].payload, nil
+}
+
+// DeleteRID elimina el registro identificado por rid (tombstone lazy).
+//
+// No dispara reorganización automática: reescribir páginas invalidaría los RIDs
+// ya publicados al árbol. Si el archivo acumula muchos tombstones, conviene
+// Reorganize() + Rebuild() del índice agrupado.
+//
+// El rid debe resolver a un registro aún vivo en el momento de la llamada;
+// si el archivo mutó desde que se obtuvo el RID, puede apuntar a otra clave.
+func (s *SeqFile) DeleteRID(rid storage.RID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rid.PageID >= uint32(s.numPages) {
+		return ErrNotFound
+	}
+	entries, err := s.pageLiveEntriesLocked(int32(rid.PageID))
+	if err != nil {
+		return err
+	}
+	if int(rid.SlotID) >= len(entries) {
+		return ErrNotFound
+	}
+	rec := entries[rid.SlotID]
+	if rec.ovfIdx != ovfNone {
+		if err := s.writeOvf(rec.ovfIdx, true, rec.key, rec.next, rec.payload); err != nil {
+			return err
+		}
+	} else {
+		page, err := s.readPage(int32(rid.PageID))
+		if err != nil {
+			return err
+		}
+		mainSlotEncode(page.slots[rec.mainSlot], true, rec.key, rec.payload)
+		if err := s.writePage(int32(rid.PageID), page); err != nil {
+			return err
+		}
+	}
+	s.liveCount--
+	s.deadCount++
+	return s.writeMeta()
 }
 
 // Delete elimina la clave de forma lazy (tombstone). Si el espacio

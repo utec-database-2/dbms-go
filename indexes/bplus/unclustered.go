@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/dbms-go/v2/storage/heap"
+	"github.com/dbms-go/v2/dbms/lib/storage/heap"
 )
 
 // KeyExtractor obtiene de un payload la clave secundaria que debe indexarse.

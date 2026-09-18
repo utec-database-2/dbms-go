@@ -1,21 +1,20 @@
-package sorting
+package integration
 
 import (
 	"testing"
 
 	"github.com/dbms-go/v2/dbms/lib/external/iterator"
+	"github.com/dbms-go/v2/dbms/lib/external/sorting"
 	"github.com/dbms-go/v2/dbms/lib/shared"
 )
 
 func TestKWayMergeSorter_SortsAscending(t *testing.T) {
-	t.Skip("TODO: implementar KWayMergeSorter.Sort antes de habilitar este test")
-
 	records := []shared.Record{
 		{Values: []any{3}},
 		{Values: []any{1}},
 		{Values: []any{2}},
 	}
-	sorter := New(2, t.TempDir())
+	sorter := sorting.New(2, t.TempDir())
 	keyFn := func(r shared.Record) any { return r.Values[0] }
 
 	out, err := sorter.Sort(iterator.NewSliceIterator(records), keyFn)

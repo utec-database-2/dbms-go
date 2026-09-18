@@ -1,15 +1,18 @@
-package sequential
+package integration
 
 import (
 	"fmt"
 	"path/filepath"
 	"testing"
+
+	"github.com/dbms-go/v2/dbms/lib/concurrency/sequential"
+	"github.com/dbms-go/v2/dbms/lib/storage"
 )
 
-func newTestSeqFile(t *testing.T, pageCapacity, payloadSize int) *SeqFile {
+func newTestSeqFile(t *testing.T, pageCapacity, payloadSize int) *sequential.SeqFile {
 	t.Helper()
 	dir := t.TempDir()
-	s, err := Create(filepath.Join(dir, "main.seq"), filepath.Join(dir, "ovf.seq"), pageCapacity, payloadSize)
+	s, err := sequential.Create(filepath.Join(dir, "main.seq"), filepath.Join(dir, "ovf.seq"), pageCapacity, payloadSize)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -53,7 +56,7 @@ func TestInsertRejectsDuplicateKey(t *testing.T) {
 	if err := s.Insert(5, payload("a")); err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
-	if err := s.Insert(5, payload("b")); err != ErrKeyExists {
+	if err := s.Insert(5, payload("b")); err != sequential.ErrKeyExists {
 		t.Fatalf("got err=%v, want ErrKeyExists", err)
 	}
 }
@@ -273,12 +276,12 @@ func TestManualReorganizeAfterDeletes(t *testing.T) {
 	}
 }
 
-func TestPersistenceAcrossReopen(t *testing.T) {
+func TestSeqFilePersistenceAcrossReopen(t *testing.T) {
 	dir := t.TempDir()
 	mainPath := filepath.Join(dir, "main.seq")
 	ovfPath := filepath.Join(dir, "ovf.seq")
 
-	s, err := Create(mainPath, ovfPath, 3, 16)
+	s, err := sequential.Create(mainPath, ovfPath, 3, 16)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -294,7 +297,7 @@ func TestPersistenceAcrossReopen(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	reopened, err := Open(mainPath, ovfPath)
+	reopened, err := sequential.Open(mainPath, ovfPath)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -333,5 +336,102 @@ func TestPayloadTooLargeRejected(t *testing.T) {
 	s := newTestSeqFile(t, 4, 4)
 	if err := s.Insert(1, payload("waytoobig")); err == nil {
 		t.Fatalf("expected error inserting a payload larger than payloadSize")
+	}
+}
+
+func TestInsertRecordScanRecordsRead(t *testing.T) {
+	s := newTestSeqFile(t, 4, 16)
+	want := map[int64]string{1: "uno", 2: "dos", 3: "tres", 4: "cuatro"}
+	for _, k := range []int64{3, 1, 4, 2} {
+		if _, err := s.InsertRecord(k, payload(want[k])); err != nil {
+			t.Fatalf("InsertRecord(%d): %v", k, err)
+		}
+	}
+
+	records, err := s.ScanRecords()
+	if err != nil {
+		t.Fatalf("ScanRecords: %v", err)
+	}
+	if len(records) != 4 {
+		t.Fatalf("ScanRecords: got %d records, want 4", len(records))
+	}
+	for i, r := range records {
+		if r.RID.PageID != 0 || r.RID.SlotID != uint16(i) {
+			t.Fatalf("record %d: want RID (0,%d), got %v", i, i, r.RID)
+		}
+		if string(r.Payload) != want[r.Key] {
+			t.Fatalf("record %d: key=%d payload=%q, want %q", i, r.Key, r.Payload, want[r.Key])
+		}
+		got, err := s.Read(r.RID)
+		if err != nil {
+			t.Fatalf("Read(%v): %v", r.RID, err)
+		}
+		if string(got) != want[r.Key] {
+			t.Fatalf("Read(%v): got %q, want %q", r.RID, got, want[r.Key])
+		}
+	}
+}
+
+func TestInsertRecordOverflowAndScan(t *testing.T) {
+	s := newTestSeqFile(t, 4, 16)
+	for k := int64(1); k <= 6; k++ {
+		if _, err := s.InsertRecord(k, payload(fmt.Sprintf("k%d", k))); err != nil {
+			t.Fatalf("InsertRecord(%d): %v", k, err)
+		}
+	}
+
+	records, err := s.ScanRecords()
+	if err != nil {
+		t.Fatalf("ScanRecords: %v", err)
+	}
+	if len(records) != 6 {
+		t.Fatalf("ScanRecords: got %d records, want 6", len(records))
+	}
+	for i, r := range records {
+		if r.RID.PageID != 0 || r.RID.SlotID != uint16(i) {
+			t.Fatalf("record %d: want RID (0,%d), got %v", i, i, r.RID)
+		}
+		if want := fmt.Sprintf("k%d", int64(i)+1); string(r.Payload) != want {
+			t.Fatalf("record %d: got payload %q, want %q", i, r.Payload, want)
+		}
+	}
+}
+
+func TestDeleteRID(t *testing.T) {
+	s := newTestSeqFile(t, 4, 16)
+	for _, k := range []int64{1, 2, 3, 4} {
+		if _, err := s.InsertRecord(k, payload(fmt.Sprintf("k%d", k))); err != nil {
+			t.Fatalf("InsertRecord(%d): %v", k, err)
+		}
+	}
+
+	records, err := s.ScanRecords()
+	if err != nil {
+		t.Fatalf("ScanRecords: %v", err)
+	}
+	toDelete := records[1] // key=2
+	if err := s.DeleteRID(toDelete.RID); err != nil {
+		t.Fatalf("DeleteRID(%v): %v", toDelete.RID, err)
+	}
+	if _, ok, _ := s.Search(2); ok {
+		t.Fatalf("Search(2) still ok after DeleteRID")
+	}
+
+	got, err := s.ScanRecords()
+	if err != nil {
+		t.Fatalf("ScanRecords: %v", err)
+	}
+	wantKeys := []int64{1, 3, 4}
+	if len(got) != len(wantKeys) {
+		t.Fatalf("after DeleteRID: got %d records, want %d", len(got), len(wantKeys))
+	}
+	for i, r := range got {
+		if r.Key != wantKeys[i] {
+			t.Fatalf("after DeleteRID: record %d key=%d, want %d", i, r.Key, wantKeys[i])
+		}
+	}
+
+	if err := s.DeleteRID(storage.RID{PageID: 999, SlotID: 0}); err != sequential.ErrNotFound {
+		t.Fatalf("DeleteRID out of range: got %v, want ErrNotFound", err)
 	}
 }
