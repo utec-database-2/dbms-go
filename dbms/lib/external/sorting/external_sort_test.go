@@ -8,7 +8,7 @@ import (
 )
 
 func TestKWayMergeSorter_SortsAscending(t *testing.T) {
-	t.Skip("TODO: implementar KWayMergeSorter.Sort antes de habilitar este test")
+	//t.Skip("TODO: implementar KWayMergeSorter.Sort antes de habilitar este test")
 
 	records := []shared.Record{
 		{Values: []any{3}},
