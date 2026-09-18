@@ -1,16 +1,18 @@
-package heap
+package integration
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/dbms-go/v2/dbms/lib/storage/heap"
 )
 
-func newTestHeap(t *testing.T, pageSize int) *HeapFile {
+func newTestHeap(t *testing.T, pageSize int) *heap.HeapFile {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "test.heap")
-	h, err := Create(path, pageSize)
+	h, err := heap.Create(path, pageSize)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -19,7 +21,7 @@ func newTestHeap(t *testing.T, pageSize int) *HeapFile {
 }
 
 func TestInsertAndRead(t *testing.T) {
-	h := newTestHeap(t, DefaultPageSize)
+	h := newTestHeap(t, heap.DefaultPageSize)
 
 	rid, err := h.Insert([]byte("hello world"))
 	if err != nil {
@@ -35,9 +37,9 @@ func TestInsertAndRead(t *testing.T) {
 }
 
 func TestInsertMultipleSamePage(t *testing.T) {
-	h := newTestHeap(t, DefaultPageSize)
+	h := newTestHeap(t, heap.DefaultPageSize)
 
-	rids := make([]RecordID, 5)
+	rids := make([]heap.RecordID, 5)
 	for i := 0; i < 5; i++ {
 		rid, err := h.Insert([]byte(fmt.Sprintf("rec-%d", i)))
 		if err != nil {
@@ -68,7 +70,7 @@ func TestInsertSpillsToNewPage(t *testing.T) {
 		payload[i] = byte('a' + i%26)
 	}
 
-	var last RecordID
+	var last heap.RecordID
 	for i := 0; i < 4; i++ {
 		rid, err := h.Insert(payload)
 		if err != nil {
@@ -85,7 +87,7 @@ func TestInsertSpillsToNewPage(t *testing.T) {
 }
 
 func TestDeleteThenRead(t *testing.T) {
-	h := newTestHeap(t, DefaultPageSize)
+	h := newTestHeap(t, heap.DefaultPageSize)
 
 	rid, err := h.Insert([]byte("to be deleted"))
 	if err != nil {
@@ -94,18 +96,19 @@ func TestDeleteThenRead(t *testing.T) {
 	if err := h.Delete(rid); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if _, err := h.Read(rid); err != ErrNotFound {
+	if _, err := h.Read(rid); err != heap.ErrNotFound {
 		t.Fatalf("Read after delete: got err=%v, want ErrNotFound", err)
 	}
-	if err := h.Delete(rid); err != ErrNotFound {
+	if err := h.Delete(rid); err != heap.ErrNotFound {
 		t.Fatalf("double Delete: got err=%v, want ErrNotFound", err)
 	}
 }
 
 func TestFreeSpaceReuse(t *testing.T) {
-	// página con espacio exacto para 2 registros de este tamaño
 	recSize := 20
-	pageSize := pageHeaderSize + 2*(slotEntrySize+recSize)
+	// 56 = pageHeaderSize(4) + 2*(slotEntrySize(4)+recSize): página con espacio
+	// exacto para 2 registros de este tamaño.
+	pageSize := 56
 	h := newTestHeap(t, pageSize)
 
 	payload := make([]byte, recSize)
@@ -137,7 +140,7 @@ func TestFreeSpaceReuse(t *testing.T) {
 }
 
 func TestUpdateInPlace(t *testing.T) {
-	h := newTestHeap(t, DefaultPageSize)
+	h := newTestHeap(t, heap.DefaultPageSize)
 
 	rid, err := h.Insert([]byte("original-value"))
 	if err != nil {
@@ -160,7 +163,7 @@ func TestUpdateInPlace(t *testing.T) {
 }
 
 func TestUpdateRelocatesWhenLarger(t *testing.T) {
-	h := newTestHeap(t, DefaultPageSize)
+	h := newTestHeap(t, heap.DefaultPageSize)
 
 	rid, err := h.Insert([]byte("small"))
 	if err != nil {
@@ -180,7 +183,7 @@ func TestUpdateRelocatesWhenLarger(t *testing.T) {
 	}
 	// la reubicación puede reusar el mismo slot que acaba de liberar
 	if newRid != rid {
-		if _, err := h.Read(rid); err != ErrNotFound {
+		if _, err := h.Read(rid); err != heap.ErrNotFound {
 			t.Fatalf("old slot should be tombstoned, got err=%v", err)
 		}
 	}
@@ -196,9 +199,9 @@ func TestScanVisitsAllLiveRecords(t *testing.T) {
 		}
 	}
 
-	var toDelete RecordID
+	var toDelete heap.RecordID
 	count := 0
-	h.Scan(func(rid RecordID, data []byte) bool {
+	h.Scan(func(rid heap.RecordID, data []byte) bool {
 		if count == 3 {
 			toDelete = rid
 		}
@@ -210,7 +213,7 @@ func TestScanVisitsAllLiveRecords(t *testing.T) {
 	}
 
 	seen := 0
-	h.Scan(func(rid RecordID, data []byte) bool {
+	h.Scan(func(rid heap.RecordID, data []byte) bool {
 		seen++
 		return true
 	})
@@ -223,19 +226,19 @@ func TestRecordTooLargeForPage(t *testing.T) {
 	h := newTestHeap(t, 64)
 
 	huge := make([]byte, 1024)
-	if _, err := h.Insert(huge); err != ErrRecordTooLarge {
+	if _, err := h.Insert(huge); err != heap.ErrRecordTooLarge {
 		t.Fatalf("got err=%v, want ErrRecordTooLarge", err)
 	}
 }
 
-func TestPersistenceAcrossReopen(t *testing.T) {
+func TestHeapPersistenceAcrossReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "persist.heap")
-	h, err := Create(path, DefaultPageSize)
+	h, err := heap.Create(path, heap.DefaultPageSize)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
-	var rids []RecordID
+	var rids []heap.RecordID
 	for i := 0; i < 5; i++ {
 		rid, err := h.Insert([]byte(fmt.Sprintf("persisted-%d", i)))
 		if err != nil {
@@ -250,13 +253,13 @@ func TestPersistenceAcrossReopen(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	reopened, err := Open(path, DefaultPageSize)
+	reopened, err := heap.Open(path, heap.DefaultPageSize)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	defer reopened.Close()
 
-	if _, err := reopened.Read(rids[1]); err != ErrNotFound {
+	if _, err := reopened.Read(rids[1]); err != heap.ErrNotFound {
 		t.Fatalf("deleted record resurfaced after reopen: err=%v", err)
 	}
 	for i, rid := range rids {
@@ -288,7 +291,7 @@ func TestOpenRejectsCorruptSize(t *testing.T) {
 	if err := os.WriteFile(path, make([]byte, 10), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	if _, err := Open(path, DefaultPageSize); err == nil {
+	if _, err := heap.Open(path, heap.DefaultPageSize); err == nil {
 		t.Fatalf("expected error opening a file with a size that isn't a page multiple")
 	}
 }

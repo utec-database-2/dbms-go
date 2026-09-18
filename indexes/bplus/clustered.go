@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/dbms-go/v2/storage/sequential"
+	"github.com/dbms-go/v2/dbms/lib/concurrency/sequential"
 )
 
 var ErrIndexStorageMismatch = errors.New("bplus: index/storage mismatch")
@@ -88,14 +88,14 @@ func (idx *ClusteredIndex) Insert(key int64, payload []byte) (sequential.RecordI
 
 	rid, err := idx.storage.InsertRecord(key, payload)
 	if err != nil {
-		return 0, err
+		return sequential.RecordID{}, err
 	}
 	if err := idx.tree.Insert(key, rid); err != nil {
 		rollbackErr := idx.storage.DeleteRID(rid)
 		if rollbackErr != nil {
-			return 0, fmt.Errorf("bplus: tree insert failed: %v; storage rollback failed: %v", err, rollbackErr)
+			return sequential.RecordID{}, fmt.Errorf("bplus: tree insert failed: %v; storage rollback failed: %v", err, rollbackErr)
 		}
-		return 0, err
+		return sequential.RecordID{}, err
 	}
 	return rid, nil
 }

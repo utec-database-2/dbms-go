@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"sync"
+
+	"github.com/dbms-go/v2/dbms/lib/storage"
 )
 
 const DefaultPageSize = 4096
@@ -15,14 +17,7 @@ var (
 )
 
 // RecordID: ubicación física de un registro (página, slot).
-type RecordID struct {
-	PageID uint32
-	SlotID uint16
-}
-
-func (r RecordID) String() string {
-	return fmt.Sprintf("(%d,%d)", r.PageID, r.SlotID)
-}
+type RecordID = storage.RID
 
 // HeapFile: colección de páginas en disco con registros de largo variable
 // en orden de llegada, reutilizando el espacio liberado por eliminaciones.
@@ -93,6 +88,37 @@ func (h *HeapFile) Close() error {
 }
 
 func (h *HeapFile) PageSize() int { return h.pageSize }
+
+// Stats resume el estado del HeapFile: número de páginas, registros vivos
+// (slots con datos), tombstones (slots con length 0) y bytes libres.
+type Stats struct {
+	NumPages  uint32
+	LiveCount int
+	DeadCount int
+	FreeBytes int
+}
+
+func (h *HeapFile) Stats() (Stats, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	st := Stats{NumPages: h.numPages}
+	for pid := uint32(0); pid < h.numPages; pid++ {
+		page, err := h.readPage(pid)
+		if err != nil {
+			return st, err
+		}
+		live := 0
+		page.Scan(func(uint16, []byte) bool {
+			live++
+			return true
+		})
+		st.LiveCount += live
+		st.DeadCount += int(page.slotCount()) - live
+		st.FreeBytes += page.FreeBytes()
+	}
+	return st, nil
+}
 
 func (h *HeapFile) NumPages() uint32 {
 	h.mu.Lock()

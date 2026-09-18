@@ -1,27 +1,23 @@
 package extendible
 
 import (
-	"errors"
 	"fmt"
 	"hash/fnv"
 
 	"github.com/dbms-go/v2/dbms/lib/index/common"
-	"github.com/dbms-go/v2/dbms/lib/shared"
+	"github.com/dbms-go/v2/dbms/lib/storage"
 )
-
-// errNotImplemented marca los métodos que todavía son TODO.
-var errNotImplemented = errors.New("extendible: not implemented")
 
 // bucket es una cubeta del directorio de hashing extensible.
 type bucket struct {
 	localDepth int
-	entries    map[any][]shared.RID // clave -> lista de RID (permite duplicados)
+	entries    map[any][]storage.RID // clave -> lista de RID (permite duplicados)
 }
 
 func newBucket(localDepth int) *bucket {
 	return &bucket{
 		localDepth: localDepth,
-		entries:    make(map[any][]shared.RID),
+		entries:    make(map[any][]storage.RID),
 	}
 }
 
@@ -78,7 +74,7 @@ func (bucket *bucket) recordCount() int {
 	return recordCount(bucket.entries)
 }
 
-func recordCount(entries map[any][]shared.RID) int {
+func recordCount(entries map[any][]storage.RID) int {
 	count := 0
 	for _, rids := range entries {
 		count += len(rids)
@@ -87,12 +83,12 @@ func recordCount(entries map[any][]shared.RID) int {
 }
 
 
-func (idx *Index) Insert(key any, rid shared.RID) error {
+func (idx *Index) Insert(key any, rid storage.RID) error {
 	hashedKey := hashKey(key)
 	dirIndex := idx.directoryIndex(key)
 	idx.directory[dirIndex].entries[key] = append(idx.directory[dirIndex].entries[key], rid)
 
-	for{
+	for {
 		globalDepthLeastSignificantBits := hashedKey & ((1 << uint(idx.globalDepth)) - 1)
 		b := idx.directory[globalDepthLeastSignificantBits]
 		if b.recordCount() <= idx.bucketSize {
@@ -100,7 +96,7 @@ func (idx *Index) Insert(key any, rid shared.RID) error {
 		}
 
 		// Split the bucket
-		if b.localDepth == idx.globalDepth{
+		if b.localDepth == idx.globalDepth {
 			// Duplicate the bucket directory
 			newDirectory := make([]*bucket, len(idx.directory)*2)
 			copy(newDirectory, idx.directory)
@@ -108,10 +104,10 @@ func (idx *Index) Insert(key any, rid shared.RID) error {
 			idx.directory = newDirectory
 			idx.globalDepth++
 		}
-		bucket1 := newBucket(b.localDepth+1)
-		bucket2 := newBucket(b.localDepth+1)
-		bucket1.entries = make(map[any][]shared.RID)
-		bucket2.entries = make(map[any][]shared.RID)
+		bucket1 := newBucket(b.localDepth + 1)
+		bucket2 := newBucket(b.localDepth + 1)
+		bucket1.entries = make(map[any][]storage.RID)
+		bucket2.entries = make(map[any][]storage.RID)
 		// Re-distribute entries
 		for k, v := range b.entries {
 			splitBit := uint32(1) << uint(b.localDepth)
@@ -139,18 +135,21 @@ func (idx *Index) Insert(key any, rid shared.RID) error {
 	}
 }
 
-func (idx *Index) Search(key any) ([]shared.RID, error) {
+func (idx *Index) Search(key any) ([]storage.RID, error) {
 	i := idx.directoryIndex(key)
 	b := idx.directory[i]
-	return b.entries[key], nil
+	rids := b.entries[key]
+	out := make([]storage.RID, len(rids))
+	copy(out, rids)
+	return out, nil
 }
 
-func (idx *Index) RangeSearch(keyMin, keyMax any) ([]shared.RID, error) {
+func (idx *Index) RangeSearch(keyMin, keyMax any) ([]storage.RID, error) {
 	return nil, common.ErrRangeNotSupported
 }
 
-func (idx *Index) Delete(key any, rid shared.RID) (bool, error) {
-	i:= idx.directoryIndex(key)
+func (idx *Index) Delete(key any, rid storage.RID) (bool, error) {
+	i := idx.directoryIndex(key)
 	b := idx.directory[i]
 	rids, exists := b.entries[key]
 	if !exists {
