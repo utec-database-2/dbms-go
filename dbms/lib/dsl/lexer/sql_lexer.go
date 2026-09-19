@@ -23,6 +23,11 @@ func (ctx *LexerContext) CurrChar() rune {
 	return rune(ctx.src[ctx.current])
 }
 
+// Err devuelve el primer error de lexing encontrado por Tokenize, si lo hubo.
+func (ctx *LexerContext) Err() error {
+	return ctx.err
+}
+
 func (ctx *LexerContext) HasNext() bool {
 	return ctx.current < ctx.end
 }
