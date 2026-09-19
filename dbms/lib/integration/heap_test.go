@@ -231,6 +231,52 @@ func TestRecordTooLargeForPage(t *testing.T) {
 	}
 }
 
+func TestUpdateFailureKeepsOriginalRecord(t *testing.T) {
+	h := newTestHeap(t, 64)
+
+	rid, err := h.Insert([]byte("important"))
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	huge := make([]byte, 1024)
+	if _, err := h.Update(rid, huge); err != heap.ErrRecordTooLarge {
+		t.Fatalf("got err=%v, want ErrRecordTooLarge", err)
+	}
+	got, err := h.Read(rid)
+	if err != nil {
+		t.Fatalf("DATOS PERDIDOS tras Update fallido: Read(%v) err=%v", rid, err)
+	}
+	if string(got) != "important" {
+		t.Fatalf("original = %q, want %q", got, "important")
+	}
+}
+
+func TestUpdateRelocationInvalidatesOldRID(t *testing.T) {
+	h := newTestHeap(t, 128)
+
+	r1, err := h.Insert([]byte("small"))
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if _, err := h.Insert([]byte("other")); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	newRid, err := h.Update(r1, []byte("this is now a much larger payload"))
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if newRid == r1 {
+		t.Fatalf("reubicación devolvió el mismo RID %v, se espera uno distinto", newRid)
+	}
+	if _, err := h.Read(r1); err != heap.ErrNotFound {
+		t.Fatalf("RID original (%v) debería estar tombstone tras reubicar, err=%v", r1, err)
+	}
+	got, err := h.Read(newRid)
+	if err != nil || string(got) != "this is now a much larger payload" {
+		t.Fatalf("Read(newRid=%v): got %q err %v", newRid, got, err)
+	}
+}
+
 func TestHeapPersistenceAcrossReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "persist.heap")
 	h, err := heap.Create(path, heap.DefaultPageSize)
