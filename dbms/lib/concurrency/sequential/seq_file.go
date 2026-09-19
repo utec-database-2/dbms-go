@@ -508,11 +508,13 @@ func (s *SeqFile) insertLocked(key int64, payload []byte) (int32, int, error) {
 				return 0, 0, err
 			}
 		} else {
-			_, pk, _, pp, err := s.readOvf(prevIdx)
+			// Preserva el flag "deleted" del nodo previo: si estaba eliminado,
+			// re-escribirlo con deleted=false lo resucitaría con su payload viejo.
+			prevDeleted, pk, _, pp, err := s.readOvf(prevIdx)
 			if err != nil {
 				return 0, 0, err
 			}
-			if err := s.writeOvf(prevIdx, false, pk, idx, pp); err != nil {
+			if err := s.writeOvf(prevIdx, prevDeleted, pk, idx, pp); err != nil {
 				return 0, 0, err
 			}
 		}
@@ -557,10 +559,10 @@ func (s *SeqFile) searchLocked(key int64) ([]byte, bool, error) {
 		if err != nil {
 			return nil, false, err
 		}
-		if k == key {
-			if deleted {
-				return nil, false, nil
-			}
+		// un delete+insert de la misma clave puede dejar un nodo eliminado
+		// seguido de uno vivo con la misma clave más adelante en la cadena;
+		// no cortar la búsqueda en el primer match, seguir hasta uno vivo
+		if !deleted && k == key {
 			return payload, true, nil
 		}
 		cur = next
@@ -756,10 +758,9 @@ func (s *SeqFile) Delete(key int64) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		if k == key {
-			if deleted {
-				return false, nil
-			}
+		// mismo motivo que en searchLocked: no detenerse en un nodo ya
+		// eliminado con la misma clave, puede haber uno vivo más adelante
+		if !deleted && k == key {
 			if err := s.writeOvf(cur, true, key, next, payload); err != nil {
 				return false, err
 			}

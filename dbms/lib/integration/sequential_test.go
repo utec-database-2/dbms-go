@@ -435,3 +435,52 @@ func TestDeleteRID(t *testing.T) {
 		t.Fatalf("DeleteRID out of range: got %v, want ErrNotFound", err)
 	}
 }
+
+// Regresión: al re-enlazar un nodo nuevo de overflow, el código escribía el
+// nodo previo con deleted=false sin importar su estado real, resucitando un
+// registro ya eliminado con su payload viejo. Y aunque eso se preserve, si
+// Search/Delete se detienen en el primer nodo que matchea la clave (aunque
+// esté eliminado) tampoco encuentran el nodo vivo que quedó más adelante en
+// la cadena tras un delete + insert de la misma clave.
+func TestDeleteThenReinsertSameKeyInOverflowChain(t *testing.T) {
+	s := newTestSeqFile(t, 1, 16)
+	s.SetReorgThreshold(1.1) // aislar el caso, sin que la reorganización lo enmascare
+
+	if err := s.Insert(1, payload("v1")); err != nil {
+		t.Fatalf("Insert(1): %v", err)
+	}
+	if err := s.Insert(2, payload("old-v2")); err != nil {
+		t.Fatalf("Insert(2): %v", err)
+	}
+	if err := s.Insert(3, payload("v3")); err != nil {
+		t.Fatalf("Insert(3): %v", err)
+	}
+
+	ok, err := s.Delete(2)
+	if err != nil || !ok {
+		t.Fatalf("Delete(2): ok=%v err=%v", ok, err)
+	}
+
+	if err := s.Insert(2, payload("new-v2")); err != nil {
+		t.Fatalf("re-Insert(2): %v", err)
+	}
+
+	got, found, err := s.Search(2)
+	if err != nil {
+		t.Fatalf("Search(2): %v", err)
+	}
+	if !found {
+		t.Fatalf("key 2 should be found after being deleted and reinserted")
+	}
+	if string(got) != "new-v2" {
+		t.Fatalf("got %q, want %q (a deleted node resurrected with stale data)", got, "new-v2")
+	}
+
+	ok, err = s.Delete(2)
+	if err != nil || !ok {
+		t.Fatalf("final Delete(2): ok=%v err=%v", ok, err)
+	}
+	if _, found, err := s.Search(2); err != nil || found {
+		t.Fatalf("key 2 should be gone: found=%v err=%v", found, err)
+	}
+}
