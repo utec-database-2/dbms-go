@@ -233,7 +233,10 @@ func (h *HeapFile) Delete(rid RecordID) error {
 }
 
 // Update reemplaza el registro en rid. Si ya no entra en su slot original,
-// se reubica (delete + insert) y se retorna el nuevo RecordID.
+// se reubica (insert del nuevo + delete del viejo) y se retorna el nuevo
+// RecordID. La reubicación es write-ahead: primero se persiste la copia nueva
+// y solo después se descarta la vieja, para no perder el dato si el insert
+// falla (p. ej. ErrRecordTooLarge).
 func (h *HeapFile) Update(rid RecordID, data []byte) (RecordID, error) {
 	h.mu.Lock()
 	if rid.PageID >= h.numPages {
@@ -254,19 +257,19 @@ func (h *HeapFile) Update(rid RecordID, data []byte) (RecordID, error) {
 		h.mu.Unlock()
 		return rid, nil
 	}
-	if !page.Delete(rid.SlotID) {
-		h.mu.Unlock()
-		return RecordID{}, ErrNotFound
-	}
-	page.Compact()
-	if err := h.writePage(rid.PageID, page); err != nil {
-		h.mu.Unlock()
-		return RecordID{}, err
-	}
-	h.freeSpace[rid.PageID] = page.FreeBytes()
 	h.mu.Unlock()
 
-	return h.Insert(data)
+	newRid, err := h.Insert(data)
+	if err != nil {
+		return RecordID{}, err
+	}
+	if err := h.Delete(rid); err != nil {
+		if rollbackErr := h.Delete(newRid); rollbackErr != nil {
+			return RecordID{}, fmt.Errorf("heap: update reubicado pero falló borrar el original (%v) y el rollback (%v)", err, rollbackErr)
+		}
+		return RecordID{}, err
+	}
+	return newRid, nil
 }
 
 // Scan recorre los registros vivos en orden físico (página, slot).
