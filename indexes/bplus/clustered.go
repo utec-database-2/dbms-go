@@ -88,14 +88,14 @@ func (idx *ClusteredIndex) Insert(key int64, payload []byte) (sequential.RecordI
 
 	rid, err := idx.storage.InsertRecord(key, payload)
 	if err != nil {
-		return sequential.RecordID{}, err
+		return 0, err
 	}
 	if err := idx.tree.Insert(key, rid); err != nil {
 		rollbackErr := idx.storage.DeleteRID(rid)
 		if rollbackErr != nil {
-			return sequential.RecordID{}, fmt.Errorf("bplus: tree insert failed: %v; storage rollback failed: %v", err, rollbackErr)
+			return 0, fmt.Errorf("bplus: tree insert failed: %v; storage rollback failed: %v", err, rollbackErr)
 		}
-		return sequential.RecordID{}, err
+		return 0, err
 	}
 	return rid, nil
 }

@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/dbms-go/v2/dbms/lib/concurrency/sequential"
-	"github.com/dbms-go/v2/dbms/lib/storage"
 )
 
 func newTestSeqFile(t *testing.T, pageCapacity, payloadSize int) *sequential.SeqFile {
@@ -355,10 +354,12 @@ func TestInsertRecordScanRecordsRead(t *testing.T) {
 	if len(records) != 4 {
 		t.Fatalf("ScanRecords: got %d records, want 4", len(records))
 	}
+	seenRID := make(map[sequential.RecordID]bool)
 	for i, r := range records {
-		if r.RID.PageID != 0 || r.RID.SlotID != uint16(i) {
-			t.Fatalf("record %d: want RID (0,%d), got %v", i, i, r.RID)
+		if seenRID[r.RID] {
+			t.Fatalf("record %d: RID %v repetido", i, r.RID)
 		}
+		seenRID[r.RID] = true
 		if string(r.Payload) != want[r.Key] {
 			t.Fatalf("record %d: key=%d payload=%q, want %q", i, r.Key, r.Payload, want[r.Key])
 		}
@@ -387,10 +388,12 @@ func TestInsertRecordOverflowAndScan(t *testing.T) {
 	if len(records) != 6 {
 		t.Fatalf("ScanRecords: got %d records, want 6", len(records))
 	}
+	seenRID := make(map[sequential.RecordID]bool)
 	for i, r := range records {
-		if r.RID.PageID != 0 || r.RID.SlotID != uint16(i) {
-			t.Fatalf("record %d: want RID (0,%d), got %v", i, i, r.RID)
+		if seenRID[r.RID] {
+			t.Fatalf("record %d: RID %v repetido", i, r.RID)
 		}
+		seenRID[r.RID] = true
 		if want := fmt.Sprintf("k%d", int64(i)+1); string(r.Payload) != want {
 			t.Fatalf("record %d: got payload %q, want %q", i, r.Payload, want)
 		}
@@ -431,8 +434,81 @@ func TestDeleteRID(t *testing.T) {
 		}
 	}
 
-	if err := s.DeleteRID(storage.RID{PageID: 999, SlotID: 0}); err != sequential.ErrNotFound {
+	if err := s.DeleteRID(sequential.RecordID(999999)); err != sequential.ErrNotFound {
 		t.Fatalf("DeleteRID out of range: got %v, want ErrNotFound", err)
+	}
+}
+
+// Regresión: el RID de un registro ya insertado no debe invalidarse cuando
+// otro insert posterior en la MISMA página reordena las claves vivas. Antes
+// el RID codificaba (página, posición-entre-claves-vivas), así que insertar
+// una clave menor corría a todos los que venían después y Read/Search
+// terminaban resolviendo al registro equivocado.
+func TestRIDStableAcrossLaterInsertsInSamePage(t *testing.T) {
+	s := newTestSeqFile(t, 4, 16)
+
+	rid10, err := s.InsertRecord(10, payload("diez"))
+	if err != nil {
+		t.Fatalf("InsertRecord(10): %v", err)
+	}
+	if _, err := s.InsertRecord(5, payload("cinco")); err != nil {
+		t.Fatalf("InsertRecord(5): %v", err)
+	}
+	if _, err := s.InsertRecord(1, payload("uno")); err != nil {
+		t.Fatalf("InsertRecord(1): %v", err)
+	}
+
+	got, err := s.Read(rid10)
+	if err != nil {
+		t.Fatalf("Read(rid10): %v", err)
+	}
+	if string(got) != "diez" {
+		t.Fatalf("Read(rid10) = %q, want %q (RID se invalidó por inserts posteriores)", got, "diez")
+	}
+
+	found, ok, err := s.Search(10)
+	if err != nil || !ok {
+		t.Fatalf("Search(10): ok=%v err=%v", ok, err)
+	}
+	if string(found) != "diez" {
+		t.Fatalf("Search(10) = %q, want %q", found, "diez")
+	}
+}
+
+// Regresión equivalente tras una Reorganize: el RID debe seguir resolviendo
+// al mismo registro aunque su ubicación física cambie por completo.
+func TestRIDStableAcrossReorganize(t *testing.T) {
+	s := newTestSeqFile(t, 3, 16)
+	s.SetReorgThreshold(1.1)
+
+	rids := make(map[int64]sequential.RecordID)
+	for i := int64(1); i <= 12; i++ {
+		rid, err := s.InsertRecord(i, payload(fmt.Sprintf("v%d", i)))
+		if err != nil {
+			t.Fatalf("InsertRecord(%d): %v", i, err)
+		}
+		rids[i] = rid
+	}
+	for _, k := range []int64{2, 5, 8} {
+		if _, err := s.Delete(k); err != nil {
+			t.Fatalf("Delete(%d): %v", k, err)
+		}
+	}
+	if err := s.Reorganize(); err != nil {
+		t.Fatalf("Reorganize: %v", err)
+	}
+
+	for i := int64(1); i <= 12; i++ {
+		if i == 2 || i == 5 || i == 8 {
+			continue
+		}
+		got, err := s.Read(rids[i])
+		if err != nil {
+			t.Fatalf("Read(rid de %d) tras Reorganize: %v", i, err)
+		}
+		if want := fmt.Sprintf("v%d", i); string(got) != want {
+			t.Fatalf("Read(rid de %d) tras Reorganize = %q, want %q", i, got, want)
+		}
 	}
 }
 
