@@ -1,21 +1,14 @@
 // Package shared contiene los tipos que cruzan varias capas del motor.
 //
-// IMPORTANTE: RID y Record son un placeholder de trabajo hasta que el
-// dueño del storage (Heap File / Archivo Secuencial) defina la versión
-// real — probablemente algo en dbms/lib/storage. Cuando eso exista,
-// avisar al equipo para migrar todos los imports de dbms/lib/shared a
-// ese paquete; la lógica de los algoritmos no debería cambiar.
+// Record es una fila en memoria. RID vive en dbms/lib/storage; se expone
+// aquí solo para no forzar a cada paquete a importar el storage.
 package shared
 
-// RID identifica físicamente un registro: página + slot dentro de la página.
-type RID struct {
-	PageID int
-	SlotID int
-}
+import "github.com/dbms-go/v2/dbms/lib/storage"
 
 // Record es una fila en memoria. Values respeta el orden de columnas
 // del esquema de la tabla.
 type Record struct {
 	Values []any
-	RID    RID
+	RID    storage.RID
 }

@@ -9,7 +9,7 @@ package common
 import (
 	"errors"
 
-	"github.com/dbms-go/v2/dbms/lib/shared"
+	"github.com/dbms-go/v2/dbms/lib/storage"
 )
 
 // ErrRangeNotSupported se devuelve en RangeSearch cuando el índice no
@@ -18,17 +18,17 @@ var ErrRangeNotSupported = errors.New("index: range search not supported")
 
 // Index es el contrato común para todos los índices.
 type Index interface {
-	Insert(key any, rid shared.RID) error
+	Insert(key any, rid storage.RID) error
 
 	// Search devuelve todos los RID que hacen match exacto con key.
 	// Slice vacío (no error) si no hay coincidencias.
-	Search(key any) ([]shared.RID, error)
+	Search(key any) ([]storage.RID, error)
 
 	// RangeSearch devuelve los RID en [keyMin, keyMax]. Debe devolver
 	// ErrRangeNotSupported si el índice no soporta rangos.
-	RangeSearch(keyMin, keyMax any) ([]shared.RID, error)
+	RangeSearch(keyMin, keyMax any) ([]storage.RID, error)
 
-	Delete(key any, rid shared.RID) (bool, error)
+	Delete(key any, rid storage.RID) (bool, error)
 
 	// SupportsRange: true para B+ Tree, false para Extendible Hashing.
 	SupportsRange() bool

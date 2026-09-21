@@ -1,8 +1,9 @@
-package iterator
+package integration
 
 import (
 	"testing"
 
+	"github.com/dbms-go/v2/dbms/lib/external/iterator"
 	"github.com/dbms-go/v2/dbms/lib/shared"
 )
 
@@ -11,9 +12,9 @@ func TestSliceIteratorAndDrain(t *testing.T) {
 		{Values: []any{1, "ana"}},
 		{Values: []any{2, "beto"}},
 	}
-	it := NewSliceIterator(records)
+	it := iterator.NewSliceIterator(records)
 
-	got, err := Drain(it)
+	got, err := iterator.Drain(it)
 	if err != nil {
 		t.Fatalf("Drain falló: %v", err)
 	}
@@ -26,7 +27,7 @@ func TestSliceIteratorAndDrain(t *testing.T) {
 }
 
 func TestSliceIteratorExhausted(t *testing.T) {
-	it := NewSliceIterator(nil)
+	it := iterator.NewSliceIterator(nil)
 	_, ok, err := it.Next()
 	if err != nil {
 		t.Fatalf("no debería devolver error: %v", err)

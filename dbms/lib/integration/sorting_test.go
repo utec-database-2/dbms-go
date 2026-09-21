@@ -1,22 +1,21 @@
-package sorting
+package integration
 
 import (
 	"os"
 	"testing"
 
 	"github.com/dbms-go/v2/dbms/lib/external/iterator"
+	"github.com/dbms-go/v2/dbms/lib/external/sorting"
 	"github.com/dbms-go/v2/dbms/lib/shared"
 )
 
 func TestKWayMergeSorter_SortsAscending(t *testing.T) {
-	//t.Skip("TODO: implementar KWayMergeSorter.Sort antes de habilitar este test")
-
 	records := []shared.Record{
 		{Values: []any{3}},
 		{Values: []any{1}},
 		{Values: []any{2}},
 	}
-	sorter := New(2, t.TempDir())
+	sorter := sorting.New(2, t.TempDir())
 	keyFn := func(r shared.Record) any { return r.Values[0] }
 
 	out, err := sorter.Sort(iterator.NewSliceIterator(records), keyFn)
@@ -40,7 +39,7 @@ func TestKWayMergeSorter_MultipleRunsWithRemainder(t *testing.T) {
 	for _, v := range []int{9, 3, 7, 1, 8, 2, 6, 4, 5, 0} {
 		records = append(records, shared.Record{Values: []any{v}})
 	}
-	sorter := New(3, t.TempDir()) // fuerza varios runs (10 registros / buffer 3)
+	sorter := sorting.New(3, t.TempDir()) // fuerza varios runs (10 registros / buffer 3)
 	keyFn := func(r shared.Record) any { return r.Values[0] }
 
 	out, err := sorter.Sort(iterator.NewSliceIterator(records), keyFn)
@@ -63,7 +62,7 @@ func TestKWayMergeSorter_MultipleRunsWithRemainder(t *testing.T) {
 }
 
 func TestKWayMergeSorter_EmptyInput(t *testing.T) {
-	sorter := New(3, t.TempDir())
+	sorter := sorting.New(3, t.TempDir())
 	keyFn := func(r shared.Record) any { return r.Values[0] }
 
 	out, err := sorter.Sort(iterator.NewSliceIterator(nil), keyFn)
@@ -83,7 +82,7 @@ func TestKWayMergeSorter_SingleRun_InputSmallerThanBuffer(t *testing.T) {
 	records := []shared.Record{
 		{Values: []any{3}}, {Values: []any{1}}, {Values: []any{2}},
 	}
-	sorter := New(100, t.TempDir()) // buffer mucho más grande que el input: un solo run
+	sorter := sorting.New(100, t.TempDir()) // buffer mucho más grande que el input: un solo run
 	keyFn := func(r shared.Record) any { return r.Values[0] }
 
 	out, err := sorter.Sort(iterator.NewSliceIterator(records), keyFn)
@@ -108,7 +107,7 @@ func TestKWayMergeSorter_TemporaryRunFilesAreCleanedUp(t *testing.T) {
 	for _, v := range []int{5, 3, 1, 4, 2} {
 		records = append(records, shared.Record{Values: []any{v}})
 	}
-	sorter := New(2, dir)
+	sorter := sorting.New(2, dir)
 	keyFn := func(r shared.Record) any { return r.Values[0] }
 
 	if _, err := sorter.Sort(iterator.NewSliceIterator(records), keyFn); err != nil {
