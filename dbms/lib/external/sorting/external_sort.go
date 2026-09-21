@@ -4,17 +4,23 @@ package sorting
 import (
 	"container/heap"
 	"encoding/gob"
-	"os"
-	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sort"
-	
+
 	"github.com/dbms-go/v2/dbms/lib/external/iterator"
 	"github.com/dbms-go/v2/dbms/lib/shared"
 )
 
-var errNotImplemented = errors.New("sorting: not implemented")
+// maxFanIn acota cuántos runs se mergean juntos de una sola pasada (cuántos
+// archivos se abren a la vez). Sin este límite, un dataset grande con un
+// MemoryBufferSize chico genera un run por cada bloque y el merge final
+// intentaría abrir todos los runs simultáneamente, pudiendo agotar los
+// file descriptors del proceso. Cuando hay más runs que maxFanIn, se
+// mergean en rondas: cada ronda combina grupos de hasta maxFanIn runs en
+// uno nuevo, hasta que sobran pocos como para mergear de una.
+const maxFanIn = 64
 
 // Sorter es el contrato de External Sorting.
 type Sorter interface {
@@ -24,9 +30,6 @@ type Sorter interface {
 }
 
 // KWayMergeSorter implementa Sorter con external merge sort (k-way merge).
-//
-// TODO(Sergio):
-
 type KWayMergeSorter struct {
 	MemoryBufferSize int // registros por run inicial en memoria
 	TempDir          string
@@ -39,30 +42,32 @@ func New(memoryBufferSize int, tempDir string) *KWayMergeSorter {
 // Compile-time check: *KWayMergeSorter debe satisfacer Sorter.
 var _ Sorter = (*KWayMergeSorter)(nil)
 
-// Comparison Function for int, string, float64 types
-
+// lessKey compara claves de los tipos que el proyecto usa como columnas.
 func lessKey(a, b any) bool {
-	switch av:=a.(type) {
+	switch av := a.(type) {
 	case int:
 		return av < b.(int)
+	case int64:
+		return av < b.(int64)
 	case string:
 		return av < b.(string)
 	case float64:
 		return av < b.(float64)
-	default: 
+	default:
 		panic(fmt.Sprintf("sorting: key type not supported: %T", a))
 	}
 }
 
 type fileIterator struct {
 	dec *gob.Decoder
-	f *os.File
+	f   *os.File
 }
 
 func (it *fileIterator) Next() (shared.Record, bool, error) {
 	var rec shared.Record
 	if err := it.dec.Decode(&rec); err != nil {
-		if err == io.EOF{
+		if err == io.EOF {
+			it.f.Close()
 			return shared.Record{}, false, nil
 		}
 		return shared.Record{}, false, err
@@ -76,8 +81,8 @@ type heapItem struct {
 }
 
 type recordHeap struct {
-	items  []heapItem
-	keyFn  iterator.KeyFunc
+	items []heapItem
+	keyFn iterator.KeyFunc
 }
 
 func (h *recordHeap) Len() int { return len(h.items) }
@@ -94,21 +99,68 @@ func (h *recordHeap) Pop() any {
 	return item
 }
 
+// removeFiles borra una lista de paths, ignorando los que no existan.
+func removeFiles(paths []string) {
+	for _, p := range paths {
+		os.Remove(p)
+	}
+}
+
 func (s *KWayMergeSorter) Sort(input iterator.RecordIterator, keyFn iterator.KeyFunc) (iterator.RecordIterator, error) {
+	// 1. Fase de runs: leer el input de a MemoryBufferSize registros,
+	// ordenar cada bloque en memoria y escribirlo como un run en disco.
+	runPaths, err := s.writeInitialRuns(input, keyFn)
+	if err != nil {
+		removeFiles(runPaths)
+		return nil, err
+	}
 
-/*  1. Fase de runs: leer el input de a MemoryBufferSize registros,
-//     ordenar cada bloque en memoria (sort.Slice con keyFn), y escribir
-//     cada bloque ordenado como un "run" en un archivo temporal
-//     (usar os.CreateTemp(TempDir, "run-*")).*/
-	
+	// 2. Fase de merge, en rondas de hasta maxFanIn runs por vez, hasta
+	// quedar con uno solo: ese es el resultado final.
+	for len(runPaths) > maxFanIn {
+		nextRound := make([]string, 0, (len(runPaths)+maxFanIn-1)/maxFanIn)
+		for i := 0; i < len(runPaths); i += maxFanIn {
+			end := i + maxFanIn
+			if end > len(runPaths) {
+				end = len(runPaths)
+			}
+			merged, err := s.mergeRuns(runPaths[i:end], keyFn, "run-*")
+			if err != nil {
+				removeFiles(runPaths[i:])
+				removeFiles(nextRound)
+				return nil, err
+			}
+			nextRound = append(nextRound, merged)
+		}
+		runPaths = nextRound
+	}
+
+	finalPath, err := s.mergeRuns(runPaths, keyFn, "sorted-*")
+	if err != nil {
+		removeFiles(runPaths)
+		return nil, err
+	}
+
+	// 3. Devolver un iterator.RecordIterator que lee el resultado final de
+	// a un registro por vez, sin cargarlo todo en memoria.
+	outFile, err := os.Open(finalPath)
+	if err != nil {
+		os.Remove(finalPath)
+		return nil, err
+	}
+	return &fileIterator{dec: gob.NewDecoder(outFile), f: outFile}, nil
+}
+
+// writeInitialRuns parte input en bloques de MemoryBufferSize registros,
+// ordena cada bloque en memoria y lo escribe como un run en un temp file.
+func (s *KWayMergeSorter) writeInitialRuns(input iterator.RecordIterator, keyFn iterator.KeyFunc) ([]string, error) {
 	var runPaths []string
-
-	for{
+	for {
 		buffer := make([]shared.Record, 0, s.MemoryBufferSize)
 		for len(buffer) < s.MemoryBufferSize {
 			rec, ok, err := input.Next()
 			if err != nil {
-				return nil, err
+				return runPaths, err
 			}
 			if !ok {
 				break
@@ -123,13 +175,14 @@ func (s *KWayMergeSorter) Sort(input iterator.RecordIterator, keyFn iterator.Key
 		})
 		f, err := os.CreateTemp(s.TempDir, "run-*")
 		if err != nil {
-			return nil, err
+			return runPaths, err
 		}
 		enc := gob.NewEncoder(f)
 		for _, r := range buffer {
 			if err := enc.Encode(r); err != nil {
 				f.Close()
-				return nil, err
+				runPaths = append(runPaths, f.Name())
+				return runPaths, err
 			}
 		}
 		f.Close()
@@ -138,70 +191,71 @@ func (s *KWayMergeSorter) Sort(input iterator.RecordIterator, keyFn iterator.Key
 			break
 		}
 	}
+	return runPaths, nil
+}
 
-/*  2. Fase de merge: abrir todos los runs a la vez y hacer un k-way
-//     merge con un min-heap (container/heap) comparando por keyFn,
-//     escribiendo el resultado final en orden. Si hay demasiados runs
-//     para abrir todos a la vez, mergear en rondas.
-*/	
+// mergeRuns hace un k-way merge (min-heap) de paths en un nuevo temp file,
+// que retorna. Cierra y borra los archivos de entrada antes de volver,
+// tanto en el camino feliz como en caso de error.
+func (s *KWayMergeSorter) mergeRuns(paths []string, keyFn iterator.KeyFunc, pattern string) (outPath string, err error) {
+	decoders := make([]*gob.Decoder, len(paths))
+	files := make([]*os.File, len(paths))
+	defer func() {
+		for _, f := range files {
+			if f != nil {
+				f.Close()
+			}
+		}
+		removeFiles(paths)
+	}()
 
 	var h recordHeap
 	h.keyFn = keyFn
-
-	decoders := make([]*gob.Decoder, len(runPaths))
-	files := make([]*os.File, len(runPaths))
-
-	for i, path := range runPaths {
+	for i, path := range paths {
 		f, err := os.Open(path)
 		if err != nil {
-			return nil, err
+			return "", err
 		}
 		files[i] = f
 		decoders[i] = gob.NewDecoder(f)
 		var rec shared.Record
 		if err := decoders[i].Decode(&rec); err != nil {
-			return nil, err
+			if err == io.EOF {
+				continue // run vacío: no aporta al heap inicial
+			}
+			return "", err
 		}
 		h.items = append(h.items, heapItem{rec: rec, runIndex: i})
 	}
 	heap.Init(&h)
-	
-	// Crear archivo temporal para el resultado final
-	outFile, err := os.CreateTemp(s.TempDir, "sorted-*")
+
+	outFile, err := os.CreateTemp(s.TempDir, pattern)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	outEnc := gob.NewEncoder(outFile)
 
 	for h.Len() > 0 {
 		item := heap.Pop(&h).(heapItem)
 		if err := outEnc.Encode(item.rec); err != nil {
-			return nil, err
+			outFile.Close()
+			os.Remove(outFile.Name())
+			return "", err
 		}
 		var next shared.Record
-		err := decoders[item.runIndex].Decode(&next)
-		if err == nil {
+		derr := decoders[item.runIndex].Decode(&next)
+		if derr == nil {
 			heap.Push(&h, heapItem{rec: next, runIndex: item.runIndex})
-		} else if err != io.EOF {
-			return nil, err
+		} else if derr != io.EOF {
+			outFile.Close()
+			os.Remove(outFile.Name())
+			return "", derr
 		}
 	}
 
-	for i, f := range files {
-		f.Close()
-		os.Remove(runPaths[i])
+	if err := outFile.Close(); err != nil {
+		os.Remove(outFile.Name())
+		return "", err
 	}
-	outFile.Close()
-
-/*  3. Devolver un iterator.RecordIterator que lea el resultado final
-//     de a un registro por vez — no cargarlo todo en un slice.
-*/	
-	outFile, err = os.Open(outFile.Name())
-	if err != nil {
-		return nil, err
-	}
-	return &fileIterator{
-		dec: gob.NewDecoder(outFile),
-		f: outFile,
-	}, nil
+	return outFile.Name(), nil
 }

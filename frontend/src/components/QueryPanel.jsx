@@ -1,90 +1,54 @@
-import { useState } from "react";
-import { Play, Trash2, Sparkles, Copy, Database } from "lucide-react";
+import { Play, Trash2, Copy, Database } from "lucide-react";
 
-function QueryPanel() {
-  const [query, setQuery] = useState(
-    `SELECT *
-FROM alumno
-WHERE ciclo = 5;`,
-  );
-
-  // Consultas de ejemplo
+function QueryPanel({ query, onQueryChange, onExecute, loading }) {
+  // Ejemplos rápidos para no tener que escribir todo a mano.
   const examples = [
     {
-      name: "Seleccionar alumnos",
-      sql: `SELECT *
-FROM alumno
-WHERE ciclo = 5;`,
+      name: "Crear tabla",
+      sql: "CREATE TABLE alumno (codigo INT, nombre STRING, ciclo INT);",
     },
     {
-      name: "Ordenar alumnos",
-      sql: `SELECT *
-FROM alumno
-ORDER BY nombre;`,
+      name: "Insertar alumno",
+      sql: 'INSERT INTO alumno VALUES (1, "Ana", 5);',
     },
     {
-      name: "Agrupar por carrera",
-      sql: `SELECT carrera, COUNT(*)
-FROM alumno
-GROUP BY carrera;`,
+      name: "Ver todos",
+      sql: "SELECT * FROM alumno;",
     },
     {
       name: "Buscar por código",
-      sql: `SELECT *
-FROM alumno
-WHERE codigo = 1001;`,
+      sql: "SELECT * FROM alumno WHERE codigo = 1;",
+    },
+    {
+      name: "Ordenar por ciclo",
+      sql: "SELECT * FROM alumno ORDER BY ciclo DESC;",
     },
   ];
 
-  // Ejecutar consulta
-  const handleExecute = () => {
-    console.log("Consulta ejecutada:");
-    console.log(query);
-  };
+  const handleClear = () => onQueryChange("");
 
-  // Limpiar editor
-  const handleClear = () => {
-    setQuery("");
-  };
-
-  // Formato muy básico del SQL
-  const handleFormat = () => {
-    const formatted = query
-      .replace(/\s+/g, " ")
-      .replace(/\bFROM\b/gi, "\nFROM")
-      .replace(/\bWHERE\b/gi, "\nWHERE")
-      .replace(/\bORDER BY\b/gi, "\nORDER BY")
-      .replace(/\bGROUP BY\b/gi, "\nGROUP BY")
-      .replace(/\bJOIN\b/gi, "\nJOIN")
-      .replace(/\bVALUES\b/gi, "\nVALUES");
-
-    setQuery(formatted.trim());
-  };
-
-  // Copiar consulta
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(query);
-
-      console.log("Consulta copiada");
     } catch (error) {
       console.error("No se pudo copiar la consulta", error);
     }
   };
 
+  const handleKeyDown = (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+      event.preventDefault();
+      onExecute();
+    }
+  };
+
   return (
     <section className="query-panel">
-      {/* ================================
-          CABECERA DEL PANEL
-      ================================= */}
-
       <div className="query-header">
         <div className="query-title">
           <Database size={19} />
-
           <div>
             <h2>Panel de Consultas</h2>
-
             <p>Editor SQL</p>
           </div>
         </div>
@@ -92,20 +56,15 @@ WHERE codigo = 1001;`,
         <div className="query-info">SQL básico</div>
       </div>
 
-      {/* ================================
-          BARRA DE HERRAMIENTAS
-      ================================= */}
-
       <div className="query-toolbar">
-        <button className="query-button execute" onClick={handleExecute}>
+        <button
+          className="query-button execute"
+          onClick={onExecute}
+          disabled={loading}
+        >
           <Play size={15} />
-          Ejecutar
+          {loading ? "Ejecutando..." : "Ejecutar"}
         </button>
-
-        {/* <button className="query-button" onClick={handleFormat}>
-          <Sparkles size={15} />
-          Formato
-        </button> */}
 
         <button className="query-button" onClick={handleCopy}>
           <Copy size={15} />
@@ -118,10 +77,6 @@ WHERE codigo = 1001;`,
         </button>
       </div>
 
-      {/* ================================
-          EJEMPLOS
-      ================================= */}
-
       <div className="query-examples">
         <span className="examples-label">Ejemplos:</span>
 
@@ -129,16 +84,12 @@ WHERE codigo = 1001;`,
           <button
             key={example.name}
             className="example-button"
-            onClick={() => setQuery(example.sql)}
+            onClick={() => onQueryChange(example.sql)}
           >
             {example.name}
           </button>
         ))}
       </div>
-
-      {/* ================================
-          EDITOR
-      ================================= */}
 
       <div className="sql-editor-wrapper">
         <div className="line-numbers">
@@ -152,21 +103,16 @@ WHERE codigo = 1001;`,
         <textarea
           className="sql-editor"
           value={query}
-          onChange={(event) => setQuery(event.target.value)}
+          onChange={(event) => onQueryChange(event.target.value)}
+          onKeyDown={handleKeyDown}
           spellCheck="false"
           placeholder="Escribe aquí tu consulta SQL..."
         />
       </div>
 
-      {/* ================================
-          PIE DEL EDITOR
-      ================================= */}
-
       <div className="query-footer">
         <span>Líneas: {query === "" ? 0 : query.split("\n").length}</span>
-
         <span>Caracteres: {query.length}</span>
-
         <span className="query-hint">Ctrl + Enter para ejecutar</span>
       </div>
     </section>

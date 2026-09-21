@@ -2,63 +2,102 @@
 // ordenados por clave int64 en páginas principales de tamaño fijo, con
 // una cadena de overflow por página, eliminación lazy y reorganización
 // periódica al superar un umbral de espacio desperdiciado.
+//
+// RecordID es un identificador LÓGICO y ESTABLE: se asigna una vez al
+// insertar y nunca cambia, aunque el registro se reubique físicamente por
+// culpa de otro insert/delete en la misma página o de una reorganización.
+// Esto es lo que permite que un índice B+ agrupado guarde RIDs en memoria
+// entre operaciones sin que se invaliden por un cambio en otra fila.
 package sequential
 
 import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"sort"
 	"sync"
-
-	"github.com/dbms-go/v2/dbms/lib/storage"
 )
 
 var (
-	ErrKeyExists = errors.New("sequential: key already exists")
-	ErrNotFound  = errors.New("sequential: key not found")
+	ErrKeyExists       = errors.New("sequential: key already exists")
+	ErrNotFound        = errors.New("sequential: record not found")
+	ErrPayloadTooLarge = errors.New("sequential: payload too large")
+	ErrCorruptFile     = errors.New("sequential: corrupt file")
 )
 
 const (
 	magic = 0x53455131 // "SEQ1"
 
-	metaSize = 64
+	metaSize = 96
 
-	pageHeaderSize = 10 // Count uint16 (2) + OverflowHead int64 (8)
-	mainSlotHeader = 11 // tombstone(1) + key(8) + longitud payload(2)
-	ovfSlotHeader  = 19 // tombstone(1) + key(8) + next(8) + longitud payload(2)
+	pageHeaderSize       = 10 // Count uint16 (2) + OverflowHead int64 (8)
+	mainSlotHeader       = 19 // tombstone(1) + key(8) + rid(8) + longitud payload(2)
+	ovfSlotHeader        = 27 // tombstone(1) + key(8) + rid(8) + next(8) + longitud payload(2)
 	ovfNone        int64 = -1
 
 	// ReorgThreshold: fracción por defecto de registros eliminados que
 	// dispara una reorganización automática.
 	ReorgThreshold = 0.30
+
+	// OverflowReorgThreshold: fracción por defecto de registros vivos que
+	// pueden vivir en overflow antes de forzar una reorganización, para no
+	// degenerar en una cadena enorme dentro de una sola página.
+	OverflowReorgThreshold = 0.25
 )
 
-// KV: par clave/payload vivo, retornado por los scans.
+// RecordID: identificador lógico estable de un registro. No codifica
+// página ni posición física — esos datos pueden cambiar libremente.
+type RecordID uint64
+
+func (r RecordID) String() string { return fmt.Sprintf("RID(%d)", uint64(r)) }
+
+// KV: par clave/payload vivo, retornado por los scans simples.
 type KV struct {
 	Key     int64
 	Payload []byte
 }
 
-// RecordID: identidad canónica de registro. Se fuerza el RID unificado del
-// storage para que ambos motores (heap y secuencial) compartan tipo.
-type RecordID = storage.RID
-
-// RecordInfo: clave, RID y payload de un registro vivo, tal y como se entrega
-// en un scan con localización física.
+// RecordInfo: clave, RID y payload de un registro vivo, tal y como se
+// entrega en un scan con RID incluido.
 type RecordInfo struct {
 	Key     int64
-	RID     storage.RID
+	RID     RecordID
 	Payload []byte
 }
 
 // Stats: estado actual del archivo, usado en la comparación experimental
 // contra el Heap File.
 type Stats struct {
-	NumPages    int
-	LiveCount   int64
-	DeadCount   int64
-	WastedRatio float64
+	NumPages      int
+	LiveCount     int64
+	DeadCount     int64
+	OverflowLive  int64
+	OverflowSlots int64
+	WastedRatio   float64
+	OverflowRatio float64
+}
+
+type slotRecord struct {
+	deleted bool
+	key     int64
+	rid     RecordID
+	payload []byte
+}
+
+type mainPage struct {
+	count   uint16
+	ovfHead int64
+	slots   [][]byte
+}
+
+// locator ubica físicamente un registro vivo: en un slot principal
+// (mainSlot >= 0) o en un nodo de la cadena de overflow (ovfIdx != ovfNone).
+type locator struct {
+	pageID   int32
+	mainSlot int
+	ovfIdx   int64
 }
 
 // SeqFile: archivo secuencial paginado ordenado por clave int64.
@@ -74,17 +113,18 @@ type SeqFile struct {
 	ovfSlotSize  int
 	pageSize     int
 
-	numPages    int32
-	liveCount   int64
-	deadCount   int64
-	ovfCount    int64
-	ovfFreeHead int64
+	numPages  int32
+	liveCount int64
+	deadCount int64
+	ovfCount  int64 // slots físicos asignados en overflow (vivos o tombstone)
+	liveOvf   int64 // slots vivos actualmente en overflow
+	nextRID   RecordID
 
-	// pageMinKey[i]: clave del slot 0 de la página i (válida aunque ese
-	// slot ya esté eliminado), usada para rutear por binary search sin ir a disco.
 	pageMinKey []int64
+	ridIndex   map[RecordID]locator
 
-	reorgThreshold float64
+	reorgThreshold         float64
+	overflowReorgThreshold float64
 }
 
 // Create inicializa un archivo secuencial nuevo (main + overflow), con
@@ -108,16 +148,16 @@ func Create(mainPath, ovfPath string, pageCapacity, payloadSize int) (*SeqFile, 
 	}
 
 	s := &SeqFile{
-		mainFile:       mf,
-		ovfFile:        of,
-		pageCapacity:   pageCapacity,
-		payloadSize:    payloadSize,
-		mainSlotSize:   mainSlotHeader + payloadSize,
-		ovfSlotSize:    ovfSlotHeader + payloadSize,
-		pageSize:       0,
-		numPages:       0,
-		ovfFreeHead:    ovfNone,
-		reorgThreshold: ReorgThreshold,
+		mainFile:               mf,
+		ovfFile:                of,
+		pageCapacity:           pageCapacity,
+		payloadSize:            payloadSize,
+		mainSlotSize:           mainSlotHeader + payloadSize,
+		ovfSlotSize:            ovfSlotHeader + payloadSize,
+		nextRID:                1,
+		ridIndex:               make(map[RecordID]locator),
+		reorgThreshold:         ReorgThreshold,
+		overflowReorgThreshold: OverflowReorgThreshold,
 	}
 	s.pageSize = pageHeaderSize + pageCapacity*s.mainSlotSize
 
@@ -130,7 +170,8 @@ func Create(mainPath, ovfPath string, pageCapacity, payloadSize int) (*SeqFile, 
 }
 
 // Open reabre un archivo secuencial existente, leyendo su layout desde
-// el header de metadata escrito por Create.
+// el header de metadata escrito por Create y reconstruyendo los índices
+// en memoria (pageMinKey, ridIndex) a partir del contenido en disco.
 func Open(mainPath, ovfPath string) (*SeqFile, error) {
 	mf, err := os.OpenFile(mainPath, os.O_RDWR, 0o644)
 	if err != nil {
@@ -142,7 +183,13 @@ func Open(mainPath, ovfPath string) (*SeqFile, error) {
 		return nil, err
 	}
 
-	s := &SeqFile{mainFile: mf, ovfFile: of, reorgThreshold: ReorgThreshold}
+	s := &SeqFile{
+		mainFile:               mf,
+		ovfFile:                of,
+		ridIndex:               make(map[RecordID]locator),
+		reorgThreshold:         ReorgThreshold,
+		overflowReorgThreshold: OverflowReorgThreshold,
+	}
 	if err := s.readMeta(); err != nil {
 		mf.Close()
 		of.Close()
@@ -152,7 +199,7 @@ func Open(mainPath, ovfPath string) (*SeqFile, error) {
 	s.ovfSlotSize = ovfSlotHeader + s.payloadSize
 	s.pageSize = pageHeaderSize + s.pageCapacity*s.mainSlotSize
 
-	if err := s.rebuildPageMinKeys(); err != nil {
+	if err := s.rebuildIndexesLocked(); err != nil {
 		mf.Close()
 		of.Close()
 		return nil, err
@@ -160,6 +207,7 @@ func Open(mainPath, ovfPath string) (*SeqFile, error) {
 	return s, nil
 }
 
+// Close flushes metadata y cierra ambos archivos.
 func (s *SeqFile) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -180,6 +228,14 @@ func (s *SeqFile) SetReorgThreshold(ratio float64) {
 	s.reorgThreshold = ratio
 }
 
+// SetOverflowReorgThreshold cambia el umbral (0..1) de registros vivos en
+// overflow que dispara la reorganización automática tras un insert.
+func (s *SeqFile) SetOverflowReorgThreshold(ratio float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.overflowReorgThreshold = ratio
+}
+
 func (s *SeqFile) writeMeta() error {
 	buf := make([]byte, metaSize)
 	binary.LittleEndian.PutUint32(buf[0:4], magic)
@@ -189,7 +245,8 @@ func (s *SeqFile) writeMeta() error {
 	binary.LittleEndian.PutUint64(buf[16:24], uint64(s.liveCount))
 	binary.LittleEndian.PutUint64(buf[24:32], uint64(s.deadCount))
 	binary.LittleEndian.PutUint64(buf[32:40], uint64(s.ovfCount))
-	binary.LittleEndian.PutUint64(buf[40:48], uint64(s.ovfFreeHead))
+	binary.LittleEndian.PutUint64(buf[40:48], uint64(s.liveOvf))
+	binary.LittleEndian.PutUint64(buf[48:56], uint64(s.nextRID))
 	_, err := s.mainFile.WriteAt(buf, 0)
 	return err
 }
@@ -200,7 +257,7 @@ func (s *SeqFile) readMeta() error {
 		return err
 	}
 	if binary.LittleEndian.Uint32(buf[0:4]) != magic {
-		return fmt.Errorf("sequential: bad magic in main file header")
+		return fmt.Errorf("%w: magic inválido en el header", ErrCorruptFile)
 	}
 	s.pageCapacity = int(binary.LittleEndian.Uint32(buf[4:8]))
 	s.payloadSize = int(binary.LittleEndian.Uint32(buf[8:12]))
@@ -208,25 +265,20 @@ func (s *SeqFile) readMeta() error {
 	s.liveCount = int64(binary.LittleEndian.Uint64(buf[16:24]))
 	s.deadCount = int64(binary.LittleEndian.Uint64(buf[24:32]))
 	s.ovfCount = int64(binary.LittleEndian.Uint64(buf[32:40]))
-	s.ovfFreeHead = int64(binary.LittleEndian.Uint64(buf[40:48]))
+	s.liveOvf = int64(binary.LittleEndian.Uint64(buf[40:48]))
+	s.nextRID = RecordID(binary.LittleEndian.Uint64(buf[48:56]))
 	return nil
 }
 
 // ---- I/O de páginas principales ----
 
-type mainPage struct {
-	count   uint16
-	ovfHead int64
-	slots   [][]byte // mainSlotSize bytes c/u, len == count
-}
-
 func (s *SeqFile) pageOffset(pageID int32) int64 {
-	return metaSize + int64(pageID)*int64(s.pageSize)
+	return int64(metaSize) + int64(pageID)*int64(s.pageSize)
 }
 
 func (s *SeqFile) readPage(pageID int32) (*mainPage, error) {
 	buf := make([]byte, s.pageSize)
-	if _, err := s.mainFile.ReadAt(buf, s.pageOffset(pageID)); err != nil {
+	if _, err := s.mainFile.ReadAt(buf, s.pageOffset(pageID)); err != nil && err != io.EOF {
 		return nil, err
 	}
 	count := binary.LittleEndian.Uint16(buf[0:2])
@@ -253,106 +305,134 @@ func (s *SeqFile) writePage(pageID int32, p *mainPage) error {
 	return err
 }
 
-func mainSlotEncode(buf []byte, deleted bool, key int64, payload []byte) {
+func mainSlotEncode(buf []byte, deleted bool, key int64, rid RecordID, payload []byte) {
 	if deleted {
 		buf[0] = 1
 	} else {
 		buf[0] = 0
 	}
 	binary.LittleEndian.PutUint64(buf[1:9], uint64(key))
-	binary.LittleEndian.PutUint16(buf[9:11], uint16(len(payload)))
-	copy(buf[11:], payload)
+	binary.LittleEndian.PutUint64(buf[9:17], uint64(rid))
+	binary.LittleEndian.PutUint16(buf[17:19], uint16(len(payload)))
+	copy(buf[19:], payload)
 }
 
-func mainSlotDecode(buf []byte) (deleted bool, key int64, payload []byte) {
-	deleted = buf[0] == 1
-	key = int64(binary.LittleEndian.Uint64(buf[1:9]))
-	length := binary.LittleEndian.Uint16(buf[9:11])
-	payload = make([]byte, length)
-	copy(payload, buf[11:11+int(length)])
-	return
+func mainSlotDecode(buf []byte) slotRecord {
+	length := binary.LittleEndian.Uint16(buf[17:19])
+	payload := make([]byte, length)
+	copy(payload, buf[19:19+int(length)])
+	return slotRecord{
+		deleted: buf[0] == 1,
+		key:     int64(binary.LittleEndian.Uint64(buf[1:9])),
+		rid:     RecordID(binary.LittleEndian.Uint64(buf[9:17])),
+		payload: payload,
+	}
 }
 
 // ---- I/O de la cadena de overflow ----
 
-func (s *SeqFile) ovfOffset(idx int64) int64 {
-	return idx * int64(s.ovfSlotSize)
-}
+func (s *SeqFile) ovfOffset(idx int64) int64 { return idx * int64(s.ovfSlotSize) }
 
-func (s *SeqFile) readOvf(idx int64) (deleted bool, key int64, next int64, payload []byte, err error) {
+func (s *SeqFile) readOvf(idx int64) (slotRecord, int64, error) {
 	buf := make([]byte, s.ovfSlotSize)
-	if _, err = s.ovfFile.ReadAt(buf, s.ovfOffset(idx)); err != nil {
-		return
+	if _, err := s.ovfFile.ReadAt(buf, s.ovfOffset(idx)); err != nil && err != io.EOF {
+		return slotRecord{}, ovfNone, err
 	}
-	deleted = buf[0] == 1
-	key = int64(binary.LittleEndian.Uint64(buf[1:9]))
-	next = int64(binary.LittleEndian.Uint64(buf[9:17]))
-	length := binary.LittleEndian.Uint16(buf[17:19])
-	payload = make([]byte, length)
-	copy(payload, buf[19:19+int(length)])
-	return
+	length := binary.LittleEndian.Uint16(buf[25:27])
+	payload := make([]byte, length)
+	copy(payload, buf[27:27+int(length)])
+	next := int64(binary.LittleEndian.Uint64(buf[17:25]))
+	rec := slotRecord{
+		deleted: buf[0] == 1,
+		key:     int64(binary.LittleEndian.Uint64(buf[1:9])),
+		rid:     RecordID(binary.LittleEndian.Uint64(buf[9:17])),
+		payload: payload,
+	}
+	return rec, next, nil
 }
 
-func (s *SeqFile) writeOvf(idx int64, deleted bool, key int64, next int64, payload []byte) error {
+func (s *SeqFile) writeOvf(idx int64, rec slotRecord, next int64) error {
 	buf := make([]byte, s.ovfSlotSize)
-	if deleted {
+	if rec.deleted {
 		buf[0] = 1
 	}
-	binary.LittleEndian.PutUint64(buf[1:9], uint64(key))
-	binary.LittleEndian.PutUint64(buf[9:17], uint64(next))
-	binary.LittleEndian.PutUint16(buf[17:19], uint16(len(payload)))
-	copy(buf[19:], payload)
+	binary.LittleEndian.PutUint64(buf[1:9], uint64(rec.key))
+	binary.LittleEndian.PutUint64(buf[9:17], uint64(rec.rid))
+	binary.LittleEndian.PutUint64(buf[17:25], uint64(next))
+	binary.LittleEndian.PutUint16(buf[25:27], uint16(len(rec.payload)))
+	copy(buf[27:], rec.payload)
 	_, err := s.ovfFile.WriteAt(buf, s.ovfOffset(idx))
 	return err
 }
 
-// allocOvf retorna un índice para un nuevo nodo de overflow, reutilizando
-// la free list si hay slots eliminados disponibles.
-func (s *SeqFile) allocOvf() (int64, error) {
-	if s.ovfFreeHead != ovfNone {
-		idx := s.ovfFreeHead
-		_, _, next, _, err := s.readOvf(idx)
-		if err != nil {
-			return 0, err
-		}
-		s.ovfFreeHead = next
-		return idx, nil
-	}
+func (s *SeqFile) allocOvf() int64 {
 	idx := s.ovfCount
 	s.ovfCount++
-	return idx, nil
-}
-
-func (s *SeqFile) freeOvf(idx int64) error {
-	return s.writeOvf(idx, true, 0, s.ovfFreeHead, make([]byte, s.payloadSize))
+	return idx
 }
 
 func validatePayloadSize(payload []byte, size int) error {
 	if len(payload) > size {
-		return fmt.Errorf("sequential: payload of %d bytes exceeds configured size %d", len(payload), size)
+		return fmt.Errorf("%w: %d bytes, máximo %d", ErrPayloadTooLarge, len(payload), size)
 	}
 	return nil
 }
 
-// rebuildPageMinKeys reconstruye el cache de ruteo desde disco.
-func (s *SeqFile) rebuildPageMinKeys() error {
+func lessPair(aKey int64, aRID RecordID, bKey int64, bRID RecordID) bool {
+	return aKey < bKey || (aKey == bKey && aRID < bRID)
+}
+
+// rebuildIndexesLocked reconstruye pageMinKey y ridIndex desde disco,
+// recuperando también nextRID a partir del máximo RID visto.
+func (s *SeqFile) rebuildIndexesLocked() error {
 	s.pageMinKey = make([]int64, s.numPages)
-	for i := int32(0); i < s.numPages; i++ {
-		page, err := s.readPage(i)
+	s.ridIndex = make(map[RecordID]locator)
+	var maxRID RecordID
+
+	for pid := int32(0); pid < s.numPages; pid++ {
+		page, err := s.readPage(pid)
 		if err != nil {
 			return err
 		}
-		if page.count == 0 {
-			s.pageMinKey[i] = 0
-			continue
+		minKey := int64(0)
+		if page.count > 0 {
+			minKey = mainSlotDecode(page.slots[0]).key
 		}
-		_, key, _ := mainSlotDecode(page.slots[0])
-		s.pageMinKey[i] = key
+		s.pageMinKey[pid] = minKey
+
+		for i, raw := range page.slots {
+			rec := mainSlotDecode(raw)
+			if rec.rid > maxRID {
+				maxRID = rec.rid
+			}
+			if !rec.deleted {
+				s.ridIndex[rec.rid] = locator{pageID: pid, mainSlot: i, ovfIdx: ovfNone}
+			}
+		}
+		cur := page.ovfHead
+		for cur != ovfNone {
+			rec, next, err := s.readOvf(cur)
+			if err != nil {
+				return err
+			}
+			if rec.rid > maxRID {
+				maxRID = rec.rid
+			}
+			if !rec.deleted {
+				s.ridIndex[rec.rid] = locator{pageID: pid, mainSlot: -1, ovfIdx: cur}
+			}
+			cur = next
+		}
+	}
+	if s.nextRID <= maxRID {
+		s.nextRID = maxRID + 1
+	}
+	if s.nextRID == 0 {
+		s.nextRID = 1
 	}
 	return nil
 }
 
-// routePage retorna el índice de página al que debe rutearse key.
 func (s *SeqFile) routePage(key int64) int32 {
 	if s.numPages == 0 {
 		return -1
@@ -371,90 +451,72 @@ func (s *SeqFile) routePage(key int64) int32 {
 	return int32(best)
 }
 
-// Insert agrega un par clave/payload, manteniendo el archivo ordenado por clave.
+// Insert agrega un par clave/payload único, manteniendo el archivo
+// ordenado por clave. Rechaza claves duplicadas (usar InsertRecord para
+// permitirlas, por ejemplo en índices sobre columnas no únicas).
 func (s *SeqFile) Insert(key int64, payload []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, _, err := s.insertLocked(key, payload)
+
+	if err := validatePayloadSize(payload, s.payloadSize); err != nil {
+		return err
+	}
+	if s.numPages > 0 {
+		pid := s.routePage(key)
+		if _, found, err := s.searchInPageLocked(pid, key); err != nil {
+			return err
+		} else if found {
+			return ErrKeyExists
+		}
+	}
+	_, err := s.insertRecordLocked(key, payload)
 	return err
 }
 
-// InsertRecord agrega un par clave/payload y devuelve el RID lógico asignado.
-//
-// El RID es (página, ordinal): la página principal y la posición del registro
-// dentro del orden de claves vivo de esa página (main + overflow fusionados).
-// Es una vista válida del estado en el momento de retornarlo: cualquier mutación
-// posterior dentro de la misma página (insert o delete que desplace el orden)
-// invalida RIDs previos. Un índice agrupado debe re-reconstruirse tras esas
-// mutaciones (Rebuild/ScanRecords) o usar el RID inmediatamente.
-func (s *SeqFile) InsertRecord(key int64, payload []byte) (storage.RID, error) {
+// InsertRecord agrega un par clave/payload (permite claves duplicadas) y
+// retorna el RID lógico y estable asignado a este registro.
+func (s *SeqFile) InsertRecord(key int64, payload []byte) (RecordID, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	pid, ordinal, err := s.insertLocked(key, payload)
-	if err != nil {
-		return storage.RID{}, err
+
+	if err := validatePayloadSize(payload, s.payloadSize); err != nil {
+		return 0, err
 	}
-	return storage.RID{PageID: uint32(pid), SlotID: uint16(ordinal)}, nil
+	return s.insertRecordLocked(key, payload)
 }
 
-// insertLocked asume s.mu tomado; devuelve (página, ordinal) al insertar.
-func (s *SeqFile) insertLocked(key int64, payload []byte) (int32, int, error) {
-	if err := validatePayloadSize(payload, s.payloadSize); err != nil {
-		return 0, 0, err
-	}
+func (s *SeqFile) insertRecordLocked(key int64, payload []byte) (RecordID, error) {
+	rid := s.nextRID
 
 	if s.numPages == 0 {
-		page := &mainPage{count: 1, ovfHead: ovfNone}
 		slot := make([]byte, s.mainSlotSize)
-		mainSlotEncode(slot, false, key, payload)
-		page.slots = append(page.slots, slot)
+		mainSlotEncode(slot, false, key, rid, payload)
+		page := &mainPage{count: 1, ovfHead: ovfNone, slots: [][]byte{slot}}
 		if err := s.writePage(0, page); err != nil {
-			return 0, 0, err
+			return 0, err
 		}
 		s.numPages = 1
 		s.pageMinKey = []int64{key}
+		s.ridIndex[rid] = locator{pageID: 0, mainSlot: 0, ovfIdx: ovfNone}
 		s.liveCount++
-		if err := s.writeMeta(); err != nil {
-			return 0, 0, err
-		}
-		return 0, 0, nil
+		s.nextRID++
+		return rid, s.writeMeta()
 	}
 
 	pid := s.routePage(key)
 	page, err := s.readPage(pid)
 	if err != nil {
-		return 0, 0, err
+		return 0, err
 	}
 
-	// rechaza duplicados: revisa slots principales y luego la cadena de overflow
-	for _, slot := range page.slots {
-		deleted, k, _ := mainSlotDecode(slot)
-		if !deleted && k == key {
-			return 0, 0, ErrKeyExists
-		}
-	}
-	cur := page.ovfHead
-	for cur != ovfNone {
-		deleted, k, next, _, err := s.readOvf(cur)
-		if err != nil {
-			return 0, 0, err
-		}
-		if !deleted && k == key {
-			return 0, 0, ErrKeyExists
-		}
-		cur = next
-	}
-
-	// si hay espacio, inserta directo en la página principal, en la
-	// posición que mantiene los slots ordenados por clave
 	if int(page.count) < s.pageCapacity {
 		slot := make([]byte, s.mainSlotSize)
-		mainSlotEncode(slot, false, key, payload)
+		mainSlotEncode(slot, false, key, rid, payload)
 
 		insertAt := len(page.slots)
 		for i, sl := range page.slots {
-			_, k, _ := mainSlotDecode(sl)
-			if key < k {
+			existing := mainSlotDecode(sl)
+			if lessPair(key, rid, existing.key, existing.rid) {
 				insertAt = i
 				break
 			}
@@ -467,265 +529,173 @@ func (s *SeqFile) insertLocked(key int64, payload []byte) (int32, int, error) {
 		page.count++
 
 		if err := s.writePage(pid, page); err != nil {
-			return 0, 0, err
+			return 0, err
 		}
-		// solo la página 0 puede recibir una clave menor a su mínimo actual
-		// (el ruteo cae en la página 0 para claves fuera de rango)
 		if pid == 0 && insertAt == 0 {
 			s.pageMinKey[0] = key
 		}
 		s.liveCount++
-		if err := s.writeMeta(); err != nil {
-			return 0, 0, err
+		s.nextRID++
+		if err := s.reindexPageLocked(pid, page); err != nil {
+			return 0, err
+		}
+		return rid, s.writeMeta()
+	}
+
+	// Página llena: insertar en la cadena de overflow, manteniendo el
+	// orden (key, rid) para que los scans puedan fusionarla con main.
+	idx := s.allocOvf()
+	var prevIdx int64 = ovfNone
+	cur := page.ovfHead
+	chainLen := 0
+	for cur != ovfNone {
+		existing, next, err := s.readOvf(cur)
+		if err != nil {
+			return 0, err
+		}
+		chainLen++
+		if lessPair(key, rid, existing.key, existing.rid) {
+			break
+		}
+		prevIdx = cur
+		cur = next
+	}
+
+	rec := slotRecord{key: key, rid: rid, payload: payload}
+	if err := s.writeOvf(idx, rec, cur); err != nil {
+		return 0, err
+	}
+	if prevIdx == ovfNone {
+		page.ovfHead = idx
+		if err := s.writePage(pid, page); err != nil {
+			return 0, err
 		}
 	} else {
-		// si no hay espacio, inserta en la cadena de overflow ordenada de la página
-		idx, err := s.allocOvf()
+		prevRec, _, err := s.readOvf(prevIdx)
 		if err != nil {
-			return 0, 0, err
+			return 0, err
 		}
-
-		var prevIdx int64 = ovfNone
-		cur = page.ovfHead
-		for cur != ovfNone {
-			_, k, next, _, err := s.readOvf(cur)
-			if err != nil {
-				return 0, 0, err
-			}
-			if k > key {
-				break
-			}
-			prevIdx = cur
-			cur = next
-		}
-
-		if err := s.writeOvf(idx, false, key, cur, payload); err != nil {
-			return 0, 0, err
-		}
-		if prevIdx == ovfNone {
-			page.ovfHead = idx
-			if err := s.writePage(pid, page); err != nil {
-				return 0, 0, err
-			}
-		} else {
-			_, pk, _, pp, err := s.readOvf(prevIdx)
-			if err != nil {
-				return 0, 0, err
-			}
-			if err := s.writeOvf(prevIdx, false, pk, idx, pp); err != nil {
-				return 0, 0, err
-			}
-		}
-
-		s.liveCount++
-		if err := s.writeMeta(); err != nil {
-			return 0, 0, err
+		// Preserva el estado (deleted) del nodo previo: sobreescribirlo con
+		// deleted=false lo resucitaría si ya estaba eliminado.
+		if err := s.writeOvf(prevIdx, prevRec, idx); err != nil {
+			return 0, err
 		}
 	}
 
-	ordinal, err := s.ordinalOfLocked(pid, key)
-	if err != nil {
-		return 0, 0, err
+	s.liveCount++
+	s.liveOvf++
+	s.nextRID++
+	s.ridIndex[rid] = locator{pageID: pid, mainSlot: -1, ovfIdx: idx}
+
+	if s.shouldReorganizeOverflowLocked(chainLen + 1) {
+		if err := s.reorganizeLocked(); err != nil {
+			return 0, err
+		}
+		return rid, nil
 	}
-	return pid, ordinal, nil
+	return rid, s.writeMeta()
 }
 
-func (s *SeqFile) Search(key int64) ([]byte, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.searchLocked(key)
+func (s *SeqFile) shouldReorganizeOverflowLocked(chainLen int) bool {
+	if chainLen > s.pageCapacity*4 {
+		return true
+	}
+	if s.liveCount == 0 {
+		return false
+	}
+	return float64(s.liveOvf)/float64(s.liveCount) > s.overflowReorgThreshold
 }
 
-func (s *SeqFile) searchLocked(key int64) ([]byte, bool, error) {
-	if s.numPages == 0 {
-		return nil, false, nil
+// reindexPageLocked actualiza ridIndex y pageMinKey tras una mutación que
+// insertó/reordenó slots principales de una página (los índices de los
+// demás slots de esa página pueden haber cambiado de posición).
+func (s *SeqFile) reindexPageLocked(pid int32, page *mainPage) error {
+	if page.count == 0 {
+		return nil
 	}
-	pid := s.routePage(key)
+	minKey := mainSlotDecode(page.slots[0]).key
+	for i, raw := range page.slots {
+		rec := mainSlotDecode(raw)
+		if !rec.deleted {
+			s.ridIndex[rec.rid] = locator{pageID: pid, mainSlot: i, ovfIdx: ovfNone}
+		}
+	}
+	s.pageMinKey[pid] = minKey
+	return nil
+}
+
+// searchInPageLocked busca key dentro de la página pid (main + overflow).
+func (s *SeqFile) searchInPageLocked(pid int32, key int64) ([]byte, bool, error) {
 	page, err := s.readPage(pid)
 	if err != nil {
 		return nil, false, err
 	}
 	for _, slot := range page.slots {
-		deleted, k, payload := mainSlotDecode(slot)
-		if !deleted && k == key {
-			return payload, true, nil
+		rec := mainSlotDecode(slot)
+		if !rec.deleted && rec.key == key {
+			return rec.payload, true, nil
 		}
 	}
 	cur := page.ovfHead
 	for cur != ovfNone {
-		deleted, k, next, payload, err := s.readOvf(cur)
+		rec, next, err := s.readOvf(cur)
 		if err != nil {
 			return nil, false, err
 		}
-		if k == key {
-			if deleted {
-				return nil, false, nil
-			}
-			return payload, true, nil
+		if !rec.deleted && rec.key == key {
+			return rec.payload, true, nil
 		}
 		cur = next
 	}
 	return nil, false, nil
 }
 
-// locEntry: registro vivo resuelto dentro de una página, con su ubicación
-// física (slot principal o nodo de overflow) para poder leerlo o borrarlo.
-type locEntry struct {
-	key      int64
-	payload  []byte
-	mainSlot int   // índice en page.slots; -1 si vive en overflow
-	ovfIdx   int64 // índice del nodo de overflow; ovfNone si vive en main
-	next     int64 // enlace next del nodo de overflow (no usado si vive en main)
+// Search busca la primera clave viva que coincida (ver SearchAll para
+// obtener todas las coincidencias cuando se permiten duplicados).
+func (s *SeqFile) Search(key int64) ([]byte, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.numPages == 0 {
+		return nil, false, nil
+	}
+	return s.searchInPageLocked(s.routePage(key), key)
 }
 
-// pageLiveEntriesLocked devuelve, en orden de clave, los registros vivos de la
-// página pid (main + overflow fusionados), cada uno con su localización física.
-func (s *SeqFile) pageLiveEntriesLocked(pid int32) ([]locEntry, error) {
-	page, err := s.readPage(pid)
-	if err != nil {
-		return nil, err
-	}
+// Read resuelve un RID lógico a su payload, incluso si el registro se
+// reubicó físicamente por otro insert/delete o por una reorganización.
+func (s *SeqFile) Read(rid RecordID) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	type chainNode struct {
-		idx     int64
-		key     int64
-		next    int64
-		payload []byte
+	loc, ok := s.ridIndex[rid]
+	if !ok {
+		return nil, ErrNotFound
 	}
-	var chain []chainNode
-	cur := page.ovfHead
-	for cur != ovfNone {
-		deleted, k, next, payload, err := s.readOvf(cur)
+	if loc.ovfIdx != ovfNone {
+		rec, _, err := s.readOvf(loc.ovfIdx)
 		if err != nil {
 			return nil, err
 		}
-		if !deleted {
-			chain = append(chain, chainNode{idx: cur, key: k, next: next, payload: payload})
+		if rec.deleted || rec.rid != rid {
+			return nil, ErrNotFound
 		}
-		cur = next
+		return rec.payload, nil
 	}
-
-	var out []locEntry
-	i, j := 0, 0
-	for i < len(page.slots) || j < len(chain) {
-		if i < len(page.slots) {
-			deleted, k, payload := mainSlotDecode(page.slots[i])
-			if deleted {
-				i++
-				continue
-			}
-if j < len(chain) && chain[j].key < k {
-			out = append(out, locEntry{key: chain[j].key, payload: chain[j].payload, mainSlot: -1, ovfIdx: chain[j].idx, next: chain[j].next})
-			j++
-			continue
-		}
-			out = append(out, locEntry{key: k, payload: payload, mainSlot: i, ovfIdx: ovfNone})
-			i++
-			continue
-		}
-		out = append(out, locEntry{key: chain[j].key, payload: chain[j].payload, mainSlot: -1, ovfIdx: chain[j].idx, next: chain[j].next})
-		j++
-	}
-	return out, nil
-}
-
-// ordinalOfLocked devuelve la posición de key en el orden de claves vivas de la
-// página pid (índice usado como SlotID del RID). Asume que key acaba de insertarse.
-func (s *SeqFile) ordinalOfLocked(pid int32, key int64) (int, error) {
-	entries, err := s.pageLiveEntriesLocked(pid)
-	if err != nil {
-		return 0, err
-	}
-	for i, e := range entries {
-		if e.key == key {
-			return i, nil
-		}
-	}
-	return 0, ErrNotFound
-}
-
-// ScanRecords recorre el archivo en orden de clave y entrega cada registro vivo
-// con su RID lógico (página, ordinal).
-func (s *SeqFile) ScanRecords() ([]RecordInfo, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var out []RecordInfo
-	for pid := int32(0); pid < s.numPages; pid++ {
-		entries, err := s.pageLiveEntriesLocked(pid)
-		if err != nil {
-			return nil, err
-		}
-		for ordinal, e := range entries {
-			out = append(out, RecordInfo{
-				Key:     e.key,
-				RID:     storage.RID{PageID: uint32(pid), SlotID: uint16(ordinal)},
-				Payload: e.payload,
-			})
-		}
-	}
-	return out, nil
-}
-
-// Read devuelve el payload del registro identificado por rid.
-func (s *SeqFile) Read(rid storage.RID) ([]byte, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if rid.PageID >= uint32(s.numPages) {
-		return nil, ErrNotFound
-	}
-	entries, err := s.pageLiveEntriesLocked(int32(rid.PageID))
+	page, err := s.readPage(loc.pageID)
 	if err != nil {
 		return nil, err
 	}
-	if int(rid.SlotID) >= len(entries) {
+	if loc.mainSlot >= len(page.slots) {
 		return nil, ErrNotFound
 	}
-	return entries[rid.SlotID].payload, nil
+	rec := mainSlotDecode(page.slots[loc.mainSlot])
+	if rec.deleted || rec.rid != rid {
+		return nil, ErrNotFound
+	}
+	return rec.payload, nil
 }
 
-// DeleteRID elimina el registro identificado por rid (tombstone lazy).
-//
-// No dispara reorganización automática: reescribir páginas invalidaría los RIDs
-// ya publicados al árbol. Si el archivo acumula muchos tombstones, conviene
-// Reorganize() + Rebuild() del índice agrupado.
-//
-// El rid debe resolver a un registro aún vivo en el momento de la llamada;
-// si el archivo mutó desde que se obtuvo el RID, puede apuntar a otra clave.
-func (s *SeqFile) DeleteRID(rid storage.RID) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if rid.PageID >= uint32(s.numPages) {
-		return ErrNotFound
-	}
-	entries, err := s.pageLiveEntriesLocked(int32(rid.PageID))
-	if err != nil {
-		return err
-	}
-	if int(rid.SlotID) >= len(entries) {
-		return ErrNotFound
-	}
-	rec := entries[rid.SlotID]
-	if rec.ovfIdx != ovfNone {
-		if err := s.writeOvf(rec.ovfIdx, true, rec.key, rec.next, rec.payload); err != nil {
-			return err
-		}
-	} else {
-		page, err := s.readPage(int32(rid.PageID))
-		if err != nil {
-			return err
-		}
-		mainSlotEncode(page.slots[rec.mainSlot], true, rec.key, rec.payload)
-		if err := s.writePage(int32(rid.PageID), page); err != nil {
-			return err
-		}
-	}
-	s.liveCount--
-	s.deadCount++
-	return s.writeMeta()
-}
-
-// Delete elimina la clave de forma lazy (tombstone). Si el espacio
-// desperdiciado supera el umbral, dispara una reorganización automática.
+// Delete elimina de forma lazy el primer registro vivo con key.
 func (s *SeqFile) Delete(key int64) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -739,12 +709,13 @@ func (s *SeqFile) Delete(key int64) (bool, error) {
 		return false, err
 	}
 	for i, slot := range page.slots {
-		deleted, k, payload := mainSlotDecode(slot)
-		if !deleted && k == key {
-			mainSlotEncode(page.slots[i], true, key, payload)
+		rec := mainSlotDecode(slot)
+		if !rec.deleted && rec.key == key {
+			mainSlotEncode(page.slots[i], true, rec.key, rec.rid, rec.payload)
 			if err := s.writePage(pid, page); err != nil {
 				return false, err
 			}
+			delete(s.ridIndex, rec.rid)
 			s.liveCount--
 			s.deadCount++
 			return true, s.maybeReorganizeLocked()
@@ -752,19 +723,19 @@ func (s *SeqFile) Delete(key int64) (bool, error) {
 	}
 	cur := page.ovfHead
 	for cur != ovfNone {
-		deleted, k, next, payload, err := s.readOvf(cur)
+		rec, next, err := s.readOvf(cur)
 		if err != nil {
 			return false, err
 		}
-		if k == key {
-			if deleted {
-				return false, nil
-			}
-			if err := s.writeOvf(cur, true, key, next, payload); err != nil {
+		if !rec.deleted && rec.key == key {
+			rec.deleted = true
+			if err := s.writeOvf(cur, rec, next); err != nil {
 				return false, err
 			}
+			delete(s.ridIndex, rec.rid)
 			s.liveCount--
 			s.deadCount++
+			s.liveOvf--
 			return true, s.maybeReorganizeLocked()
 		}
 		cur = next
@@ -772,20 +743,65 @@ func (s *SeqFile) Delete(key int64) (bool, error) {
 	return false, nil
 }
 
+// DeleteRID elimina de forma lazy el registro identificado por rid.
+func (s *SeqFile) DeleteRID(rid RecordID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	loc, ok := s.ridIndex[rid]
+	if !ok {
+		return ErrNotFound
+	}
+	if loc.ovfIdx != ovfNone {
+		rec, next, err := s.readOvf(loc.ovfIdx)
+		if err != nil {
+			return err
+		}
+		if rec.deleted || rec.rid != rid {
+			return ErrNotFound
+		}
+		rec.deleted = true
+		if err := s.writeOvf(loc.ovfIdx, rec, next); err != nil {
+			return err
+		}
+		s.liveOvf--
+	} else {
+		page, err := s.readPage(loc.pageID)
+		if err != nil {
+			return err
+		}
+		if loc.mainSlot >= len(page.slots) {
+			return ErrNotFound
+		}
+		rec := mainSlotDecode(page.slots[loc.mainSlot])
+		if rec.deleted || rec.rid != rid {
+			return ErrNotFound
+		}
+		mainSlotEncode(page.slots[loc.mainSlot], true, rec.key, rec.rid, rec.payload)
+		if err := s.writePage(loc.pageID, page); err != nil {
+			return err
+		}
+	}
+	delete(s.ridIndex, rid)
+	s.liveCount--
+	s.deadCount++
+	return s.maybeReorganizeLocked()
+}
+
 func (s *SeqFile) maybeReorganizeLocked() error {
 	total := s.liveCount + s.deadCount
 	if total == 0 {
 		return s.writeMeta()
 	}
-	ratio := float64(s.deadCount) / float64(total)
-	if ratio > s.reorgThreshold {
+	if float64(s.deadCount)/float64(total) > s.reorgThreshold {
 		return s.reorganizeLocked()
 	}
 	return s.writeMeta()
 }
 
-// Reorganize reconstruye el archivo: junta los registros vivos en orden
-// y los reescribe en páginas principales nuevas, vaciando el overflow.
+// Reorganize reconstruye el archivo: junta los registros vivos en orden y
+// los reescribe en páginas principales nuevas, vaciando el overflow. Los
+// RID lógicos se preservan (van embebidos en cada slot reescrito).
 func (s *SeqFile) Reorganize() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -793,18 +809,21 @@ func (s *SeqFile) Reorganize() error {
 }
 
 func (s *SeqFile) reorganizeLocked() error {
-	records, err := s.collectLiveLocked()
+	records, err := s.collectAllLiveLocked()
 	if err != nil {
 		return err
 	}
+	sort.Slice(records, func(i, j int) bool {
+		return lessPair(records[i].Key, records[i].RID, records[j].Key, records[j].RID)
+	})
 
 	newNumPages := int32(0)
 	if len(records) > 0 {
 		newNumPages = int32((len(records) + s.pageCapacity - 1) / s.pageCapacity)
 	}
 
-	for i := int32(0); i < newNumPages; i++ {
-		start := int(i) * s.pageCapacity
+	for pid := int32(0); pid < newNumPages; pid++ {
+		start := int(pid) * s.pageCapacity
 		end := start + s.pageCapacity
 		if end > len(records) {
 			end = len(records)
@@ -812,10 +831,10 @@ func (s *SeqFile) reorganizeLocked() error {
 		page := &mainPage{count: uint16(end - start), ovfHead: ovfNone}
 		for _, r := range records[start:end] {
 			slot := make([]byte, s.mainSlotSize)
-			mainSlotEncode(slot, false, r.Key, r.Payload)
+			mainSlotEncode(slot, false, r.Key, r.RID, r.Payload)
 			page.slots = append(page.slots, slot)
 		}
-		if err := s.writePage(i, page); err != nil {
+		if err := s.writePage(pid, page); err != nil {
 			return err
 		}
 	}
@@ -831,70 +850,88 @@ func (s *SeqFile) reorganizeLocked() error {
 	s.liveCount = int64(len(records))
 	s.deadCount = 0
 	s.ovfCount = 0
-	s.ovfFreeHead = ovfNone
+	s.liveOvf = 0
 
-	if err := s.rebuildPageMinKeys(); err != nil {
+	if err := s.rebuildIndexesLocked(); err != nil {
 		return err
 	}
 	return s.writeMeta()
 }
 
-// collectLiveLocked recorre cada página (slots + cadena de overflow
+// collectAllLiveLocked recorre cada página (slots + cadena de overflow
 // mezclados) en orden ascendente y retorna todos los registros vivos.
-func (s *SeqFile) collectLiveLocked() ([]KV, error) {
-	var out []KV
+func (s *SeqFile) collectAllLiveLocked() ([]RecordInfo, error) {
+	var out []RecordInfo
 	for pid := int32(0); pid < s.numPages; pid++ {
-		page, err := s.readPage(pid)
+		recs, err := s.pageLiveLocked(pid)
 		if err != nil {
 			return nil, err
 		}
-
-		type chainNode struct {
-			key     int64
-			payload []byte
-		}
-		var chain []chainNode
-		cur := page.ovfHead
-		for cur != ovfNone {
-			deleted, k, next, payload, err := s.readOvf(cur)
-			if err != nil {
-				return nil, err
-			}
-			if !deleted {
-				chain = append(chain, chainNode{key: k, payload: payload})
-			}
-			cur = next
-		}
-
-		i, j := 0, 0
-		for i < len(page.slots) || j < len(chain) {
-			if i < len(page.slots) {
-				deleted, k, payload := mainSlotDecode(page.slots[i])
-				if deleted {
-					i++
-					continue
-				}
-				if j < len(chain) && chain[j].key < k {
-					out = append(out, KV{Key: chain[j].key, Payload: chain[j].payload})
-					j++
-					continue
-				}
-				out = append(out, KV{Key: k, Payload: payload})
-				i++
-				continue
-			}
-			out = append(out, KV{Key: chain[j].key, Payload: chain[j].payload})
-			j++
-		}
+		out = append(out, recs...)
 	}
 	return out, nil
 }
 
-// Scan retorna todos los registros vivos, ordenados por clave.
-func (s *SeqFile) Scan() ([]KV, error) {
+// pageLiveLocked fusiona los slots principales de una página (ya
+// ordenados) con su cadena de overflow (también ordenada), devolviendo
+// solo los registros vivos en orden (key, rid).
+func (s *SeqFile) pageLiveLocked(pid int32) ([]RecordInfo, error) {
+	page, err := s.readPage(pid)
+	if err != nil {
+		return nil, err
+	}
+	main := make([]RecordInfo, 0, page.count)
+	for _, raw := range page.slots {
+		rec := mainSlotDecode(raw)
+		if !rec.deleted {
+			main = append(main, RecordInfo{Key: rec.key, RID: rec.rid, Payload: rec.payload})
+		}
+	}
+	var ovf []RecordInfo
+	cur := page.ovfHead
+	for cur != ovfNone {
+		rec, next, err := s.readOvf(cur)
+		if err != nil {
+			return nil, err
+		}
+		if !rec.deleted {
+			ovf = append(ovf, RecordInfo{Key: rec.key, RID: rec.rid, Payload: rec.payload})
+		}
+		cur = next
+	}
+
+	out := make([]RecordInfo, 0, len(main)+len(ovf))
+	i, j := 0, 0
+	for i < len(main) || j < len(ovf) {
+		if j >= len(ovf) || (i < len(main) && lessPair(main[i].Key, main[i].RID, ovf[j].Key, ovf[j].RID)) {
+			out = append(out, main[i])
+			i++
+			continue
+		}
+		out = append(out, ovf[j])
+		j++
+	}
+	return out, nil
+}
+
+// ScanRecords retorna todos los registros vivos, con su RID, en orden de clave.
+func (s *SeqFile) ScanRecords() ([]RecordInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.collectLiveLocked()
+	return s.collectAllLiveLocked()
+}
+
+// Scan retorna todos los registros vivos (clave/payload), sin RID.
+func (s *SeqFile) Scan() ([]KV, error) {
+	records, err := s.ScanRecords()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]KV, 0, len(records))
+	for _, r := range records {
+		out = append(out, KV{Key: r.Key, Payload: r.Payload})
+	}
+	return out, nil
 }
 
 // RangeScan retorna los registros vivos con low <= key <= high, ordenados.
@@ -912,19 +949,26 @@ func (s *SeqFile) RangeScan(low, high int64) ([]KV, error) {
 	return out, nil
 }
 
-// Stats retorna el tamaño actual del archivo y la proporción de espacio desperdiciado.
+// Stats reporta el tamaño actual del archivo y la proporción de espacio desperdiciado.
 func (s *SeqFile) Stats() Stats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	total := s.liveCount + s.deadCount
-	ratio := 0.0
+	wasted := 0.0
 	if total > 0 {
-		ratio = float64(s.deadCount) / float64(total)
+		wasted = float64(s.deadCount) / float64(total)
+	}
+	overflowRatio := 0.0
+	if s.liveCount > 0 {
+		overflowRatio = float64(s.liveOvf) / float64(s.liveCount)
 	}
 	return Stats{
-		NumPages:    int(s.numPages),
-		LiveCount:   s.liveCount,
-		DeadCount:   s.deadCount,
-		WastedRatio: ratio,
+		NumPages:      int(s.numPages),
+		LiveCount:     s.liveCount,
+		DeadCount:     s.deadCount,
+		OverflowLive:  s.liveOvf,
+		OverflowSlots: s.ovfCount,
+		WastedRatio:   wasted,
+		OverflowRatio: overflowRatio,
 	}
 }

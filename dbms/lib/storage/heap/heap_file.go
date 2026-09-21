@@ -236,6 +236,14 @@ func (h *HeapFile) Delete(rid RecordID) error {
 // se reubica (delete + insert) y se retorna el nuevo RecordID.
 func (h *HeapFile) Update(rid RecordID, data []byte) (RecordID, error) {
 	h.mu.Lock()
+	// Valida el payload ANTES de tocar el registro original: si es inválido
+	// y solo lo descubriéramos al reubicar (delete + insert), ya habríamos
+	// borrado el dato viejo sin poder escribir el nuevo.
+	maxPayload := h.pageSize - pageHeaderSize - slotEntrySize
+	if len(data) == 0 || len(data) > maxPayload {
+		h.mu.Unlock()
+		return RecordID{}, ErrRecordTooLarge
+	}
 	if rid.PageID >= h.numPages {
 		h.mu.Unlock()
 		return RecordID{}, ErrNotFound

@@ -295,3 +295,27 @@ func TestOpenRejectsCorruptSize(t *testing.T) {
 		t.Fatalf("expected error opening a file with a size that isn't a page multiple")
 	}
 }
+
+// Regresión: Update() validaba el payload nuevo recién al intentar
+// reubicar el registro (delete + insert), así que un payload inválido
+// borraba el original antes de descubrir que el insert iba a fallar.
+func TestUpdateWithInvalidPayloadDoesNotLoseOriginal(t *testing.T) {
+	h := newTestHeap(t, heap.DefaultPageSize)
+
+	rid, err := h.Insert([]byte("original-important-data"))
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	if _, err := h.Update(rid, []byte{}); err == nil {
+		t.Fatalf("expected an error updating with an empty payload")
+	}
+
+	got, err := h.Read(rid)
+	if err != nil {
+		t.Fatalf("original record was lost after a failed Update: %v", err)
+	}
+	if string(got) != "original-important-data" {
+		t.Fatalf("original data corrupted after a failed Update: got %q", got)
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/dbms-go/v2/dbms/lib/dsl/ast"
 	"github.com/dbms-go/v2/dbms/lib/dsl/lexer"
@@ -24,10 +25,66 @@ import (
 
 // Result es el resultado de ejecutar una sentencia.
 type Result struct {
-	Columns  []string
-	Rows     [][]any
-	Affected int64
-	Message  string
+	Columns   []string
+	Rows      [][]any
+	Affected  int64
+	Message   string
+	Plan      []string // pasos legibles de cómo se resolvió la consulta, para el Panel de Plan
+	ElapsedMs float64
+}
+
+// ColumnInfo describe una columna del esquema para introspección (frontend, etc.).
+type ColumnInfo struct {
+	Name string
+	Type string
+	Key  bool
+}
+
+// TableInfo describe una tabla conocida por el catálogo: su esquema y
+// estadísticas de almacenamiento tomadas del HeapFile subyacente.
+type TableInfo struct {
+	Name      string
+	Columns   []ColumnInfo
+	Records   int
+	Pages     uint32
+	IndexName string
+	IndexType string
+}
+
+// TableInfo devuelve el esquema y las estadísticas de una tabla conocida.
+func (db *Database) TableInfo(name string) (*TableInfo, bool) {
+	t, ok := db.tables[name]
+	if !ok {
+		return nil, false
+	}
+	return db.tableInfo(name, t), true
+}
+
+// TablesInfo devuelve el esquema y estadísticas de todas las tablas conocidas.
+func (db *Database) TablesInfo() []*TableInfo {
+	out := make([]*TableInfo, 0, len(db.tables))
+	for name, t := range db.tables {
+		out = append(out, db.tableInfo(name, t))
+	}
+	return out
+}
+
+func (db *Database) tableInfo(name string, t *table) *TableInfo {
+	cols := make([]ColumnInfo, len(t.schema.Columns))
+	for i, c := range t.schema.Columns {
+		cols[i] = ColumnInfo{Name: c.Name.Name, Type: c.Type.Name, Key: i == 0}
+	}
+	info := &TableInfo{
+		Name:      name,
+		Columns:   cols,
+		IndexName: "idx_" + name + "_" + t.schema.Columns[0].Name.Name,
+		IndexType: "B+ Tree (no agrupado)",
+	}
+	if st, err := t.heap.Stats(); err == nil {
+		info.Records = st.LiveCount
+		info.Pages = st.NumPages
+	}
+	return info
 }
 
 type table struct {
@@ -62,22 +119,30 @@ func (db *Database) Close() error {
 
 // Execute parsea y ejecuta una sentencia SQL completa (terminada en ';').
 func (db *Database) Execute(query string) (*Result, error) {
+	start := time.Now()
 	ctx := parser.Parse(lexer.Tokenize(query, "\n"))
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	var res *Result
+	var err error
 	switch n := ctx.Parent().(type) {
 	case *ast.CreateTable:
-		return db.execCreate(n)
+		res, err = db.execCreate(n)
 	case *ast.Insert:
-		return db.execInsert(n)
+		res, err = db.execInsert(n)
 	case *ast.Select:
-		return db.execSelect(n)
+		res, err = db.execSelect(n)
 	case *ast.Delete:
-		return db.execDelete(n)
+		res, err = db.execDelete(n)
 	default:
 		return nil, fmt.Errorf("sql: sentencia no soportada: %T", ctx.Parent())
 	}
+	if err != nil {
+		return nil, err
+	}
+	res.ElapsedMs = float64(time.Since(start).Microseconds()) / 1000.0
+	return res, nil
 }
 
 // Tables devuelve los nombres de las tablas conocidas.
@@ -125,7 +190,12 @@ func (db *Database) execCreate(ct *ast.CreateTable) (*Result, error) {
 		return nil, err
 	}
 	db.tables[ct.Name] = &table{schema: ct, heap: h, idx: idx}
-	return &Result{Message: "tabla " + ct.Name + " creada"}, nil
+	return &Result{
+		Message: "tabla " + ct.Name + " creada",
+		Plan: []string{
+			fmt.Sprintf("CREATE TABLE %s: nuevo Heap File + índice B+ no agrupado sobre %q", ct.Name, ct.Columns[0].Name.Name),
+		},
+	}, nil
 }
 
 func (db *Database) execInsert(ins *ast.Insert) (*Result, error) {
@@ -181,7 +251,12 @@ func (db *Database) execInsert(ins *ast.Insert) (*Result, error) {
 		}
 		affected++
 	}
-	return &Result{Affected: affected}, nil
+	return &Result{
+		Affected: affected,
+		Plan: []string{
+			fmt.Sprintf("INSERT INTO %s: %d fila(s) escritas en el Heap File y en el índice B+ no agrupado", ins.Table.Name, affected),
+		},
+	}, nil
 }
 
 func (db *Database) execSelect(sel *ast.Select) (*Result, error) {
@@ -212,21 +287,26 @@ func (db *Database) execSelect(sel *ast.Select) (*Result, error) {
 
 	// WHERE sobre la clave -> punto/rango en el B+.
 	var recs []bplus.UnclusteredRecord[int]
-	low, high, point, hasWhere, err := whereRange(sel)
+	low, high, point, hasWhere, err := whereRange(sel, schema.Columns[0].Name.Name)
 	if err != nil {
 		return nil, err
 	}
+	plan := []string{}
 	switch {
 	case !hasWhere:
 		recs, err = t.idx.OrderedScan()
+		plan = append(plan, fmt.Sprintf("Recorrido completo (OrderedScan) del índice B+ no agrupado sobre %q", schema.Columns[0].Name.Name))
 	case point:
 		recs, err = t.idx.Search(low)
+		plan = append(plan, fmt.Sprintf("Búsqueda puntual (Search) en el índice B+ por %s = %d", schema.Columns[0].Name.Name, low))
 	default:
 		recs, err = t.idx.RangeSearch(low, high)
+		plan = append(plan, fmt.Sprintf("Búsqueda por rango (RangeSearch) en el índice B+: %s en [%d, %d]", schema.Columns[0].Name.Name, low, high))
 	}
 	if err != nil {
 		return nil, err
 	}
+	plan = append(plan, fmt.Sprintf("%d registro(s) recuperados del Heap File vía el RID del índice", len(recs)))
 
 	rows := make([]shared.Record, 0, len(recs))
 	for _, r := range recs {
@@ -251,9 +331,14 @@ func (db *Database) execSelect(sel *ast.Select) (*Result, error) {
 		if err != nil {
 			return nil, err
 		}
+		dir := "ASC"
+		if sel.OrderBy.Descendent {
+			dir = "DESC"
+		}
+		plan = append(plan, fmt.Sprintf("ORDER BY %s %s vía External Sort (k-way merge)", name.Name, dir))
 	}
 
-	res := &Result{Columns: outCols}
+	res := &Result{Columns: outCols, Plan: plan}
 	for _, r := range rows {
 		proj := make([]any, len(projPos))
 		for i, p := range projPos {
@@ -292,7 +377,7 @@ func (db *Database) execDelete(del *ast.Delete) (*Result, error) {
 	if del.Closure == nil {
 		return nil, fmt.Errorf("sql: DELETE requiere WHERE")
 	}
-	low, high, point, _, err := whereRangeFromClosure(del.Closure)
+	low, high, point, _, err := whereRangeFromClosure(del.Closure, t.schema.Columns[0].Name.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -314,7 +399,12 @@ func (db *Database) execDelete(del *ast.Delete) (*Result, error) {
 		}
 		affected++
 	}
-	return &Result{Affected: affected}, nil
+	return &Result{
+		Affected: affected,
+		Plan: []string{
+			fmt.Sprintf("DELETE FROM %s: %d fila(s) eliminadas (lazy delete) vía el índice B+", del.From.Name, affected),
+		},
+	}, nil
 }
 
 // ---------- helpers ----------
@@ -343,14 +433,21 @@ func openHeap(path string) (*heap.HeapFile, error) {
 
 // whereRange traduce el WHERE de un SELECT a un rango inclusivo [low, high]
 // sobre la clave. point=true cuando es igualdad.
-func whereRange(sel *ast.Select) (low, high int, point, hasWhere bool, err error) {
+func whereRange(sel *ast.Select, keyColumn string) (low, high int, point, hasWhere bool, err error) {
 	if sel.Closure == nil {
 		return 0, 0, false, false, nil
 	}
-	return whereRangeFromClosure(sel.Closure)
+	return whereRangeFromClosure(sel.Closure, keyColumn)
 }
 
-func whereRangeFromClosure(closure ast.ASTNode) (low, high int, point, hasWhere bool, err error) {
+// whereRangeFromClosure exige que el WHERE compare la columna clave
+// (keyColumn) contra un entero: es la única comparación que el índice B+
+// no agrupado puede resolver hoy. Antes esto se validaba a medias (se leía
+// el nombre de la columna del WHERE pero nunca se comparaba contra
+// keyColumn), así que un WHERE sobre cualquier otra columna terminaba
+// filtrando en silencio por la clave, devolviendo resultados incorrectos
+// sin avisar. Ahora se rechaza con un error explícito.
+func whereRangeFromClosure(closure ast.ASTNode, keyColumn string) (low, high int, point, hasWhere bool, err error) {
 	wh, ok := closure.(*ast.WhereExpr)
 	if !ok {
 		return 0, 0, false, false, fmt.Errorf("sql: cláusula %T no soportada", closure)
@@ -358,13 +455,15 @@ func whereRangeFromClosure(closure ast.ASTNode) (low, high int, point, hasWhere 
 	bin := wh.Content
 	left, ok := bin.Left.(*ast.IdExpr)
 	if !ok {
-		return 0, 0, false, false, fmt.Errorf("sql: WHERE solo soporta la columna clave")
+		return 0, 0, false, false, fmt.Errorf("sql: WHERE solo soporta comparar una columna")
+	}
+	if left.Name != keyColumn {
+		return 0, 0, false, false, fmt.Errorf("sql: WHERE solo soporta comparar la columna clave (%q), no %q", keyColumn, left.Name)
 	}
 	v, ok := bin.Right.(*ast.IntExpr)
 	if !ok {
 		return 0, 0, false, false, fmt.Errorf("sql: WHERE solo soporta comparación contra entero")
 	}
-	_ = left
 	switch bin.Op {
 	case ast.OpEq:
 		return v.Value, v.Value, true, true, nil

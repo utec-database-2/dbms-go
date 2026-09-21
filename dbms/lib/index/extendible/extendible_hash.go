@@ -1,12 +1,27 @@
+// Package extendible implementa un índice de Hashing Extensible (Dinámico):
+// un directorio de punteros a cubetas que se duplica solo cuando hace falta,
+// y cubetas que se dividen (localDepth++) en vez de reescribir todo el
+// índice en cada crecimiento.
 package extendible
 
 import (
 	"fmt"
 	"hash/fnv"
+	"sync"
 
 	"github.com/dbms-go/v2/dbms/lib/index/common"
 	"github.com/dbms-go/v2/dbms/lib/storage"
 )
+
+// MaxGlobalDepth acota cuánto puede crecer el directorio. hashKey produce
+// un uint32, así que más allá de 32 bits ya no hay forma de distinguir
+// claves por hash. En la práctica el límite útil se alcanza mucho antes:
+// protege contra un directorio que se duplica sin parar (memoria) cuando
+// muchas claves distintas comparten prefijo de hash, o directamente cuando
+// una sola clave acumula más RIDs que bucketSize (splitear no ayuda ahí,
+// porque todos esos RIDs comparten la misma clave y por lo tanto el mismo
+// hash: siempre caen en la misma cubeta sin importar cuánto se profundice).
+const MaxGlobalDepth = 24
 
 // bucket es una cubeta del directorio de hashing extensible.
 type bucket struct {
@@ -22,27 +37,22 @@ func newBucket(localDepth int) *bucket {
 }
 
 // Index implementa common.Index usando Hashing Extensible (Dinámico).
-//
-// TODO(Sergio):
-//  1. Insert: calcular hash(key), tomar los `globalDepth` bits menos
-//     significativos para indexar el directorio, insertar en la bucket.
-//     Si la bucket se llena (más entradas que bucketSize):
-//       - si localDepth == globalDepth: duplicar el directorio
-//         (globalDepth++) antes de splittear
-//       - splittear la bucket (localDepth++ en las dos nuevas),
-//         re-repartir las entradas existentes, reintentar el insert
-//  2. Search: hash(key) -> índice de directorio -> buscar en esa bucket.
-//  3. RangeSearch: no soportado, devolver common.ErrRangeNotSupported.
-//  4. Delete: ubicar la bucket, quitar el RID de esa key.
 type Index struct {
+	mu sync.RWMutex
+
 	globalDepth int
-	bucketSize  int // capacidad máxima de entradas por bucket
+	bucketSize  int // capacidad objetivo de entradas por bucket
 	directory   []*bucket
 }
 
 // New crea un índice con profundidad global inicial 1 (2 entradas de
-// directorio apuntando a 2 buckets con localDepth 1).
+// directorio apuntando a 2 buckets con localDepth 1). bucketSize menor a 1
+// se ajusta a 1: con bucketSize <= 0 cualquier insert dispararía splits
+// infinitos hasta chocar con MaxGlobalDepth en vano.
 func New(bucketSize int) *Index {
+	if bucketSize < 1 {
+		bucketSize = 1
+	}
 	b0 := newBucket(1)
 	b1 := newBucket(1)
 	return &Index{
@@ -65,33 +75,51 @@ func hashKey(key any) uint32 {
 	return h.Sum32()
 }
 
-func (idx *Index) directoryIndex(key any) uint32 {
+func (idx *Index) directoryIndexLocked(key any) uint32 {
 	mask := uint32(1)<<uint(idx.globalDepth) - 1
 	return hashKey(key) & mask
 }
 
-func (bucket *bucket) recordCount() int {
-	return recordCount(bucket.entries)
-}
-
-func recordCount(entries map[any][]storage.RID) int {
+func (b *bucket) recordCount() int {
 	count := 0
-	for _, rids := range entries {
+	for _, rids := range b.entries {
 		count += len(rids)
 	}
 	return count
 }
 
+// distinctKeyCount cuenta cuántas claves distintas hay en la cubeta. Si es
+// 1 y la cubeta sigue sobrepasando bucketSize, splitear nunca va a ayudar
+// (todos los RIDs comparten la misma clave, y por lo tanto el mismo hash).
+func (b *bucket) distinctKeyCount() int {
+	return len(b.entries)
+}
 
 func (idx *Index) Insert(key any, rid storage.RID) error {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
 	hashedKey := hashKey(key)
-	dirIndex := idx.directoryIndex(key)
+	dirIndex := idx.directoryIndexLocked(key)
 	idx.directory[dirIndex].entries[key] = append(idx.directory[dirIndex].entries[key], rid)
 
 	for {
 		globalDepthLeastSignificantBits := hashedKey & ((1 << uint(idx.globalDepth)) - 1)
 		b := idx.directory[globalDepthLeastSignificantBits]
 		if b.recordCount() <= idx.bucketSize {
+			return nil
+		}
+		if b.distinctKeyCount() <= 1 {
+			// Una sola clave con más RIDs que bucketSize: splitear no la
+			// va a separar de sí misma. Se acepta que la cubeta exceda
+			// bucketSize en vez de profundizar sin sentido.
+			return nil
+		}
+		if b.localDepth >= MaxGlobalDepth {
+			// Muchas claves distintas comparten los MaxGlobalDepth bits
+			// menos significativos de su hash (extremadamente raro con un
+			// hash real, pero posible). No hay más bits que mirar antes de
+			// llegar al límite práctico: se acepta la cubeta sobrecargada.
 			return nil
 		}
 
@@ -106,8 +134,6 @@ func (idx *Index) Insert(key any, rid storage.RID) error {
 		}
 		bucket1 := newBucket(b.localDepth + 1)
 		bucket2 := newBucket(b.localDepth + 1)
-		bucket1.entries = make(map[any][]storage.RID)
-		bucket2.entries = make(map[any][]storage.RID)
 		// Re-distribute entries
 		for k, v := range b.entries {
 			splitBit := uint32(1) << uint(b.localDepth)
@@ -136,7 +162,10 @@ func (idx *Index) Insert(key any, rid storage.RID) error {
 }
 
 func (idx *Index) Search(key any) ([]storage.RID, error) {
-	i := idx.directoryIndex(key)
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	i := idx.directoryIndexLocked(key)
 	b := idx.directory[i]
 	rids := b.entries[key]
 	out := make([]storage.RID, len(rids))
@@ -149,7 +178,10 @@ func (idx *Index) RangeSearch(keyMin, keyMax any) ([]storage.RID, error) {
 }
 
 func (idx *Index) Delete(key any, rid storage.RID) (bool, error) {
-	i := idx.directoryIndex(key)
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	i := idx.directoryIndexLocked(key)
 	b := idx.directory[i]
 	rids, exists := b.entries[key]
 	if !exists {
@@ -169,4 +201,12 @@ func (idx *Index) Delete(key any, rid storage.RID) (bool, error) {
 
 func (idx *Index) SupportsRange() bool {
 	return false
+}
+
+// GlobalDepth expone la profundidad global actual del directorio, útil
+// para inspección/depuración y para la comparación experimental del proyecto.
+func (idx *Index) GlobalDepth() int {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.globalDepth
 }
