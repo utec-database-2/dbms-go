@@ -144,3 +144,254 @@ type RTree struct {
 	maxEntries int
 	minEntries int
 }
+
+// New crea un R-Tree.
+// maxEntries indica cuántas entradas puede contener un nodo antes de dividirse.
+func New(maxEntries int) *RTree {
+	if maxEntries < 4 {
+		maxEntries = 4
+	}
+
+	minEntries := maxEntries / 2
+
+	return &RTree{
+		root: &node{
+			leaf: true,
+		},
+		maxEntries: maxEntries,
+		minEntries: minEntries,
+	}
+}
+
+func NewDefault() *RTree {
+	return New(8)
+}
+
+// Insert agrega un punto al R-Tree.
+func (t *RTree) Insert(entry Entry) {
+
+	rect := PointRect(entry.Point)
+
+	leaf := t.chooseLeaf(
+		t.root,
+		rect,
+	)
+
+	leaf.entries = append(
+		leaf.entries,
+		entry,
+	)
+
+	t.expandToParent(leaf)
+
+	if len(leaf.entries) > t.maxEntries {
+		t.splitLeaf(leaf)
+	}
+}
+
+// SearchRect busca todos los puntos cuyo MBR
+// intersecta el rectángulo indicado.
+func (t *RTree) SearchRect(query Rect) []Entry {
+
+	query = query.Normalize()
+
+	out := make([]Entry, 0)
+
+	t.searchRect(
+		t.root,
+		query,
+		&out,
+	)
+
+	return out
+}
+
+func (t *RTree) SearchRadius(
+	center Point,
+	radius float64,
+	metric DistanceMetric,
+) []Entry {
+
+	if radius < 0 {
+		return nil
+	}
+
+	bbox := radiusBoundingBox(
+		center,
+		radius,
+		metric,
+	)
+
+	candidates := t.SearchRect(bbox)
+
+	out := make(
+		[]Entry,
+		0,
+		len(candidates),
+	)
+
+	for _, entry := range candidates {
+
+		distance := Distance(
+			center,
+			entry.Point,
+			metric,
+		)
+
+		if distance <= radius+1e-12 {
+			out = append(
+				out,
+				entry,
+			)
+		}
+	}
+
+	// Los dejamos ordenados desde el más cercano
+	// hasta el más lejano.
+	sort.SliceStable(
+		out,
+		func(i, j int) bool {
+
+			di := Distance(
+				center,
+				out[i].Point,
+				metric,
+			)
+
+			dj := Distance(
+				center,
+				out[j].Point,
+				metric,
+			)
+
+			if di == dj {
+
+				if out[i].RID.PageID ==
+					out[j].RID.PageID {
+
+					return out[i].RID.SlotID <
+						out[j].RID.SlotID
+				}
+
+				return out[i].RID.PageID <
+					out[j].RID.PageID
+			}
+
+			return di < dj
+		},
+	)
+
+	return out
+}
+
+// Distance calcula la distancia entre dos puntos.
+func Distance(
+	a Point,
+	b Point,
+	metric DistanceMetric,
+) float64 {
+
+	switch metric {
+
+	case Euclidean:
+
+		return math.Hypot(
+			a.Lat-b.Lat,
+			a.Lon-b.Lon,
+		)
+
+	case Haversine:
+
+		lat1 := degToRad(a.Lat)
+		lat2 := degToRad(b.Lat)
+
+		dLat := degToRad(
+			b.Lat - a.Lat,
+		)
+
+		dLon := degToRad(
+			b.Lon - a.Lon,
+		)
+
+		h := math.Sin(dLat/2)*
+			math.Sin(dLat/2) +
+			math.Cos(lat1)*
+				math.Cos(lat2)*
+				math.Sin(dLon/2)*
+				math.Sin(dLon/2)
+
+		// Protección contra pequeños errores numéricos.
+		h = math.Min(
+			1,
+			math.Max(0, h),
+		)
+
+		return 2 *
+			EarthRadiusKm *
+			math.Asin(
+				math.Sqrt(h),
+			)
+
+	default:
+		return math.NaN()
+	}
+}
+
+func radiusBoundingBox(
+	center Point,
+	radius float64,
+	metric DistanceMetric,
+) Rect {
+
+	switch metric {
+
+	case Euclidean:
+
+		return NewRect(
+			Point{
+				Lat: center.Lat - radius,
+				Lon: center.Lon - radius,
+			},
+			Point{
+				Lat: center.Lat + radius,
+				Lon: center.Lon + radius,
+			},
+		)
+
+	case Haversine:
+
+		// Aproximación local de grados a kilómetros.
+		latDelta := radius / 111.32
+
+		cosLat := math.Cos(
+			degToRad(center.Lat),
+		)
+
+		if math.Abs(cosLat) < 1e-12 {
+			cosLat = 1e-12
+		}
+
+		lonDelta :=
+			radius /
+				(111.32 * math.Abs(cosLat))
+
+		return NewRect(
+			Point{
+				Lat: center.Lat - latDelta,
+				Lon: center.Lon - lonDelta,
+			},
+			Point{
+				Lat: center.Lat + latDelta,
+				Lon: center.Lon + lonDelta,
+			},
+		)
+
+	default:
+
+		return PointRect(center)
+	}
+}
+
+func degToRad(v float64) float64 {
+	return v * math.Pi / 180
+}
