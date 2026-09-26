@@ -5,11 +5,13 @@ import (
 	"encoding/gob"
 	"fmt"
 	"math/rand"
+	"path/filepath"
 	"testing"
 
 	"github.com/dbms-go/v2/dbms/lib/index/common"
 	"github.com/dbms-go/v2/dbms/lib/index/extendible"
 	"github.com/dbms-go/v2/dbms/lib/storage"
+	"github.com/dbms-go/v2/dbms/lib/storage/heap"
 )
 
 func TestIndex_SearchOnEmptyIndex(t *testing.T) {
@@ -187,4 +189,33 @@ func decodeTestKey(payload []byte) (any, error) {
 		return nil, fmt.Errorf("expected 2 values, got %d", len(vals))
 	}
 	return vals[0], nil
+}
+
+func TestNewFromStorage_RebuildsFromExistingData(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.heap")
+
+	hf, err := heap.Create(path, heap.DefaultPageSize)
+	if err != nil {
+		t.Fatalf("heap.Create failed: %v", err)
+	}
+	names := map[int]string{1: "ana", 2: "beto", 3: "cata"}
+	for id, name := range names {
+		payload := encodeTestRow(t, id, name)
+		if _, err := hf.Insert(payload); err != nil {
+			t.Fatalf("hf.Insert failed: %v", err)
+		}
+	}
+
+	idx, err := NewFromStorage(4, path, decodeTestKey)
+	if err != nil {
+		t.Fatalf("NewFromStorage failed: %v", err)
+	}
+	
+	for id := range names {	
+		got, err := idx.Search(id)
+		if err != nil || len(got) != 1 {
+			t.Fatalf("Search(%d) = %v, %v; expected 1 result", id, got, err)
+		}
+	}
+	hf.Close()
 }
