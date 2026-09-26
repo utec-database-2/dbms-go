@@ -264,3 +264,77 @@ const (
 )
 
 const earthRadiusKm = 6371.0
+
+// Distance calcula la distancia entre dos puntos.
+func Distance(a, b Point, metric DistanceMetric) float64 {
+
+	switch metric {
+
+	case Euclidean:
+		dLat := a.Lat - b.Lat
+		dLon := a.Lon - b.Lon
+
+		return math.Sqrt(
+			dLat*dLat + dLon*dLon,
+		)
+
+	case Haversine:
+		lat1 := a.Lat * math.Pi / 180
+		lat2 := b.Lat * math.Pi / 180
+
+		dLat := (b.Lat - a.Lat) * math.Pi / 180
+		dLon := (b.Lon - a.Lon) * math.Pi / 180
+
+		h := math.Sin(dLat/2)*math.Sin(dLat/2) +
+			math.Cos(lat1)*
+				math.Cos(lat2)*
+				math.Sin(dLon/2)*
+				math.Sin(dLon/2)
+
+		c := 2 * math.Atan2(
+			math.Sqrt(h),
+			math.Sqrt(1-h),
+		)
+
+		return earthRadiusKm * c
+	}
+
+	return 0
+}
+
+// 8. CONSULTA POR RECTÁNGULO
+func (t *RTree) SearchRect(query Rect) []Entry {
+	var result []Entry
+
+	t.searchRect(t.Root, query, &result)
+
+	return result
+}
+
+func (t *RTree) searchRect(
+	n *Node,
+	query Rect,
+	result *[]Entry,
+) {
+	if !n.MBR().Intersects(query) {
+		return
+	}
+
+	// Hoja
+	if n.Leaf {
+		for _, e := range n.Entries {
+			if query.Contains(e.Point) {
+				*result = append(*result, e)
+			}
+		}
+
+		return
+	}
+
+	// Nodo interno
+	for _, child := range n.Children {
+		t.searchRect(child, query, result)
+	}
+}
+
+
