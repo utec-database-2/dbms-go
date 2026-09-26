@@ -210,12 +210,44 @@ func TestNewFromStorage_RebuildsFromExistingData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFromStorage failed: %v", err)
 	}
-	
-	for id := range names {	
+
+	for id := range names {
 		got, err := idx.Search(id)
 		if err != nil || len(got) != 1 {
 			t.Fatalf("Search(%d) = %v, %v; expected 1 result", id, got, err)
 		}
 	}
 	hf.Close()
+}
+
+func testNewFromStorage_SurvivesReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.heap")
+	hf, err := heap.Create(path, heap.DefaultPageSize)
+	if err != nil {
+		t.Fatalf("heap.Create failed: %v", err)
+	}
+	for id, name := range map[int]string{10: "x", 20: "y", 30: "z"} {
+		if _, err := hf.Insert(encodeTestRow(t, id, name)); err != nil {
+			t.Fatalf("hf.Insert failed: %v", err)
+		}
+	}
+	hf.Close() // Simula el fin del proceso: el indice en memoria se pierde, pero el heap file persiste en disco.
+
+	// Reconstruye el índice desde el heap file persistido.
+	reopened, err := heap.Open(path, heap.DefaultPageSize)
+	if err != nil {
+		t.Fatalf("heap.Open failed: %v", err)
+	}
+	defer reopened.Close()
+
+	idx, err := NewFromStorage(4, reopened, decodeTestKey)
+	if err != nil {
+		t.Fatalf("NewFromStorage failed after reopening: %v", err)
+	}
+	for _, id := range []int{10, 20, 30} {
+		got, err := idx.Search(id)
+		if err != nil || len(got) != 1 {
+			t.Fatalf("Search(%d) = %v, %v; expected 1 result after reopen", id, got, err)
+		}
+	}
 }
