@@ -1,6 +1,8 @@
 package integration
 
 import (
+	"bytes"
+	"encoding/gob"
 	"fmt"
 	"math/rand"
 	"testing"
@@ -163,4 +165,26 @@ func TestIndex_RandomizedStress(t *testing.T) {
 			t.Fatalf("Search(%s) = %v, esperaba [%v]", key, got, rid)
 		}
 	}
+}
+
+// Persistency tests
+
+func encodeTestRow(t *testing.T, id int, name string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode([]any{id, name}); err != nil {
+		t.Fatalf("encodeTestRow failed: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func decodeTestKey(payload []byte) (any, error) {
+	var vals []any
+	if err := gob.NewDecoder(bytes.NewReader(payload)).Decode(&vals); err != nil {
+		return nil, err
+	}
+	if len(vals) != 2 {
+		return nil, fmt.Errorf("expected 2 values, got %d", len(vals))
+	}
+	return vals[0], nil
 }
