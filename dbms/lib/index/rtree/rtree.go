@@ -7,15 +7,7 @@ import (
 	"github.com/dbms-go/v2/dbms/lib/storage"
 )
 
-const EarthRadiusKm = 6371.0088
-
-// DistanceMetric representa la métrica usada para calcular distancias.
-type DistanceMetric int
-
-const (
-	Euclidean DistanceMetric = iota
-	Haversine
-)
+// 1. PUNTOS Y RECTÁNGULOS
 
 // Point representa una coordenada geográfica.
 type Point struct {
@@ -29,6 +21,21 @@ type Rect struct {
 	Max Point
 }
 
+// NewRect crea un rectángulo.
+func NewRect(a, b Point) Rect {
+	return Rect{
+		Min: Point{
+			Lat: math.Min(a.Lat, b.Lat),
+			Lon: math.Min(a.Lon, b.Lon),
+		},
+		Max: Point{
+			Lat: math.Max(a.Lat, b.Lat),
+			Lon: math.Max(a.Lon, b.Lon),
+		},
+	}
+}
+
+
 // PointRect convierte un punto en un MBR degenerado.
 func PointRect(p Point) Rect {
 	return Rect{
@@ -37,361 +44,223 @@ func PointRect(p Point) Rect {
 	}
 }
 
-// NewRect crea un rectángulo.
-func NewRect(min, max Point) Rect {
-	return Rect{
-		Min: min,
-		Max: max,
-	}
-}
-
-// Normalize asegura que Min <= Max.
-func (r Rect) Normalize() Rect {
-	return Rect{
-		Min: Point{
-			Lat: math.Min(r.Min.Lat, r.Max.Lat),
-			Lon: math.Min(r.Min.Lon, r.Max.Lon),
-		},
-		Max: Point{
-			Lat: math.Max(r.Min.Lat, r.Max.Lat),
-			Lon: math.Max(r.Min.Lon, r.Max.Lon),
-		},
-	}
-}
-
-// Area devuelve el área del rectángulo en unidades de coordenadas.
 func (r Rect) Area() float64 {
-	r = r.Normalize()
-
 	return (r.Max.Lat - r.Min.Lat) *
 		(r.Max.Lon - r.Min.Lon)
 }
 
-// Union devuelve el MBR que contiene ambos rectángulos.
-func (r Rect) Union(other Rect) Rect {
-	r = r.Normalize()
-	other = other.Normalize()
-
+func (r Rect) Union(o Rect) Rect {
 	return Rect{
 		Min: Point{
-			Lat: math.Min(
-				r.Min.Lat,
-				other.Min.Lat,
-			),
-			Lon: math.Min(
-				r.Min.Lon,
-				other.Min.Lon,
-			),
+			Lat: math.Min(r.Min.Lat, o.Min.Lat),
+			Lon: math.Min(r.Min.Lon, o.Min.Lon),
 		},
 		Max: Point{
-			Lat: math.Max(
-				r.Max.Lat,
-				other.Max.Lat,
-			),
-			Lon: math.Max(
-				r.Max.Lon,
-				other.Max.Lon,
-			),
+			Lat: math.Max(r.Max.Lat, o.Max.Lat),
+			Lon: math.Max(r.Max.Lon, o.Max.Lon),
 		},
 	}
 }
 
-// Enlargement calcula cuánto aumenta el área al incluir otro rectángulo.
-func (r Rect) Enlargement(other Rect) float64 {
-	return r.Union(other).Area() - r.Area()
+// Cuánto debe crecer el rectángulo para incluir otro rectángulo.
+func (r Rect) Enlargement(o Rect) float64 {
+	return r.Union(o).Area() - r.Area()
 }
 
-// Intersects indica si dos rectángulos se intersectan.
-func (r Rect) Intersects(other Rect) bool {
-	r = r.Normalize()
-	other = other.Normalize()
-
-	return r.Min.Lat <= other.Max.Lat &&
-		r.Max.Lat >= other.Min.Lat &&
-		r.Min.Lon <= other.Max.Lon &&
-		r.Max.Lon >= other.Min.Lon
+func (r Rect) Intersects(o Rect) bool {
+	return !(r.Max.Lat < o.Min.Lat ||
+		r.Min.Lat > o.Max.Lat ||
+		r.Max.Lon < o.Min.Lon ||
+		r.Min.Lon > o.Max.Lon)
 }
 
-// ContainsPoint indica si el punto está dentro del rectángulo.
-func (r Rect) ContainsPoint(p Point) bool {
-	r = r.Normalize()
+func (r Rect) Contains(p Point) bool {
 	return p.Lat >= r.Min.Lat &&
 		p.Lat <= r.Max.Lat &&
 		p.Lon >= r.Min.Lon &&
 		p.Lon <= r.Max.Lon
 }
 
-// Entry es una entrada del R-Tree.
-// El RID permite recuperar posteriormente el registro real desde el Heap File.
+
+// 2. ENTRADA DEL R-TREE
 type Entry struct {
 	Point Point
 	RID   storage.RID
 }
 
-// node representa un nodo del R-Tree.
-type node struct {
-	leaf bool
-	rect Rect
-	entries []Entry
-	children []*node
-	parent *node
+
+// 3. NODO
+type Node struct {
+	Leaf     bool
+	Entries  []Entry
+	Children []*Node
 }
 
-// RTree representa el índice espacial.
+// MBR = Minimum Bounding Rectangle
+func (n *Node) MBR() Rect {
+	if n.Leaf {
+		if len(n.Entries) == 0 {
+			return Rect{}
+		}
+
+		r := PointRect(n.Entries[0].Point)
+
+		for _, e := range n.Entries[1:] {
+			r = r.Union(PointRect(e.Point))
+		}
+
+		return r
+	}
+
+	if len(n.Children) == 0 {
+		return Rect{}
+	}
+
+	r := n.Children[0].MBR()
+
+	for _, child := range n.Children[1:] {
+		r = r.Union(child.MBR())
+	}
+
+	return r
+}
+
+// 4. R-TREE
 type RTree struct {
-	root *node
-
-	maxEntries int
-	minEntries int
+	Root       *Node
+	MaxEntries int
 }
 
-// New crea un R-Tree.
-// maxEntries indica cuántas entradas puede contener un nodo antes de dividirse.
 func New(maxEntries int) *RTree {
-	if maxEntries < 4 {
+	if maxEntries < 2 {
 		maxEntries = 4
 	}
 
-	minEntries := maxEntries / 2
-
 	return &RTree{
-		root: &node{
-			leaf: true,
+		Root: &Node{
+			Leaf: true,
 		},
-		maxEntries: maxEntries,
-		minEntries: minEntries,
+		MaxEntries: maxEntries,
 	}
 }
 
-func NewDefault() *RTree {
-	return New(8)
-}
+// 5. INSERCIÓN
+func (t *RTree) Insert(e Entry) {
+	split := t.insert(t.Root, e)
 
-// Insert agrega un punto al R-Tree.
-func (t *RTree) Insert(entry Entry) {
+	// Si la raíz se dividió, creamos una nueva raíz.
+	if split != nil {
+		oldRoot := t.Root
 
-	rect := PointRect(entry.Point)
-
-	leaf := t.chooseLeaf(
-		t.root,
-		rect,
-	)
-
-	leaf.entries = append(
-		leaf.entries,
-		entry,
-	)
-
-	t.expandToParent(leaf)
-
-	if len(leaf.entries) > t.maxEntries {
-		t.splitLeaf(leaf)
+		t.Root = &Node{
+			Leaf: false,
+			Children: []*Node{
+				oldRoot,
+				split,
+			},
+		}
 	}
 }
 
-// SearchRect busca todos los puntos cuyo MBR
-// intersecta el rectángulo indicado.
-func (t *RTree) SearchRect(query Rect) []Entry {
+func (t *RTree) insert(n *Node, e Entry) *Node {
 
-	query = query.Normalize()
+	// Caso: estamos en una hoja
+	if n.Leaf {
+		n.Entries = append(n.Entries, e)
 
-	out := make([]Entry, 0)
+		if len(n.Entries) > t.MaxEntries {
+			return t.splitNode(n)
+		}
 
-	t.searchRect(
-		t.root,
-		query,
-		&out,
-	)
-
-	return out
-}
-
-func (t *RTree) SearchRadius(
-	center Point,
-	radius float64,
-	metric DistanceMetric,
-) []Entry {
-
-	if radius < 0 {
 		return nil
 	}
 
-	bbox := radiusBoundingBox(
-		center,
-		radius,
-		metric,
-	)
+	// Caso: nodo interno
+	index := t.chooseChild(n, e.Point)
 
-	candidates := t.SearchRect(bbox)
+	split := t.insert(n.Children[index], e)
 
-	out := make(
-		[]Entry,
-		0,
-		len(candidates),
-	)
+	if split != nil {
+		n.Children = append(n.Children, split)
+	}
 
-	for _, entry := range candidates {
+	if len(n.Children) > t.MaxEntries {
+		return t.splitNode(n)
+	}
 
-		distance := Distance(
-			center,
-			entry.Point,
-			metric,
-		)
+	return nil
+}
 
-		if distance <= radius+1e-12 {
-			out = append(
-				out,
-				entry,
-			)
+// Elegimos el hijo cuyo MBR necesita crecer menos.
+func (t *RTree) chooseChild(n *Node, p Point) int {
+	pointRect := PointRect(p)
+
+	best := 0
+	bestGrowth := math.Inf(1)
+
+	for i, child := range n.Children {
+		growth := child.MBR().Enlargement(pointRect)
+
+		if growth < bestGrowth {
+			bestGrowth = growth
+			best = i
 		}
 	}
 
-	// Los dejamos ordenados desde el más cercano
-	// hasta el más lejano.
-	sort.SliceStable(
-		out,
-		func(i, j int) bool {
-
-			di := Distance(
-				center,
-				out[i].Point,
-				metric,
-			)
-
-			dj := Distance(
-				center,
-				out[j].Point,
-				metric,
-			)
-
-			if di == dj {
-
-				if out[i].RID.PageID ==
-					out[j].RID.PageID {
-
-					return out[i].RID.SlotID <
-						out[j].RID.SlotID
-				}
-
-				return out[i].RID.PageID <
-					out[j].RID.PageID
-			}
-
-			return di < dj
-		},
-	)
-
-	return out
+	return best
 }
 
-// Distance calcula la distancia entre dos puntos.
-func Distance(
-	a Point,
-	b Point,
-	metric DistanceMetric,
-) float64 {
+func (t *RTree) splitNode(n *Node) *Node {
+	// Nodo hoja
 
-	switch metric {
+	if n.Leaf {
 
-	case Euclidean:
+		sort.Slice(n.Entries, func(i, j int) bool {
+			return n.Entries[i].Point.Lon <
+				n.Entries[j].Point.Lon
+		})
 
-		return math.Hypot(
-			a.Lat-b.Lat,
-			a.Lon-b.Lon,
-		)
+		middle := len(n.Entries) / 2
 
-	case Haversine:
-
-		lat1 := degToRad(a.Lat)
-		lat2 := degToRad(b.Lat)
-
-		dLat := degToRad(
-			b.Lat - a.Lat,
-		)
-
-		dLon := degToRad(
-			b.Lon - a.Lon,
-		)
-
-		h := math.Sin(dLat/2)*
-			math.Sin(dLat/2) +
-			math.Cos(lat1)*
-				math.Cos(lat2)*
-				math.Sin(dLon/2)*
-				math.Sin(dLon/2)
-
-		// Protección contra pequeños errores numéricos.
-		h = math.Min(
-			1,
-			math.Max(0, h),
-		)
-
-		return 2 *
-			EarthRadiusKm *
-			math.Asin(
-				math.Sqrt(h),
-			)
-
-	default:
-		return math.NaN()
-	}
-}
-
-func radiusBoundingBox(
-	center Point,
-	radius float64,
-	metric DistanceMetric,
-) Rect {
-
-	switch metric {
-
-	case Euclidean:
-
-		return NewRect(
-			Point{
-				Lat: center.Lat - radius,
-				Lon: center.Lon - radius,
-			},
-			Point{
-				Lat: center.Lat + radius,
-				Lon: center.Lon + radius,
-			},
-		)
-
-	case Haversine:
-
-		// Aproximación local de grados a kilómetros.
-		latDelta := radius / 111.32
-
-		cosLat := math.Cos(
-			degToRad(center.Lat),
-		)
-
-		if math.Abs(cosLat) < 1e-12 {
-			cosLat = 1e-12
+		newNode := &Node{
+			Leaf: true,
+			Entries: append(
+				[]Entry(nil),
+				n.Entries[middle:]...,
+			),
 		}
 
-		lonDelta :=
-			radius /
-				(111.32 * math.Abs(cosLat))
+		n.Entries = n.Entries[:middle]
 
-		return NewRect(
-			Point{
-				Lat: center.Lat - latDelta,
-				Lon: center.Lon - lonDelta,
-			},
-			Point{
-				Lat: center.Lat + latDelta,
-				Lon: center.Lon + lonDelta,
-			},
-		)
-
-	default:
-
-		return PointRect(center)
+		return newNode
 	}
+
+	sort.Slice(n.Children, func(i, j int) bool {
+		return n.Children[i].MBR().Min.Lon <
+			n.Children[j].MBR().Min.Lon
+	})
+
+	middle := len(n.Children) / 2
+
+	newNode := &Node{
+		Leaf: false,
+		Children: append(
+			[]*Node(nil),
+			n.Children[middle:]...,
+		),
+	}
+
+	n.Children = n.Children[:middle]
+	return newNode
 }
 
-func degToRad(v float64) float64 {
-	return v * math.Pi / 180
-}
+// 7. MÉTRICAS DE DISTANCIA
+// DistanceMetric representa la métrica usada para calcular distancias.
+type DistanceMetric int
+
+const (
+	Euclidean DistanceMetric = iota
+	Haversine
+)
+
+const earthRadiusKm = 6371.0
