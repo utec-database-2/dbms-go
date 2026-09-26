@@ -337,4 +337,120 @@ func (t *RTree) searchRect(
 	}
 }
 
+// 9. CONSULTA POR RADIO
+// radius:
+//   - Haversine -> kilómetros
+//   - Euclidean -> unidades de coordenadas
 
+func (t *RTree) SearchRadius(
+	center Point,
+	radius float64,
+	metric DistanceMetric,
+) []Entry {
+
+	if radius < 0 {
+		return nil
+	}
+
+	var query Rect
+
+	switch metric {
+
+	case Euclidean:
+
+		query = NewRect(
+			Point{
+				Lat: center.Lat - radius,
+				Lon: center.Lon - radius,
+			},
+			Point{
+				Lat: center.Lat + radius,
+				Lon: center.Lon + radius,
+			},
+		)
+
+	case Haversine:
+
+		// Convertimos aproximadamente el radio
+		// de kilómetros a grados.
+
+		dLat := radius / earthRadiusKm * 180 / math.Pi
+
+		cosLat := math.Cos(center.Lat * math.Pi / 180)
+
+		dLon := radius / (earthRadiusKm * cosLat)
+		dLon = dLon * 180 / math.Pi
+
+		query = NewRect(
+			Point{
+				Lat: center.Lat - dLat,
+				Lon: center.Lon - dLon,
+			},
+			Point{
+				Lat: center.Lat + dLat,
+				Lon: center.Lon + dLon,
+			},
+		)
+	}
+
+	var result []Entry
+
+	t.searchRadius(
+		t.Root,
+		center,
+		radius,
+		metric,
+		query,
+		&result,
+	)
+
+	return result
+}
+
+func (t *RTree) searchRadius(
+	n *Node,
+	center Point,
+	radius float64,
+	metric DistanceMetric,
+	query Rect,
+	result *[]Entry,
+) {
+
+	// Si el MBR no tiene relación con la zona consultada,
+	// descartamos todo el nodo.
+	if !n.MBR().Intersects(query) {
+		return
+	}
+
+	// Hoja
+	if n.Leaf {
+
+		for _, e := range n.Entries {
+
+			d := Distance(
+				center,
+				e.Point,
+				metric,
+			)
+
+			if d <= radius {
+				*result = append(*result, e)
+			}
+		}
+
+		return
+	}
+
+	// Nodo interno
+	for _, child := range n.Children {
+
+		t.searchRadius(
+			child,
+			center,
+			radius,
+			metric,
+			query,
+			result,
+		)
+	}
+}
