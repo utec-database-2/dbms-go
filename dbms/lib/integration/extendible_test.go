@@ -206,7 +206,7 @@ func TestNewFromStorage_RebuildsFromExistingData(t *testing.T) {
 		}
 	}
 
-	idx, err := extendible.NewFromStorage(4, path, decodeTestKey)
+	idx, err := extendible.NewFromStorage(4, hf, decodeTestKey)
 	if err != nil {
 		t.Fatalf("NewFromStorage failed: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestNewFromStorage_RebuildsFromExistingData(t *testing.T) {
 	hf.Close()
 }
 
-func testNewFromStorage_SurvivesReopen(t *testing.T) {
+func TestNewFromStorage_SurvivesReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "test.heap")
 	hf, err := heap.Create(path, heap.DefaultPageSize)
 	if err != nil {
