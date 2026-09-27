@@ -224,13 +224,13 @@ func NewFromStorage(bucketSize int, hf *heap.HeapFile, keyOf keyExtractor) (*Ind
 		return nil, fmt.Errorf("extendible: key extractor is nil")
 	}
 	idx := New(bucketSize)
-	if err := idx.rebuild(hf, keyOf); err != nil {
+	if err := idx.Rebuild(hf, keyOf); err != nil {
 		return nil, err
 	}
 	return idx, nil
 }
 
-func (idx *Index) rebuild(hf *heap.HeapFile, keyOf keyExtractor) error {
+func (idx *Index) Rebuild(hf *heap.HeapFile, keyOf keyExtractor) error {
 	var scanErr error
 	err := hf.Scan(func(rid storage.RID, payload []byte) bool {
 		key, err := keyOf(payload)
