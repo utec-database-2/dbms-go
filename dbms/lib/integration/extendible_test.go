@@ -206,7 +206,7 @@ func TestNewFromStorage_RebuildsFromExistingData(t *testing.T) {
 		}
 	}
 
-	idx, err := NewFromStorage(4, path, decodeTestKey)
+	idx, err := extendible.NewFromStorage(4, path, decodeTestKey)
 	if err != nil {
 		t.Fatalf("NewFromStorage failed: %v", err)
 	}
@@ -240,7 +240,7 @@ func testNewFromStorage_SurvivesReopen(t *testing.T) {
 	}
 	defer reopened.Close()
 
-	idx, err := NewFromStorage(4, reopened, decodeTestKey)
+	idx, err := extendible.NewFromStorage(4, reopened, decodeTestKey)
 	if err != nil {
 		t.Fatalf("NewFromStorage failed after reopening: %v", err)
 	}
@@ -253,7 +253,7 @@ func testNewFromStorage_SurvivesReopen(t *testing.T) {
 }
 
 func TestRebuild_ClearsPreviousState(t *testing.T) {
-	idx := New(4)
+	idx := extendible.New(4)
 	if err := idx.Insert("old-key-that-should-be-cleared", storage.RID{PageID: 0, SlotID: 0}); err != nil {
 		t.Fatalf("Insert failed: %v", err)
 	}
