@@ -251,3 +251,38 @@ func testNewFromStorage_SurvivesReopen(t *testing.T) {
 		}
 	}
 }
+
+func TestRebuild_ClearsPreviousState(t *testing.T) {
+	idx := New(4)
+	if err := idx.Insert("old-key-that-should-be-cleared", storage.RID{PageID: 0, SlotID: 0}); err != nil {
+		t.Fatalf("Insert failed: %v", err)
+	}
+
+	// Simulate a rebuild by creating a new index from the same storage
+	path := filepath.Join(t.TempDir(), "test.heap")
+	hf, err := heap.Create(path, heap.DefaultPageSize)
+	if err != nil {
+		t.Fatalf("heap.Create failed: %v", err)
+	}
+	defer hf.Close()
+
+	// Insert new data into the heap file
+	if _, err := hf.Insert(encodeTestRow(t, 99, "new-data")); err != nil {
+		t.Fatalf("hf.Insert failed: %v", err)
+	}
+
+	if err := idx.Rebuild(hf, decodeTestKey); err != nil {
+		t.Fatalf("Rebuild failed: %v", err)
+	}
+
+	// The old key should no longer be found
+	got, _ := idx.Search("old-key-that-should-be-cleared")
+	if len(got) != 0 {
+		t.Fatalf("Expected 0 results for old key, got %d", len(got))
+	}
+
+	if got, _ := idx.Search(99); len(got) != 1 {
+		t.Fatalf("Expected result 99 for new key, got %d", len(got))
+	}
+
+}
