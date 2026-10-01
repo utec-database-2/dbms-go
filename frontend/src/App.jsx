@@ -5,6 +5,7 @@ import FilePanel from "./components/FilePanel";
 import QueryPanel from "./components/QueryPanel";
 import ResultPanel from "./components/ResultPanel";
 import ExecutionPlanPanel from "./components/ExecutionPlanPanel";
+import MapPanel from "./components/MapPanel";
 import { importCsv, listTables, runQuery } from "./api";
 import "./App.css";
 
@@ -91,7 +92,11 @@ function App() {
 
   return (
     <div className={darkMode ? "app dark" : "app light"}>
-      <Header darkMode={darkMode} toggleTheme={toggleTheme} apiOk={!tablesError} />
+      <Header
+        darkMode={darkMode}
+        toggleTheme={toggleTheme}
+        apiOk={!tablesError}
+      />
 
       <Toolbar
         tables={tables}
@@ -134,6 +139,9 @@ function App() {
 
         <ExecutionPlanPanel result={result} query={lastQuery} />
       </main>
+      <div className="spatial-section">
+        <MapPanel />
+      </div>
     </div>
   );
 }
