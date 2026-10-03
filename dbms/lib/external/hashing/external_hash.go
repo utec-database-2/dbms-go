@@ -33,9 +33,6 @@ type Hasher interface {
 }
 
 // ExternalHashProcessor implementa Hasher con hashing externo particionado.
-//
-// TODO(Sergio):
-//
 
 type ExternalHashProcessor struct {
 	NumPartitions int
@@ -53,7 +50,8 @@ var _ Hasher = (*ExternalHashProcessor)(nil)
 // tipo (p.ej. int 1 vs string "1") no colisionen en la misma partición.
 func hashKey(k any) uint64 {
 	h := fnv.New64a()
-	h.Write([]byte(fmt.Sprintf("%T:%v", k, k)))
+	output := fmt.Sprintf("%T: %v", k, k)
+	h.Write([]byte(output))
 	return h.Sum64()
 }
 
@@ -166,8 +164,8 @@ func (p *ExternalHashProcessor) GroupBy(input iterator.RecordIterator, keyFn ite
 
 	// Orden determinista para que el resultado no dependa de la iteración de map.
 	sort.Slice(groups, func(i, j int) bool {
-		return fmt.Sprintf("%T:%v", groups[i].Key, groups[i].Key) <
-			fmt.Sprintf("%T:%v", groups[j].Key, groups[j].Key)
+		return fmt.Sprintf("%T: %v", groups[i].Key, groups[i].Key) <
+			fmt.Sprintf("%T: %v", groups[j].Key, groups[j].Key)
 	})
 	return groups, nil
 }
