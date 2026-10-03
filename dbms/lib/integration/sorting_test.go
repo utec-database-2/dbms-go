@@ -1,8 +1,8 @@
 package integration
 
 import (
-	"os"
 	"math/rand"
+	"os"
 	"testing"
 
 	"github.com/dbms-go/v2/dbms/lib/external/iterator"
@@ -71,7 +71,6 @@ func TestKWayMergeSorter_ManyRunsForcesMultipleMergeRounds(t *testing.T) {
 		}
 	}
 }
-
 
 func TestKWayMergeSorter_MultipleRunsWithRemainder(t *testing.T) {
 	var records []shared.Record
@@ -156,6 +155,31 @@ func TestKWayMergeSorter_TemporaryRunFilesAreCleanedUp(t *testing.T) {
 	for _, e := range entries {
 		if len(e.Name()) >= 4 && e.Name()[:4] == "run-" {
 			t.Errorf("el run temporal %s no se borró después del merge", e.Name())
+		}
+	}
+}
+
+func TestKWayMergeSorter_SortsBooleans(t *testing.T) {
+	records := []shared.Record{
+		{Values: []any{true}},
+		{Values: []any{false}},
+		{Values: []any{true}},
+	}
+	sorter := sorting.New(2, t.TempDir())
+	keyFn := func(r shared.Record) any { return r.Values[0] }
+
+	out, err := sorter.Sort(iterator.NewSliceIterator(records), keyFn)
+	if err != nil {
+		t.Fatalf("Sort falló: %v", err)
+	}
+	got, err := iterator.Drain(out)
+	if err != nil {
+		t.Fatalf("Drain falló: %v", err)
+	}
+	want := []bool{false, true, true}
+	for i, r := range got {
+		if r.Values[0] != want[i] {
+			t.Fatalf("posición %d: esperaba %v, obtuve %v", i, want[i], r.Values[0])
 		}
 	}
 }
