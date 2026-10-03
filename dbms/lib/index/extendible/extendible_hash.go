@@ -231,6 +231,13 @@ func NewFromStorage(bucketSize int, hf *heap.HeapFile, keyOf keyExtractor) (*Ind
 }
 
 func (idx *Index) Rebuild(hf *heap.HeapFile, keyOf keyExtractor) error {
+	// Reset the index to its initial state
+	idx.mu.Lock()
+	idx.globalDepth = 1
+	idx.directory = []*bucket{newBucket(1), newBucket(1)}
+	idx.mu.Unlock()
+
+	// Scan the heap file and insert entries into the index
 	var scanErr error
 	err := hf.Scan(func(rid storage.RID, payload []byte) bool {
 		key, err := keyOf(payload)
