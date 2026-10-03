@@ -53,6 +53,8 @@ func lessKey(a, b any) bool {
 		return av < b.(string)
 	case float64:
 		return av < b.(float64)
+	case bool:
+		return !av && b.(bool)
 	default:
 		panic(fmt.Sprintf("sorting: key type not supported: %T", a))
 	}
