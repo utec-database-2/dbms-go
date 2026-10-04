@@ -32,6 +32,11 @@ type Hasher interface {
 	HashJoin(left, right iterator.RecordIterator, leftKeyFn, rightKeyFn iterator.KeyFunc) ([]JoinedPair, error)
 }
 
+// defaultNumPartitions es el número de particiones a usar si el caller no especifica un valor
+// válido (mayor a 0). Un número mayor de particiones reduce la probabilidad de que una
+// partición no quepa en memoria, pero aumenta el overhead de I/O y de creación de archivos temporales.
+const defaultNumPartitions = 16
+
 // ExternalHashProcessor implementa Hasher con hashing externo particionado.
 
 type ExternalHashProcessor struct {
@@ -40,6 +45,9 @@ type ExternalHashProcessor struct {
 }
 
 func New(numPartitions int, tempDir string) *ExternalHashProcessor {
+	if numPartitions < 1 {
+		numPartitions = defaultNumPartitions
+	}
 	return &ExternalHashProcessor{NumPartitions: numPartitions, TempDir: tempDir}
 }
 
@@ -55,9 +63,11 @@ func hashKey(k any) uint64 {
 	return h.Sum64()
 }
 
+// partitionCount devuelve el número de particiones a usar, garantizando que sea mayor a 0.
+// Si el caller no especifica un valor válido, devuelve defaultNumPartitions.
 func (p *ExternalHashProcessor) partitionCount() int {
 	if p.NumPartitions < 1 {
-		return 1
+		return defaultNumPartitions
 	}
 	return p.NumPartitions
 }
