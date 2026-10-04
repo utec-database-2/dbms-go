@@ -140,3 +140,10 @@ func TestExternalHashProcessor_EmptyInputs(t *testing.T) {
 		t.Fatalf("esperaba 0 pares, obtuve %d", len(pairs))
 	}
 }
+
+func TestExternalHashProcessor_DefaultPartitionCountWhenNotSpecified(t *testing.T) {
+	proc := hashing.New(0, t.TempDir()) // 0 particiones no es válido, debe usar defaultNumPartitions
+	if proc.NumPartitions != 16 {
+		t.Fatalf("esperaba defaultNumPartitions=16 (default) con 0 explícito, obtuve %d", proc.NumPartitions)
+	}
+}
