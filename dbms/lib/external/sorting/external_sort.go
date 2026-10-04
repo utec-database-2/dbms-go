@@ -22,6 +22,10 @@ import (
 // uno nuevo, hasta que sobran pocos como para mergear de una.
 const maxFanIn = 64
 
+// defaultMemoryBufferSize se usa cuando el caller no especifica un valor
+// válido (mayor a 0).
+const defaultMemoryBufferSize = 1000
+
 // Sorter es el contrato de External Sorting.
 type Sorter interface {
 	// Sort debe funcionar aunque el input no quepa en memoria
@@ -36,7 +40,19 @@ type KWayMergeSorter struct {
 }
 
 func New(memoryBufferSize int, tempDir string) *KWayMergeSorter {
+	if memoryBufferSize < 1 {
+		memoryBufferSize = defaultMemoryBufferSize
+	}
 	return &KWayMergeSorter{MemoryBufferSize: memoryBufferSize, TempDir: tempDir}
+}
+
+// memoryBufferSize devuelve el tamaño de buffer en memoria a usar para
+// cada run inicial, garantizando que sea mayor a 0.
+func (s *KWayMergeSorter) memoryBufferSize() int {
+	if s.MemoryBufferSize < 1 {
+		return defaultMemoryBufferSize
+	}
+	return s.MemoryBufferSize
 }
 
 // Compile-time check: *KWayMergeSorter debe satisfacer Sorter.
@@ -156,10 +172,11 @@ func (s *KWayMergeSorter) Sort(input iterator.RecordIterator, keyFn iterator.Key
 // writeInitialRuns parte input en bloques de MemoryBufferSize registros,
 // ordena cada bloque en memoria y lo escribe como un run en un temp file.
 func (s *KWayMergeSorter) writeInitialRuns(input iterator.RecordIterator, keyFn iterator.KeyFunc) ([]string, error) {
+	bufSize := s.memoryBufferSize()
 	var runPaths []string
 	for {
-		buffer := make([]shared.Record, 0, s.MemoryBufferSize)
-		for len(buffer) < s.MemoryBufferSize {
+		buffer := make([]shared.Record, 0, bufSize)
+		for len(buffer) < bufSize {
 			rec, ok, err := input.Next()
 			if err != nil {
 				return runPaths, err
@@ -189,7 +206,7 @@ func (s *KWayMergeSorter) writeInitialRuns(input iterator.RecordIterator, keyFn 
 		}
 		f.Close()
 		runPaths = append(runPaths, f.Name())
-		if len(buffer) < s.MemoryBufferSize {
+		if len(buffer) < bufSize {
 			break
 		}
 	}
