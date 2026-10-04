@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/dbms-go/v2/dbms/lib/sql"
+	"github.com/dbms-go/v2/dbms/lib/spatial"
 )
 
 func main() {
@@ -30,10 +31,14 @@ func main() {
 	}
 	defer db.Close()
 
+	// SPATIAL
+	spatialStore := spatial.NewDemoStore()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/tables", handleListTables(db))
 	mux.HandleFunc("POST /api/query", handleQuery(db))
 	mux.HandleFunc("POST /api/tables/{name}/import", handleImportCSV(db))
+	mux.HandleFunc("POST /api/spatial/range",handleSpatialRange(spatialStore),)
 
 	log.Printf("MinigestorBD escuchando en %s (datos en %s)", *addr, *dir)
 	log.Fatal(http.ListenAndServe(*addr, withCORS(mux)))
@@ -242,4 +247,38 @@ func rowToSQLTuple(info *sql.TableInfo, record []string) (string, error) {
 		}
 	}
 	return "(" + strings.Join(vals, ", ") + ")", nil
+}
+
+// POST /api/spatial/range
+func handleSpatialRange(store *spatial.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+
+		var req spatial.RangeRequest
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(
+				w,
+				http.StatusBadRequest,
+				fmt.Errorf("body inválido: %w", err),
+			)
+			return
+		}
+
+		result, err := store.SearchRange(req)
+
+		if err != nil {
+			writeError(
+				w,
+				http.StatusBadRequest,
+				err,
+			)
+			return
+		}
+
+		writeJSON(
+			w,
+			http.StatusOK,
+			result,
+		)
+	}
 }
