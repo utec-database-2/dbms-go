@@ -34,9 +34,24 @@ export async function runQuery(sql) {
 export async function importCsv(tableName, file) {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch(`${BASE_URL}/api/tables/${encodeURIComponent(tableName)}/import`, {
+  const res = await fetch(
+    `${BASE_URL}/api/tables/${encodeURIComponent(tableName)}/import`,
+    {
+      method: "POST",
+      body: form,
+    },
+  );
+  return parseJSON(res);
+}
+
+export async function searchSpatialRange(data) {
+  const res = await fetch(`${BASE_URL}/api/spatial/range`, {
     method: "POST",
-    body: form,
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(data),
   });
+
   return parseJSON(res);
 }
