@@ -11,6 +11,7 @@ import (
 
 	"github.com/dbms-go/v2/dbms/lib/index/common"
 	"github.com/dbms-go/v2/dbms/lib/storage"
+	"github.com/dbms-go/v2/dbms/lib/storage/heap"
 )
 
 // MaxGlobalDepth acota cuánto puede crecer el directorio. hashKey produce
@@ -209,4 +210,52 @@ func (idx *Index) GlobalDepth() int {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 	return idx.globalDepth
+}
+
+type keyExtractor func(payload []byte) (any, error)
+
+// NewFromStorage crea un índice y lo reconstruye escaneando storage -
+// mismo que common.NewFromStorage, pero usando hashing extensible en vez de B+Tree.
+func NewFromStorage(bucketSize int, hf *heap.HeapFile, keyOf keyExtractor) (*Index, error) {
+	if hf == nil {
+		return nil, fmt.Errorf("extendible: heap file is nil")
+	}
+	if keyOf == nil {
+		return nil, fmt.Errorf("extendible: key extractor is nil")
+	}
+	idx := New(bucketSize)
+	if err := idx.Rebuild(hf, keyOf); err != nil {
+		return nil, err
+	}
+	return idx, nil
+}
+
+func (idx *Index) Rebuild(hf *heap.HeapFile, keyOf keyExtractor) error {
+	// Reset the index to its initial state
+	idx.mu.Lock()
+	idx.globalDepth = 1
+	idx.directory = []*bucket{newBucket(1), newBucket(1)}
+	idx.mu.Unlock()
+
+	// Scan the heap file and insert entries into the index
+	var scanErr error
+	err := hf.Scan(func(rid storage.RID, payload []byte) bool {
+		key, err := keyOf(payload)
+		if err != nil {
+			scanErr = err
+			return false
+		}
+		if err := idx.Insert(key, rid); err != nil {
+			scanErr = err
+			return false
+		}
+		return true
+	})
+	if err != nil {
+		return err
+	}
+	if scanErr != nil {
+		return scanErr
+	}
+	return nil
 }
