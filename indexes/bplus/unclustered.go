@@ -1,14 +1,15 @@
 package bplus
 
 import (
+	"errors"
 	"fmt"
+	"os"
 	"sync"
 
 	"github.com/dbms-go/v2/dbms/lib/storage/heap"
 )
 
-// KeyExtractor obtiene de un payload la clave secundaria que debe indexarse.
-// Es necesaria para reconstruir el índice no agrupado al reabrir el HeapFile.
+// KeyExtractor obtiene del payload la clave secundaria que debe indexarse.
 type KeyExtractor[K Ordered] func(payload []byte) (K, error)
 
 // UnclusteredRecord es un registro resuelto a través de clave -> RID -> HeapFile.
@@ -18,15 +19,11 @@ type UnclusteredRecord[K Ordered] struct {
 	Payload []byte
 }
 
-// UnclusteredStats combina métricas del árbol y del HeapFile.
 type UnclusteredStats struct {
 	Tree    TreeStats
 	Storage heap.Stats
 }
 
-// UnclusteredIndex implementa un B+ no agrupado.
-// El HeapFile conserva los datos en orden físico independiente de la clave;
-// el B+ solo almacena clave secundaria -> RID físico.
 type UnclusteredIndex[K Ordered] struct {
 	mu      sync.RWMutex
 	tree    *Tree[K, heap.RecordID]
@@ -35,7 +32,78 @@ type UnclusteredIndex[K Ordered] struct {
 	order   int
 }
 
-func NewUnclusteredIndex[K Ordered](order int, storage *heap.HeapFile, keyOf KeyExtractor[K]) (*UnclusteredIndex[K], error) {
+// CreateUnclusteredIndex crea/trunca indexPath y construye el índice inicial
+// escaneando el HeapFile una única vez.
+func CreateUnclusteredIndex[K Ordered](indexPath string, order int, storage *heap.HeapFile, keyOf KeyExtractor[K]) (*UnclusteredIndex[K], error) {
+	if storage == nil {
+		return nil, fmt.Errorf("bplus: nil heap storage")
+	}
+	if keyOf == nil {
+		return nil, fmt.Errorf("bplus: nil key extractor")
+	}
+	tree, err := Create[K, heap.RecordID](indexPath, order)
+	if err != nil {
+		return nil, err
+	}
+	idx := &UnclusteredIndex[K]{tree: tree, storage: storage, keyOf: keyOf, order: order}
+	if err := idx.Rebuild(); err != nil {
+		tree.Close()
+		return nil, err
+	}
+	return idx, nil
+}
+
+// OpenUnclusteredIndex reabre el archivo del B+ sin escanear ni reconstruir el
+// HeapFile. Esa es la diferencia principal respecto de la versión anterior.
+func OpenUnclusteredIndex[K Ordered](indexPath string, storage *heap.HeapFile, keyOf KeyExtractor[K]) (*UnclusteredIndex[K], error) {
+	if storage == nil {
+		return nil, fmt.Errorf("bplus: nil heap storage")
+	}
+	if keyOf == nil {
+		return nil, fmt.Errorf("bplus: nil key extractor")
+	}
+	tree, err := Open[K, heap.RecordID](indexPath)
+	if err != nil {
+		return nil, err
+	}
+	return &UnclusteredIndex[K]{tree: tree, storage: storage, keyOf: keyOf, order: tree.Order()}, nil
+}
+
+func OpenOrCreateUnclusteredIndex[K Ordered](indexPath string, order int, storage *heap.HeapFile, keyOf KeyExtractor[K]) (*UnclusteredIndex[K], error) {
+	if storage == nil {
+		return nil, fmt.Errorf("bplus: nil heap storage")
+	}
+	if keyOf == nil {
+		return nil, fmt.Errorf("bplus: nil key extractor")
+	}
+	_, statErr := os.Stat(indexPath)
+	existed := statErr == nil
+	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return nil, statErr
+	}
+
+	tree, err := OpenOrCreate[K, heap.RecordID](indexPath, order)
+	if err != nil {
+		return nil, err
+	}
+	idx := &UnclusteredIndex[K]{tree: tree, storage: storage, keyOf: keyOf, order: tree.Order()}
+	if !existed {
+		if err := idx.Rebuild(); err != nil {
+			tree.Close()
+			return nil, err
+		}
+	}
+	return idx, nil
+}
+
+// NewUnclusteredIndex conserva compatibilidad con llamadas antiguas.
+func NewUnclusteredIndex[K Ordered](order int, storage *heap.HeapFile, keyOf KeyExtractor[K], indexPath ...string) (*UnclusteredIndex[K], error) {
+	if len(indexPath) > 1 {
+		return nil, fmt.Errorf("bplus: expected at most one index path")
+	}
+	if len(indexPath) == 1 {
+		return OpenOrCreateUnclusteredIndex(indexPath[0], order, storage, keyOf)
+	}
 	if storage == nil {
 		return nil, fmt.Errorf("bplus: nil heap storage")
 	}
@@ -48,11 +116,25 @@ func NewUnclusteredIndex[K Ordered](order int, storage *heap.HeapFile, keyOf Key
 	}
 	idx := &UnclusteredIndex[K]{tree: tree, storage: storage, keyOf: keyOf, order: order}
 	if err := idx.Rebuild(); err != nil {
+		tree.Close()
 		return nil, err
 	}
 	return idx, nil
 }
 
+func (idx *UnclusteredIndex[K]) IndexPath() string {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.tree.Path()
+}
+
+func (idx *UnclusteredIndex[K]) Close() error {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	return idx.tree.Close()
+}
+
+// Rebuild es REINDEX explícito
 func (idx *UnclusteredIndex[K]) Rebuild() error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
@@ -74,23 +156,14 @@ func (idx *UnclusteredIndex[K]) Rebuild() error {
 	if extractErr != nil {
 		return extractErr
 	}
-
-	next, err := New[K, heap.RecordID](idx.order)
-	if err != nil {
+	if err := idx.tree.BulkLoad(entries); err != nil {
 		return err
 	}
-	if err := next.BulkLoad(entries); err != nil {
-		return err
-	}
-	if err := next.Validate(); err != nil {
-		return err
-	}
-	idx.tree = next
-	return nil
+	return idx.tree.Validate()
 }
 
-// Insert extrae la clave desde payload, guarda primero el registro en HeapFile
-// y después agrega su RID al B+.
+// Insert extrae la clave desde payload, persiste primero el registro en
+// HeapFile y después agrega clave -> RID al archivo B+.
 func (idx *UnclusteredIndex[K]) Insert(payload []byte) (heap.RecordID, error) {
 	key, err := idx.keyOf(payload)
 	if err != nil {
@@ -99,8 +172,6 @@ func (idx *UnclusteredIndex[K]) Insert(payload []byte) (heap.RecordID, error) {
 	return idx.InsertWithKey(key, payload)
 }
 
-// InsertWithKey permite que una capa superior entregue la clave ya parseada,
-// pero la verifica contra el payload para impedir inconsistencias silenciosas.
 func (idx *UnclusteredIndex[K]) InsertWithKey(key K, payload []byte) (heap.RecordID, error) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
@@ -131,7 +202,10 @@ func (idx *UnclusteredIndex[K]) Search(key K) ([]UnclusteredRecord[K], error) {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
-	rids := idx.tree.Search(key)
+	rids, err := idx.tree.SearchE(key)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]UnclusteredRecord[K], 0, len(rids))
 	for _, rid := range rids {
 		payload, err := idx.storage.Read(rid)
@@ -166,7 +240,10 @@ func (idx *UnclusteredIndex[K]) OrderedScan() ([]UnclusteredRecord[K], error) {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
-	entries := idx.tree.Items()
+	entries, err := idx.tree.ItemsE()
+	if err != nil {
+		return nil, err
+	}
 	out := make([]UnclusteredRecord[K], 0, len(entries))
 	for _, e := range entries {
 		payload, err := idx.storage.Read(e.Value)
@@ -182,7 +259,11 @@ func (idx *UnclusteredIndex[K]) Delete(key K, rid heap.RecordID) error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	if !idx.tree.Contains(key, rid) {
+	contains, err := idx.tree.ContainsE(key, rid)
+	if err != nil {
+		return err
+	}
+	if !contains {
 		return ErrNotFound
 	}
 	payload, err := idx.storage.Read(rid)
@@ -222,7 +303,11 @@ func (idx *UnclusteredIndex[K]) Stats() (UnclusteredStats, error) {
 	if err != nil {
 		return UnclusteredStats{}, err
 	}
-	return UnclusteredStats{Tree: idx.tree.Stats(), Storage: hs}, nil
+	ts, err := idx.tree.StatsE()
+	if err != nil {
+		return UnclusteredStats{}, err
+	}
+	return UnclusteredStats{Tree: ts, Storage: hs}, nil
 }
 
 func (idx *UnclusteredIndex[K]) Validate() error {
@@ -255,7 +340,10 @@ func (idx *UnclusteredIndex[K]) Validate() error {
 		return extractErr
 	}
 
-	items := idx.tree.Items()
+	items, err := idx.tree.ItemsE()
+	if err != nil {
+		return err
+	}
 	if len(items) != len(expected) {
 		return fmt.Errorf("%w: heap has %d records, tree has %d entries", ErrIndexStorageMismatch, len(expected), len(items))
 	}

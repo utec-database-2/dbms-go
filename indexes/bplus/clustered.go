@@ -3,6 +3,7 @@ package bplus
 import (
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 
 	"github.com/dbms-go/v2/dbms/lib/concurrency/sequential"
@@ -10,27 +11,23 @@ import (
 
 var ErrIndexStorageMismatch = errors.New("bplus: index/storage mismatch")
 
-// ClusteredRecord es un registro resuelto desde el B+ agrupado.
 type ClusteredRecord struct {
 	Key     int64
 	RID     sequential.RecordID
 	Payload []byte
 }
 
-// ClusteredStats combina métricas del árbol y del archivo secuencial.
 type ClusteredStats struct {
 	Tree    TreeStats
 	Storage sequential.Stats
 }
 
-// ClusteredIndex implementa el B+ agrupado del proyecto.
-//
-// La clave del B+ es la misma clave que determina el orden físico del SeqFile.
-// El árbol guarda RIDs lógicos estables y los payloads viven únicamente en el
-// archivo secuencial, evitando duplicar los datos dentro del índice.
-//
-// El árbol B+ se mantiene en memoria y se reconstruye al abrir usando
-// SeqFile.ScanRecords(). Los datos y RIDs sí son persistentes.
+// ClusteredIndex 
+// El SeqFile conserva los payloads ordenados físicamente por la misma clave.
+// El archivo *.idx conserva únicamente la estructura B+ y pares clave -> RID.
+// Cerrar el proceso ya no destruye el árbol: OpenClusteredIndex lo reabre desde
+// la raíz persistida sin ejecutar ScanRecords ni BulkLoad. esto era la observación del profesor
+// ya que anteriormente solo se enontraba en el RAM
 type ClusteredIndex struct {
 	mu      sync.RWMutex
 	tree    *Tree[int64, sequential.RecordID]
@@ -38,7 +35,71 @@ type ClusteredIndex struct {
 	order   int
 }
 
-func NewClusteredIndex(order int, storage *sequential.SeqFile) (*ClusteredIndex, error) {
+// CreateClusteredIndex crea/trunca indexPath y construye el índice a partir de
+// los registros actualmente vivos del SeqFile. Es la operación equivalente a
+// CREATE INDEX inicial.
+func CreateClusteredIndex(indexPath string, order int, storage *sequential.SeqFile) (*ClusteredIndex, error) {
+	if storage == nil {
+		return nil, fmt.Errorf("bplus: nil sequential storage")
+	}
+	tree, err := Create[int64, sequential.RecordID](indexPath, order)
+	if err != nil {
+		return nil, err
+	}
+	idx := &ClusteredIndex{tree: tree, storage: storage, order: order}
+	if err := idx.Rebuild(); err != nil {
+		tree.Close()
+		return nil, err
+	}
+	return idx, nil
+}
+
+// OpenClusteredIndex reabre un índice persistido. // abre el archivo del índice y lee su metadata.
+func OpenClusteredIndex(indexPath string, storage *sequential.SeqFile) (*ClusteredIndex, error) {
+	if storage == nil {
+		return nil, fmt.Errorf("bplus: nil sequential storage")
+	}
+	tree, err := Open[int64, sequential.RecordID](indexPath)
+	if err != nil {
+		return nil, err
+	}
+	return &ClusteredIndex{tree: tree, storage: storage, order: tree.Order()}, nil
+}
+
+// OpenOrCreateClusteredIndex abre el índice si ya existe. Si no existe, lo
+// crea y hace un Rebuild inicial desde el SeqFile una sola vez.
+func OpenOrCreateClusteredIndex(indexPath string, order int, storage *sequential.SeqFile) (*ClusteredIndex, error) {
+	if storage == nil {
+		return nil, fmt.Errorf("bplus: nil sequential storage")
+	}
+	_, statErr := os.Stat(indexPath)
+	existed := statErr == nil
+	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return nil, statErr
+	}
+
+	tree, err := OpenOrCreate[int64, sequential.RecordID](indexPath, order)
+	if err != nil {
+		return nil, err
+	}
+	idx := &ClusteredIndex{tree: tree, storage: storage, order: tree.Order()}
+	if !existed {
+		if err := idx.Rebuild(); err != nil {
+			tree.Close()
+			return nil, err
+		}
+	}
+	return idx, nil
+}
+
+//	NewClusteredIndex(order, storage, "employee_id_clustered.idx")
+func NewClusteredIndex(order int, storage *sequential.SeqFile, indexPath ...string) (*ClusteredIndex, error) {
+	if len(indexPath) > 1 {
+		return nil, fmt.Errorf("bplus: expected at most one index path")
+	}
+	if len(indexPath) == 1 {
+		return OpenOrCreateClusteredIndex(indexPath[0], order, storage)
+	}
 	if storage == nil {
 		return nil, fmt.Errorf("bplus: nil sequential storage")
 	}
@@ -48,13 +109,26 @@ func NewClusteredIndex(order int, storage *sequential.SeqFile) (*ClusteredIndex,
 	}
 	idx := &ClusteredIndex{tree: tree, storage: storage, order: order}
 	if err := idx.Rebuild(); err != nil {
+		tree.Close()
 		return nil, err
 	}
 	return idx, nil
 }
 
-// Rebuild reconstruye el árbol desde el almacenamiento persistente.
-// Construye primero un árbol temporal y solo lo publica si todo termina bien.
+func (idx *ClusteredIndex) IndexPath() string {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.tree.Path()
+}
+
+func (idx *ClusteredIndex) Close() error {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	return idx.tree.Close()
+}
+
+// Rebuild reconstruye explícitamente el archivo B+ a partir del SeqFile.
+
 func (idx *ClusteredIndex) Rebuild() error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
@@ -67,19 +141,10 @@ func (idx *ClusteredIndex) Rebuild() error {
 	for _, r := range records {
 		entries = append(entries, Entry[int64, sequential.RecordID]{Key: r.Key, Value: r.RID})
 	}
-
-	next, err := New[int64, sequential.RecordID](idx.order)
-	if err != nil {
+	if err := idx.tree.BulkLoad(entries); err != nil {
 		return err
 	}
-	if err := next.BulkLoad(entries); err != nil {
-		return err
-	}
-	if err := next.Validate(); err != nil {
-		return err
-	}
-	idx.tree = next
-	return nil
+	return idx.tree.Validate()
 }
 
 func (idx *ClusteredIndex) Insert(key int64, payload []byte) (sequential.RecordID, error) {
@@ -104,7 +169,10 @@ func (idx *ClusteredIndex) Search(key int64) ([]ClusteredRecord, error) {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
-	rids := idx.tree.Search(key)
+	rids, err := idx.tree.SearchE(key)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]ClusteredRecord, 0, len(rids))
 	for _, rid := range rids {
 		payload, err := idx.storage.Read(rid)
@@ -135,13 +203,16 @@ func (idx *ClusteredIndex) RangeSearch(low, high int64) ([]ClusteredRecord, erro
 	return out, nil
 }
 
-// OrderedScan devuelve todos los registros en orden de clave del B+.
-// Sirve como base para planes ORDER BY que puedan aprovechar el índice.
+// OrderedScan recorre las hojas enlazadas del B+ persistente y resuelve cada
+// RID contra el SeqFile.
 func (idx *ClusteredIndex) OrderedScan() ([]ClusteredRecord, error) {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
-	entries := idx.tree.Items()
+	entries, err := idx.tree.ItemsE()
+	if err != nil {
+		return nil, err
+	}
 	out := make([]ClusteredRecord, 0, len(entries))
 	for _, e := range entries {
 		payload, err := idx.storage.Read(e.Value)
@@ -154,13 +225,15 @@ func (idx *ClusteredIndex) OrderedScan() ([]ClusteredRecord, error) {
 }
 
 // Delete elimina exactamente el registro identificado por (key, rid).
-// Se retira primero del árbol; si el storage falla, se reinsertará la entrada
-// en el árbol para no dejar un registro vivo sin índice.
 func (idx *ClusteredIndex) Delete(key int64, rid sequential.RecordID) error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	if !idx.tree.Contains(key, rid) {
+	contains, err := idx.tree.ContainsE(key, rid)
+	if err != nil {
+		return err
+	}
+	if !contains {
 		return ErrNotFound
 	}
 	if _, err := idx.storage.Read(rid); err != nil {
@@ -191,8 +264,8 @@ func (idx *ClusteredIndex) Stats() ClusteredStats {
 	return ClusteredStats{Tree: idx.tree.Stats(), Storage: idx.storage.Stats()}
 }
 
-// Validate comprueba tanto las invariantes del B+ como la correspondencia
-// uno-a-uno entre registros vivos del SeqFile y entradas (key,RID) del índice.
+// Validate comprueba las invariantes on-disk del B+ y, de forma explícita,
+// también la correspondencia uno-a-uno contra los registros vivos del SeqFile.
 func (idx *ClusteredIndex) Validate() error {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
@@ -204,7 +277,10 @@ func (idx *ClusteredIndex) Validate() error {
 	if err != nil {
 		return err
 	}
-	items := idx.tree.Items()
+	items, err := idx.tree.ItemsE()
+	if err != nil {
+		return err
+	}
 	if len(records) != len(items) {
 		return fmt.Errorf("%w: storage has %d records, tree has %d entries", ErrIndexStorageMismatch, len(records), len(items))
 	}
