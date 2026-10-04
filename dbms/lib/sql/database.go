@@ -21,6 +21,8 @@ import (
 	"github.com/dbms-go/v2/dbms/lib/shared"
 	"github.com/dbms-go/v2/dbms/lib/storage/heap"
 	"github.com/dbms-go/v2/indexes/bplus"
+
+	"github.com/dbms-go/v2/dbms/lib/storage"
 )
 
 // Result es el resultado de ejecutar una sentencia.
@@ -50,6 +52,61 @@ type TableInfo struct {
 	IndexName string
 	IndexType string
 }
+
+
+//-------------------------------------------------------
+// TABLA SPACIAL
+type TableRecord struct {
+	RID    storage.RID
+	Values []any
+}
+
+func (db *Database) ScanTable(name string) ([]TableRecord, error) {
+	t, ok := db.tables[name]
+	if !ok {
+		return nil, fmt.Errorf("sql: tabla desconocida %q", name)
+	}
+
+	records := make([]TableRecord, 0)
+
+	var scanErr error
+
+	err := t.heap.Scan(func(rid storage.RID, payload []byte) bool {
+
+		values, err := decodeRow(payload)
+		if err != nil {
+			scanErr = fmt.Errorf(
+				"sql: error decodificando RID %s: %v",
+				rid,
+				err,
+			)
+
+			return false
+		}
+
+		records = append(records, TableRecord{
+			RID:    rid,
+			Values: values,
+		})
+
+		return true
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	if scanErr != nil {
+		return nil, scanErr
+	}
+
+	return records, nil
+}
+
+
+
+//----------------------------------------------
+
 
 // TableInfo devuelve el esquema y las estadísticas de una tabla conocida.
 func (db *Database) TableInfo(name string) (*TableInfo, bool) {
