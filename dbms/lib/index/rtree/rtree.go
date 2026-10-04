@@ -35,7 +35,6 @@ func NewRect(a, b Point) Rect {
 	}
 }
 
-
 // PointRect convierte un punto en un MBR degenerado.
 func PointRect(p Point) Rect {
 	return Rect{
@@ -46,6 +45,13 @@ func PointRect(p Point) Rect {
 
 func (r Rect) Area() float64 {
 	return (r.Max.Lat - r.Min.Lat) *
+		(r.Max.Lon - r.Min.Lon)
+}
+
+// margin es la mitad del perímetro. Sirve de desempate cuando el área es 0
+// (puntos alineados), donde Area() no distingue entre rectángulos distintos.
+func (r Rect) margin() float64 {
+	return (r.Max.Lat - r.Min.Lat) +
 		(r.Max.Lon - r.Min.Lon)
 }
 
@@ -74,6 +80,16 @@ func (r Rect) Intersects(o Rect) bool {
 		r.Min.Lon > o.Max.Lon)
 }
 
+// overlapArea es el área de la intersección entre dos rectángulos (0 si no se tocan).
+func (r Rect) overlapArea(o Rect) float64 {
+	dLat := math.Min(r.Max.Lat, o.Max.Lat) - math.Max(r.Min.Lat, o.Min.Lat)
+	dLon := math.Min(r.Max.Lon, o.Max.Lon) - math.Max(r.Min.Lon, o.Min.Lon)
+	if dLat <= 0 || dLon <= 0 {
+		return 0
+	}
+	return dLat * dLon
+}
+
 func (r Rect) Contains(p Point) bool {
 	return p.Lat >= r.Min.Lat &&
 		p.Lat <= r.Max.Lat &&
@@ -81,26 +97,36 @@ func (r Rect) Contains(p Point) bool {
 		p.Lon <= r.Max.Lon
 }
 
-
 // 2. ENTRADA DEL R-TREE
 type Entry struct {
 	Point Point
 	RID   storage.RID
 }
 
-
 // 3. NODO
 type Node struct {
 	Leaf     bool
 	Entries  []Entry
 	Children []*Node
+
+	// box es el MBR del nodo, cacheado. Se actualiza en Insert y en los
+	// splits, así consultar un nodo cuesta O(1) en vez de recorrer todo su
+	// subárbol (que era lo que hacía MBR() antes y anulaba la ventaja del árbol).
+	box Rect
 }
 
-// MBR = Minimum Bounding Rectangle
+// MBR = Minimum Bounding Rectangle (valor cacheado, O(1)).
 func (n *Node) MBR() Rect {
+	return n.box
+}
+
+// recomputeBox recalcula box a partir del contenido directo del nodo
+// (O(MaxEntries): para un nodo interno usa el box ya cacheado de cada hijo).
+func (n *Node) recomputeBox() {
 	if n.Leaf {
 		if len(n.Entries) == 0 {
-			return Rect{}
+			n.box = Rect{}
+			return
 		}
 
 		r := PointRect(n.Entries[0].Point)
@@ -109,20 +135,22 @@ func (n *Node) MBR() Rect {
 			r = r.Union(PointRect(e.Point))
 		}
 
-		return r
+		n.box = r
+		return
 	}
 
 	if len(n.Children) == 0 {
-		return Rect{}
+		n.box = Rect{}
+		return
 	}
 
-	r := n.Children[0].MBR()
+	r := n.Children[0].box
 
 	for _, child := range n.Children[1:] {
-		r = r.Union(child.MBR())
+		r = r.Union(child.box)
 	}
 
-	return r
+	n.box = r
 }
 
 // 4. R-TREE
@@ -144,6 +172,16 @@ func New(maxEntries int) *RTree {
 	}
 }
 
+// minEntries es el mínimo de entradas por grupo al dividir un nodo (~40% de
+// MaxEntries, como en el R*-tree). Nunca supera la mitad de MaxEntries+1.
+func (t *RTree) minEntries() int {
+	m := (2*t.MaxEntries + 4) / 5
+	if m < 1 {
+		m = 1
+	}
+	return m
+}
+
 // 5. INSERCIÓN
 func (t *RTree) Insert(e Entry) {
 	split := t.insert(t.Root, e)
@@ -159,6 +197,7 @@ func (t *RTree) Insert(e Entry) {
 				split,
 			},
 		}
+		t.Root.recomputeBox()
 	}
 }
 
@@ -170,6 +209,12 @@ func (t *RTree) insert(n *Node, e Entry) *Node {
 
 		if len(n.Entries) > t.MaxEntries {
 			return t.splitNode(n)
+		}
+
+		if len(n.Entries) == 1 {
+			n.box = PointRect(e.Point)
+		} else {
+			n.box = n.box.Union(PointRect(e.Point))
 		}
 
 		return nil
@@ -188,21 +233,29 @@ func (t *RTree) insert(n *Node, e Entry) *Node {
 		return t.splitNode(n)
 	}
 
+	// El hijo por el que bajamos pudo crecer (o achicarse si se dividió).
+	n.recomputeBox()
+
 	return nil
 }
 
-// Elegimos el hijo cuyo MBR necesita crecer menos.
+// Elegimos el hijo cuyo MBR necesita crecer menos. Si empatan, el de menor
+// área, y si siguen empatados, el que tenga menos contenido.
 func (t *RTree) chooseChild(n *Node, p Point) int {
 	pointRect := PointRect(p)
 
 	best := 0
 	bestGrowth := math.Inf(1)
+	bestArea := math.Inf(1)
 
 	for i, child := range n.Children {
-		growth := child.MBR().Enlargement(pointRect)
+		growth := child.box.Enlargement(pointRect)
+		area := child.box.Area()
 
-		if growth < bestGrowth {
+		if growth < bestGrowth ||
+			(growth == bestGrowth && area < bestArea) {
 			bestGrowth = growth
+			bestArea = area
 			best = i
 		}
 	}
@@ -210,48 +263,162 @@ func (t *RTree) chooseChild(n *Node, p Point) int {
 	return best
 }
 
+// splitNode divide un nodo desbordado en dos. Devuelve el nodo nuevo; n queda
+// con el primer grupo. Ambos tienen su box recalculado.
 func (t *RTree) splitNode(n *Node) *Node {
-	// Nodo hoja
-
 	if n.Leaf {
-
-		sort.Slice(n.Entries, func(i, j int) bool {
-			return n.Entries[i].Point.Lon <
-				n.Entries[j].Point.Lon
-		})
-
-		middle := len(n.Entries) / 2
-
-		newNode := &Node{
-			Leaf: true,
-			Entries: append(
-				[]Entry(nil),
-				n.Entries[middle:]...,
-			),
+		rects := make([]Rect, len(n.Entries))
+		for i, e := range n.Entries {
+			rects[i] = PointRect(e.Point)
 		}
 
-		n.Entries = n.Entries[:middle]
+		order, k := chooseSplit(rects, t.minEntries())
+
+		sorted := make([]Entry, len(n.Entries))
+		for i, o := range order {
+			sorted[i] = n.Entries[o]
+		}
+
+		newNode := &Node{
+			Leaf:    true,
+			Entries: append([]Entry(nil), sorted[k:]...),
+		}
+		n.Entries = append([]Entry(nil), sorted[:k]...)
+
+		n.recomputeBox()
+		newNode.recomputeBox()
 
 		return newNode
 	}
 
-	sort.Slice(n.Children, func(i, j int) bool {
-		return n.Children[i].MBR().Min.Lon <
-			n.Children[j].MBR().Min.Lon
-	})
-
-	middle := len(n.Children) / 2
-
-	newNode := &Node{
-		Leaf: false,
-		Children: append(
-			[]*Node(nil),
-			n.Children[middle:]...,
-		),
+	rects := make([]Rect, len(n.Children))
+	for i, c := range n.Children {
+		rects[i] = c.box
 	}
 
-	n.Children = n.Children[:middle]
+	order, k := chooseSplit(rects, t.minEntries())
+
+	sorted := make([]*Node, len(n.Children))
+	for i, o := range order {
+		sorted[i] = n.Children[o]
+	}
+
+	newNode := &Node{
+		Leaf:     false,
+		Children: append([]*Node(nil), sorted[k:]...),
+	}
+	n.Children = append([]*Node(nil), sorted[:k]...)
+
+	n.recomputeBox()
+	newNode.recomputeBox()
+
 	return newNode
+}
+
+// chooseSplit es una versión simplificada del split del R*-tree.
+//
+// Recibe el rectángulo de cada elemento del nodo desbordado y devuelve un
+// orden de esos elementos y un punto de corte k: los primeros k forman un
+// grupo y el resto el otro. Pasos:
+//  1. Para cada eje (lat, lon) se ordenan los elementos y se prueban todos los
+//     cortes válidos; se elige el eje cuyos cortes tienen menor suma de
+//     márgenes (rectángulos más "cuadrados" y compactos).
+//  2. En ese eje se elige el corte con menor solapamiento entre los dos
+//     grupos; si empatan, menor área total; si siguen empatados, el más
+//     cercano al centro.
+//
+// Cortar siempre por longitud a la mitad (lo que había antes) genera
+// rectángulos largos y solapados en latitud, y el árbol casi no puede descartar ramas.
+func chooseSplit(rects []Rect, minFill int) (order []int, splitAt int) {
+	n := len(rects)
+
+	if minFill > n/2 {
+		minFill = n / 2
+	}
+	if minFill < 1 {
+		minFill = 1
+	}
+
+	type axisResult struct {
+		order     []int
+		prefix    []Rect // prefix[i] = unión de order[0..i]
+		suffix    []Rect // suffix[i] = unión de order[i..n-1]
+		marginSum float64
+	}
+
+	evaluate := func(less func(a, b Rect) bool) axisResult {
+		idx := make([]int, n)
+		for i := range idx {
+			idx[i] = i
+		}
+
+		sort.SliceStable(idx, func(i, j int) bool {
+			return less(rects[idx[i]], rects[idx[j]])
+		})
+
+		prefix := make([]Rect, n)
+		suffix := make([]Rect, n)
+
+		prefix[0] = rects[idx[0]]
+		for i := 1; i < n; i++ {
+			prefix[i] = prefix[i-1].Union(rects[idx[i]])
+		}
+
+		suffix[n-1] = rects[idx[n-1]]
+		for i := n - 2; i >= 0; i-- {
+			suffix[i] = suffix[i+1].Union(rects[idx[i]])
+		}
+
+		sum := 0.0
+		for k := minFill; k <= n-minFill; k++ {
+			sum += prefix[k-1].margin() + suffix[k].margin()
+		}
+
+		return axisResult{idx, prefix, suffix, sum}
+	}
+
+	byLat := evaluate(func(a, b Rect) bool {
+		if a.Min.Lat != b.Min.Lat {
+			return a.Min.Lat < b.Min.Lat
+		}
+		return a.Max.Lat < b.Max.Lat
+	})
+	byLon := evaluate(func(a, b Rect) bool {
+		if a.Min.Lon != b.Min.Lon {
+			return a.Min.Lon < b.Min.Lon
+		}
+		return a.Max.Lon < b.Max.Lon
+	})
+
+	best := byLat
+	if byLon.marginSum < byLat.marginSum {
+		best = byLon
+	}
+
+	bestK := -1
+	bestOverlap := math.Inf(1)
+	bestArea := math.Inf(1)
+	bestCenter := math.Inf(1)
+
+	for k := minFill; k <= n-minFill; k++ {
+		left := best.prefix[k-1]
+		right := best.suffix[k]
+
+		overlap := left.overlapArea(right)
+		area := left.Area() + right.Area()
+		center := math.Abs(float64(k) - float64(n)/2)
+
+		if overlap < bestOverlap ||
+			(overlap == bestOverlap && area < bestArea) ||
+			(overlap == bestOverlap && area == bestArea && center < bestCenter) {
+			bestK = k
+			bestOverlap = overlap
+			bestArea = area
+			bestCenter = center
+		}
+	}
+
+	return best.order, bestK
 }
 
 // 7. MÉTRICAS DE DISTANCIA
@@ -316,7 +483,12 @@ func (t *RTree) searchRect(
 	query Rect,
 	result *[]Entry,
 ) {
-	if !n.MBR().Intersects(query) {
+	// Nodo vacío (solo puede pasar con la raíz de un árbol sin datos).
+	if n.Leaf && len(n.Entries) == 0 {
+		return
+	}
+
+	if !n.box.Intersects(query) {
 		return
 	}
 
@@ -371,15 +543,28 @@ func (t *RTree) SearchRadius(
 
 	case Haversine:
 
-		// Convertimos aproximadamente el radio
-		// de kilómetros a grados.
+		// Rectángulo (en grados) que contiene el círculo de búsqueda; solo
+		// sirve para descartar ramas, la distancia exacta se verifica en la hoja.
+		//
+		// delta es el radio angular. La extensión máxima en longitud de un
+		// círculo esférico es asin(sin(delta)/cos(lat)); si el círculo
+		// alcanza un polo (o es enorme) no hay límite en longitud.
+		// No contempla el cruce del antimeridiano (±180°).
 
-		dLat := radius / earthRadiusKm * 180 / math.Pi
+		delta := radius / earthRadiusKm
 
-		cosLat := math.Cos(center.Lat * math.Pi / 180)
+		dLat := math.Inf(1)
+		dLon := math.Inf(1)
 
-		dLon := radius / (earthRadiusKm * cosLat)
-		dLon = dLon * 180 / math.Pi
+		if delta < math.Pi/2 {
+			dLat = delta * 180 / math.Pi
+
+			if cosLat := math.Cos(center.Lat * math.Pi / 180); cosLat > 0 {
+				if s := math.Sin(delta) / cosLat; s < 1 {
+					dLon = math.Asin(s) * 180 / math.Pi
+				}
+			}
+		}
 
 		query = NewRect(
 			Point{
@@ -415,10 +600,14 @@ func (t *RTree) searchRadius(
 	query Rect,
 	result *[]Entry,
 ) {
+	// Nodo vacío (solo puede pasar con la raíz de un árbol sin datos).
+	if n.Leaf && len(n.Entries) == 0 {
+		return
+	}
 
 	// Si el MBR no tiene relación con la zona consultada,
 	// descartamos todo el nodo.
-	if !n.MBR().Intersects(query) {
+	if !n.box.Intersects(query) {
 		return
 	}
 
