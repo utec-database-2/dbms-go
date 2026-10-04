@@ -167,3 +167,11 @@ func TestExternalHashProcessor_DefaultPartitionCountWhenNotSpecified(t *testing.
 		t.Fatalf("esperaba 2 grupos, obtuve %d", len(groups))
 	}
 }
+
+// un NumPartitions explicito valido no debe pisarse por el default.
+func TestExternalHashProcessor_ExplicitPartitionCountRespected(t *testing.T) {
+	proc := hashing.New(8, t.TempDir()) // 8 particiones es válido
+	if proc.NumPartitions != 8 {
+		t.Fatalf("esperaba 8 particiones, obtuve %d", proc.NumPartitions)
+	}
+}
