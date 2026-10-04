@@ -141,9 +141,29 @@ func TestExternalHashProcessor_EmptyInputs(t *testing.T) {
 	}
 }
 
+// Caso de no especificar el número de particiones (0 o negativo) debe usar defaultNumPartitions.
 func TestExternalHashProcessor_DefaultPartitionCountWhenNotSpecified(t *testing.T) {
 	proc := hashing.New(0, t.TempDir()) // 0 particiones no es válido, debe usar defaultNumPartitions
 	if proc.NumPartitions != 16 {
 		t.Fatalf("esperaba defaultNumPartitions=16 (default) con 0 explícito, obtuve %d", proc.NumPartitions)
+	}
+
+	negProc := hashing.New(-5, t.TempDir()) // -5 particiones no es válido, debe usar defaultNumPartitions
+	if negProc.NumPartitions != 16 {
+		t.Fatalf("esperaba defaultNumPartitions=16 (default) con -5 explícito, obtuve %d", negProc.NumPartitions)
+	}
+
+	// Y que de verdad funcione sin panic, no solo que el campo quede en 16
+	records := []shared.Record{
+		{Values: []any{"a", 1}},
+		{Values: []any{"b", 2}}}
+
+	keyFn := func(r shared.Record) any { return r.Values[0] }
+	groups, err := proc.GroupBy(iterator.NewSliceIterator(records), keyFn)
+	if err != nil {
+		t.Fatalf("GroupBy con NumPartitions por defecto falló: %v", err)
+	}
+	if len(groups) != 2 {
+		t.Fatalf("esperaba 2 grupos, obtuve %d", len(groups))
 	}
 }
