@@ -31,17 +31,26 @@ func main() {
 	}
 	defer db.Close()
 
+	//------------------------------------------
 	// SPATIAL
-	spatialStore := spatial.NewDemoStore()
+	//spatialStore := spatial.NewDemoStore()
+	spatialStore := spatial.NewStore(db,"ubicaciones",)
+	//------------------------------------------
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/tables", handleListTables(db))
-	mux.HandleFunc("POST /api/query", handleQuery(db))
-	mux.HandleFunc("POST /api/tables/{name}/import", handleImportCSV(db))
+	mux.HandleFunc("POST /api/query", handleQuery(db,spatialStore))
+	mux.HandleFunc("POST /api/tables/{name}/import", handleImportCSV(db,spatialStore))
 	mux.HandleFunc("POST /api/spatial/range",handleSpatialRange(spatialStore),)
 
 	log.Printf("MinigestorBD escuchando en %s (datos en %s)", *addr, *dir)
 	log.Fatal(http.ListenAndServe(*addr, withCORS(mux)))
+
+
+	
+	
+	
+
 }
 
 // withCORS permite que el frontend (servido en otro puerto por Vite en
@@ -81,7 +90,7 @@ type queryRequest struct {
 }
 
 // POST /api/query {"sql": "SELECT ..."}
-func handleQuery(db *sql.Database) http.HandlerFunc {
+func handleQuery(db *sql.Database, spatialStore *spatial.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req queryRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -98,6 +107,28 @@ func handleQuery(db *sql.Database) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, res)
+
+		// Si la consulta modifica la tabla espacial,
+		// reconstruimos el R-Tree.
+		upperSQL := strings.ToUpper(
+			strings.TrimSpace(req.SQL),
+		)
+
+		if strings.HasPrefix(
+			upperSQL,
+			"CREATE TABLE UBICACIONES",
+		) ||
+			strings.HasPrefix(
+				upperSQL,
+				"INSERT INTO UBICACIONES",
+			) ||
+			strings.HasPrefix(
+				upperSQL,
+				"DELETE FROM UBICACIONES",
+			) {
+
+			_ = spatialStore.Refresh()
+		}
 	}
 }
 
@@ -105,7 +136,7 @@ func handleQuery(db *sql.Database) http.HandlerFunc {
 // La tabla debe existir de antemano (CREATE TABLE) con el mismo número y
 // orden de columnas que el CSV. La primera fila del CSV se asume encabezado
 // y se descarta.
-func handleImportCSV(db *sql.Database) http.HandlerFunc {
+func handleImportCSV(db *sql.Database,spatialStore *spatial.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tableName := r.PathValue("name")
 		info, ok := db.TableInfo(tableName)
@@ -126,6 +157,9 @@ func handleImportCSV(db *sql.Database) http.HandlerFunc {
 		defer file.Close()
 
 		inserted, skipped, errs := importRows(db, info, file)
+		if tableName == "ubicaciones" && inserted > 0 {
+			_ = spatialStore.Refresh()
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"table":    tableName,
 			"inserted": inserted,
@@ -248,6 +282,7 @@ func rowToSQLTuple(info *sql.TableInfo, record []string) (string, error) {
 	}
 	return "(" + strings.Join(vals, ", ") + ")", nil
 }
+
 
 // POST /api/spatial/range
 func handleSpatialRange(store *spatial.Store) http.HandlerFunc {

@@ -6,18 +6,18 @@ import (
 	"strings"
 
 	"github.com/dbms-go/v2/dbms/lib/index/rtree"
+	"github.com/dbms-go/v2/dbms/lib/sql"
 	"github.com/dbms-go/v2/dbms/lib/storage"
 )
 
-// Location representa un punto geográfico.
 type Location struct {
-	ID   int     `json:"id"`
-	Name string  `json:"name"`
-	Lat  float64 `json:"lat"`
-	Lon  float64 `json:"lon"`
+	ID   int
+	Name string
+	Type string
+	Lat  float64
+	Lon  float64
 }
 
-// RangeRequest representa una consulta espacial por radio.
 type RangeRequest struct {
 	Latitude  float64 `json:"latitude"`
 	Longitude float64 `json:"longitude"`
@@ -25,16 +25,15 @@ type RangeRequest struct {
 	Metric    string  `json:"metric"`
 }
 
-// RangeResult representa un resultado.
 type RangeResult struct {
 	ID       int     `json:"id"`
 	Name     string  `json:"name"`
+	Type     string  `json:"type"`
 	Lat      float64 `json:"lat"`
 	Lon      float64 `json:"lon"`
 	Distance float64 `json:"distance"`
 }
 
-// RangeResponse es la respuesta completa de la consulta.
 type RangeResponse struct {
 	Center struct {
 		Lat float64 `json:"lat"`
@@ -46,84 +45,173 @@ type RangeResponse struct {
 	Results []RangeResult `json:"results"`
 }
 
-// Store administra los datos espaciales.
 type Store struct {
+	DB        *sql.Database
+	TableName string
+
 	Tree      *rtree.RTree
 	Locations map[storage.RID]Location
+
+	ready bool
 }
 
-// NewDemoStore crea un R-Tree con puntos de prueba.
-//
-// Más adelante estos puntos pueden reemplazarse
-// por datos provenientes de una tabla.
-func NewDemoStore() *Store {
-	store := &Store{
-		Tree:      rtree.New(4),
-		Locations: make(map[storage.RID]Location),
+func NewStore(db *sql.Database, tableName string) *Store {
+	return &Store{
+		DB:        db,
+		TableName: tableName,
+	}
+}
+
+// Refresh vuelve a construir el R-Tree a partir de la tabla.
+func (s *Store) Refresh() error {
+
+	info, ok := s.DB.TableInfo(s.TableName)
+
+	if !ok {
+		s.ready = false
+		return fmt.Errorf(
+			"la tabla %q no existe",
+			s.TableName,
+		)
 	}
 
-	locations := []Location{
-		{
-			ID:   1,
-			Name: "Tienda Centro",
-			Lat:  -12.0432,
-			Lon:  -77.0282,
-		},
-		{
-			ID:   2,
-			Name: "Tienda Norte",
-			Lat:  -12.0200,
-			Lon:  -77.0282,
-		},
-		{
-			ID:   3,
-			Name: "Tienda Cercana",
-			Lat:  -12.0500,
-			Lon:  -77.0282,
-		},
-		{
-			ID:   4,
-			Name: "Tienda Sur",
-			Lat:  -12.0700,
-			Lon:  -77.0282,
-		},
-		{
-			ID:   5,
-			Name: "Tienda Lejana",
-			Lat:  -12.1060,
-			Lon:  -77.0282,
-		},
-		{
-			ID:   6,
-			Name: "Tienda Oeste",
-			Lat:  -12.0432,
-			Lon:  -77.0600,
-		},
+	// Buscar posiciones de las columnas.
+	idPos := -1
+	namePos := -1
+	typePos := -1
+	latPos := -1
+	lonPos := -1
+
+	for i, col := range info.Columns {
+
+		switch strings.ToLower(col.Name) {
+
+		case "id":
+			idPos = i
+
+		case "nombre":
+			namePos = i
+
+		case "tipo":
+			typePos = i
+
+		case "latitud":
+			latPos = i
+
+		case "longitud":
+			lonPos = i
+		}
 	}
 
-	for _, location := range locations {
+	if idPos == -1 ||
+		namePos == -1 ||
+		typePos == -1 ||
+		latPos == -1 ||
+		lonPos == -1 {
 
-		rid := storage.RID{
-			PageID: uint32(location.ID),
-			SlotID: 0,
+		return fmt.Errorf(
+			"la tabla %q debe tener las columnas: id, nombre, tipo, latitud, longitud",
+			s.TableName,
+		)
+	}
+
+	records, err := s.DB.ScanTable(s.TableName)
+
+	if err != nil {
+		return err
+	}
+
+	tree := rtree.New(4)
+
+	locations := make(map[storage.RID]Location)
+
+	for _, record := range records {
+
+		if len(record.Values) <= lonPos {
+			continue
 		}
 
-		store.Locations[rid] = location
+		id, ok := record.Values[idPos].(int)
+		if !ok {
+			continue
+		}
 
-		store.Tree.Insert(rtree.Entry{
+		name, ok := record.Values[namePos].(string)
+		if !ok {
+			continue
+		}
+
+		typ, ok := record.Values[typePos].(string)
+		if !ok {
+			continue
+		}
+
+		lat, ok := numberValue(record.Values[latPos])
+		if !ok {
+			continue
+		}
+
+		lon, ok := numberValue(record.Values[lonPos])
+		if !ok {
+			continue
+		}
+
+		location := Location{
+			ID:   id,
+			Name: name,
+			Type: typ,
+			Lat:  lat,
+			Lon:  lon,
+		}
+
+		locations[record.RID] = location
+
+		tree.Insert(rtree.Entry{
 			Point: rtree.Point{
-				Lat: location.Lat,
-				Lon: location.Lon,
+				Lat: lat,
+				Lon: lon,
 			},
-			RID: rid,
+			RID: record.RID,
 		})
 	}
 
-	return store
+	s.Tree = tree
+	s.Locations = locations
+	s.ready = true
+
+	return nil
 }
 
-// SearchRange realiza una consulta por radio.
-func (s *Store) SearchRange(req RangeRequest) (RangeResponse, error) {
+func numberValue(value any) (float64, bool) {
+
+	switch v := value.(type) {
+
+	case int:
+		return float64(v), true
+
+	case float64:
+		return v, true
+
+	case float32:
+		return float64(v), true
+
+	default:
+		return 0, false
+	}
+}
+
+// SearchRange ejecuta una consulta espacial por radio.
+func (s *Store) SearchRange(
+	req RangeRequest,
+) (RangeResponse, error) {
+
+	// Primera consulta:
+	// construimos el índice.
+	if !s.ready {
+		if err := s.Refresh(); err != nil {
+			return RangeResponse{}, err
+		}
+	}
 
 	if req.Radius < 0 {
 		return RangeResponse{}, fmt.Errorf(
@@ -131,11 +219,9 @@ func (s *Store) SearchRange(req RangeRequest) (RangeResponse, error) {
 		)
 	}
 
-	metricName := strings.ToLower(strings.TrimSpace(req.Metric))
-
 	var metric rtree.DistanceMetric
 
-	switch metricName {
+	switch strings.ToLower(req.Metric) {
 
 	case "haversine":
 		metric = rtree.Haversine
@@ -145,7 +231,7 @@ func (s *Store) SearchRange(req RangeRequest) (RangeResponse, error) {
 
 	default:
 		return RangeResponse{}, fmt.Errorf(
-			"métrica no válida: use \"haversine\" o \"euclidean\"",
+			"métrica inválida: use haversine o euclidean",
 		)
 	}
 
@@ -161,9 +247,9 @@ func (s *Store) SearchRange(req RangeRequest) (RangeResponse, error) {
 	)
 
 	response := RangeResponse{
-		Radius: req.Radius,
-		Metric: metricName,
-		Results: make([]RangeResult, 0, len(entries)),
+		Radius:  req.Radius,
+		Metric:  strings.ToLower(req.Metric),
+		Results: make([]RangeResult, 0),
 	}
 
 	response.Center.Lat = req.Latitude
@@ -188,6 +274,7 @@ func (s *Store) SearchRange(req RangeRequest) (RangeResponse, error) {
 			RangeResult{
 				ID:       location.ID,
 				Name:     location.Name,
+				Type:     location.Type,
 				Lat:      location.Lat,
 				Lon:      location.Lon,
 				Distance: distance,
@@ -195,7 +282,6 @@ func (s *Store) SearchRange(req RangeRequest) (RangeResponse, error) {
 		)
 	}
 
-	// Ordenamos para que el resultado sea fácil de leer.
 	sort.Slice(
 		response.Results,
 		func(i, j int) bool {

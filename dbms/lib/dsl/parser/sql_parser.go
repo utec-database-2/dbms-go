@@ -170,19 +170,52 @@ func (parser *ParserContext) ParseString() *ast.StringExpr {
 }
 
 func (parser *ParserContext) ParseValue() (ast.ASTNode, error) {
-	switch parser.CurrToken().GetType() {
-	case token.TokenId:
-		return parser.ParseId(), nil
-	case token.TokenTrue, token.TokenFalse:
-		return parser.ParseBool(), nil
-	case token.TokenInt:
-		return parser.ParseInt(), nil
-	case token.TokenDecimal:
-		return parser.ParseFloat(), nil
-	case token.TokenString:
-		return parser.ParseString(), nil
-	}
-	return nil, fmt.Errorf("expected value, got %q", parser.CurrStr())
+
+    // Número negativo
+    if parser.Match(token.TokenMinus) {
+
+        switch parser.CurrToken().GetType() {
+
+        case token.TokenInt:
+            value := parser.ParseInt()
+            value.Value = -value.Value
+            return value, nil
+
+        case token.TokenDecimal:
+            value := parser.ParseFloat()
+            value.Value = -value.Value
+            return value, nil
+
+        default:
+            return nil, fmt.Errorf(
+                "expected numeric value after '-', got %q",
+                parser.CurrStr(),
+            )
+        }
+    }
+
+    switch parser.CurrToken().GetType() {
+
+    case token.TokenId:
+        return parser.ParseId(), nil
+
+    case token.TokenTrue, token.TokenFalse:
+        return parser.ParseBool(), nil
+
+    case token.TokenInt:
+        return parser.ParseInt(), nil
+
+    case token.TokenDecimal:
+        return parser.ParseFloat(), nil
+
+    case token.TokenString:
+        return parser.ParseString(), nil
+    }
+
+    return nil, fmt.Errorf(
+        "expected value, got %q",
+        parser.CurrStr(),
+    )
 }
 
 func tokenToOperator(t token.TokenType) ast.Operator {
