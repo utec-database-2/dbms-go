@@ -1,0 +1,7 @@
+n,repeat,structure,operation,operations,total_ms,avg_us
+1000,1,bplus_clustered,insert,100,610.244500,6102.445000
+1000,1,bplus_clustered,delete,100,581.809800,5818.098000
+1000,1,bplus_unclustered,insert,100,606.786200,6067.862000
+1000,1,bplus_unclustered,delete,100,444.284900,4442.849000
+1000,1,extendible_hash,insert,100,54.015200,540.152000
+1000,1,extendible_hash,delete,100,40.044000,400.440000

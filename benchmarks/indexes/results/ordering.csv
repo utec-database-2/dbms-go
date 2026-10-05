@@ -1,0 +1,4 @@
+n,repeat,structure,mode,total_ms
+1000,1,bplus_clustered,native_index_order,21.750500
+1000,1,bplus_unclustered,native_index_order,16.699200
+1000,1,extendible_hash,heap_scan_plus_sort,2.015400

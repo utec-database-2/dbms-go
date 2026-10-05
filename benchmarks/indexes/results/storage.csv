@@ -1,0 +1,4 @@
+n,structure,index_bytes,index_mb
+1000,bplus_clustered,73728,0.070312
+1000,bplus_unclustered,73728,0.070312
+1000,extendible_hash,98304,0.093750

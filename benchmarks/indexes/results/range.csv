@@ -1,0 +1,4 @@
+n,repeat,structure,mode,queries,range_width,selectivity,total_ms,avg_ms
+1000,1,bplus_clustered,native_index,10,10,0.010000,0.000000,0.000000
+1000,1,bplus_unclustered,native_index,10,10,0.010000,7.913400,0.791340
+1000,1,extendible_hash,heap_scan_fallback,10,10,0.010000,4.496200,0.449620

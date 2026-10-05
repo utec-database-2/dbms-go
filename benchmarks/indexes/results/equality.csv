@@ -1,0 +1,4 @@
+n,repeat,structure,queries,total_ms,avg_us
+1000,1,bplus_clustered,100,38.689800,386.898000
+1000,1,bplus_unclustered,100,42.075700,420.757000
+1000,1,extendible_hash,100,15.200300,152.003000
