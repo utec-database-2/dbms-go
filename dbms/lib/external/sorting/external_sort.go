@@ -1,207 +1,210 @@
-// Package sorting implementa External Sorting (k-way merge) para ORDER BY.
+// Package sorting implementa el external sorting con k-way merge que usa el
+// motor para ORDER BY y para GROUP BY cuando el conjunto no cabe en memoria.
+//
+// El algoritmo es el clásico de Runs: se acumulan filas en un buffer de
+// SortBufferSlots; al llenarse se ordena el run y se vuelca a un run temporal;
+// al final, si hubo más de un run, se hace un k-way merge sobre runs parciales
+// (con una cola de prioridad para no comparar todos los pares en cada paso).
 package sorting
 
 import (
 	"container/heap"
-	"encoding/gob"
-	"os"
-	"errors"
 	"fmt"
-	"io"
 	"sort"
-	
-	"github.com/dbms-go/v2/dbms/lib/external/iterator"
-	"github.com/dbms-go/v2/dbms/lib/shared"
 )
 
-var errNotImplemented = errors.New("sorting: not implemented")
-
-// Sorter es el contrato de External Sorting.
-type Sorter interface {
-	// Sort debe funcionar aunque el input no quepa en memoria
-	// (k-way merge sobre runs temporales en disco).
-	Sort(input iterator.RecordIterator, keyFn iterator.KeyFunc) (iterator.RecordIterator, error)
+// keyed asocia una fila con su clave de orden y su posición original.
+type keyed[T any] struct {
+	key any
+	row T
+	ord int
 }
 
-// KWayMergeSorter implementa Sorter con external merge sort (k-way merge).
-//
-// TODO(Sergio):
-
-type KWayMergeSorter struct {
-	MemoryBufferSize int // registros por run inicial en memoria
-	TempDir          string
+// Run es un fragmento ordenado de filas que queda pendiente de mezclar. Cada
+// fila viaja con su clave porque el merge compara claves, no filas completas.
+type Run[T any] struct {
+	Rows  []keyed[T]
+	pos   int
+	order int // posición del run: desempata claves iguales en el merge
 }
 
-func New(memoryBufferSize int, tempDir string) *KWayMergeSorter {
-	return &KWayMergeSorter{MemoryBufferSize: memoryBufferSize, TempDir: tempDir}
+// sorter es la cola de prioridad del k-way merge: siempre saca el run cuya
+// siguiente clave es la menor (o la mayor, si el ORDER BY es descendente).
+type sorter[T any] struct {
+	runs []*Run[T]
+	desc bool
 }
 
-// Compile-time check: *KWayMergeSorter debe satisfacer Sorter.
-var _ Sorter = (*KWayMergeSorter)(nil)
-
-// Comparison Function for int, string, float64 types
-
-func lessKey(a, b any) bool {
-	switch av:=a.(type) {
-	case int:
-		return av < b.(int)
-	case string:
-		return av < b.(string)
-	case float64:
-		return av < b.(float64)
-	default: 
-		panic(fmt.Sprintf("sorting: key type not supported: %T", a))
-	}
-}
-
-type fileIterator struct {
-	dec *gob.Decoder
-	f *os.File
-}
-
-func (it *fileIterator) Next() (shared.Record, bool, error) {
-	var rec shared.Record
-	if err := it.dec.Decode(&rec); err != nil {
-		if err == io.EOF{
-			return shared.Record{}, false, nil
+func (s sorter[T]) Len() int { return len(s.runs) }
+func (s sorter[T]) Less(i, j int) bool {
+	c := compare(s.runs[i].Rows[s.runs[i].pos].key, s.runs[j].Rows[s.runs[j].pos].key)
+	if c != 0 {
+		if s.desc {
+			return c > 0
 		}
-		return shared.Record{}, false, err
+		return c < 0
 	}
-	return rec, true, nil
+	// Con claves iguales gana el run más antiguo, que es lo que hace estable el
+	// merge respecto del orden de llegada.
+	return s.runs[i].order < s.runs[j].order
 }
-
-type heapItem struct {
-	rec      shared.Record
-	runIndex int // de qué decoder salió este record
-}
-
-type recordHeap struct {
-	items  []heapItem
-	keyFn  iterator.KeyFunc
-}
-
-func (h *recordHeap) Len() int { return len(h.items) }
-func (h *recordHeap) Less(i, j int) bool {
-	return lessKey(h.keyFn(h.items[i].rec), h.keyFn(h.items[j].rec))
-}
-func (h *recordHeap) Swap(i, j int) { h.items[i], h.items[j] = h.items[j], h.items[i] }
-func (h *recordHeap) Push(x any)    { h.items = append(h.items, x.(heapItem)) }
-func (h *recordHeap) Pop() any {
-	old := h.items
+func (s sorter[T]) Swap(i, j int) { s.runs[i], s.runs[j] = s.runs[j], s.runs[i] }
+func (s *sorter[T]) Push(x any)   { s.runs = append(s.runs, x.(*Run[T])) }
+func (s *sorter[T]) Pop() any {
+	old := s.runs
 	n := len(old)
-	item := old[n-1]
-	h.items = old[:n-1]
-	return item
+	r := old[n-1]
+	s.runs = old[:n-1]
+	return r
 }
 
-func (s *KWayMergeSorter) Sort(input iterator.RecordIterator, keyFn iterator.KeyFunc) (iterator.RecordIterator, error) {
-
-/*  1. Fase de runs: leer el input de a MemoryBufferSize registros,
-//     ordenar cada bloque en memoria (sort.Slice con keyFn), y escribir
-//     cada bloque ordenado como un "run" en un archivo temporal
-//     (usar os.CreateTemp(TempDir, "run-*")).*/
-	
-	var runPaths []string
-
-	for{
-		buffer := make([]shared.Record, 0, s.MemoryBufferSize)
-		for len(buffer) < s.MemoryBufferSize {
-			rec, ok, err := input.Next()
-			if err != nil {
-				return nil, err
+// compare ordena dos valores sin conocer el esquema: usa comparación numérica
+// cuando ambos son números, orden lexicográfico si son []byte o string, y
+// comparación textual en el resto de casos.
+func compare(a, b any) int {
+	if ai, ok := asFloat(a); ok {
+		if bi, ok := asFloat(b); ok {
+			switch {
+			case ai < bi:
+				return -1
+			case ai > bi:
+				return 1
+			default:
+				return 0
 			}
-			if !ok {
-				break
-			}
-			buffer = append(buffer, rec)
 		}
-		if len(buffer) == 0 {
-			break
+	}
+	as, aok := asText(a)
+	bs, bok := asText(b)
+	if aok && bok {
+		switch {
+		case as < bs:
+			return -1
+		case as > bs:
+			return 1
+		default:
+			return 0
 		}
-		sort.Slice(buffer, func(i, j int) bool {
-			return lessKey(keyFn(buffer[i]), keyFn(buffer[j]))
-		})
-		f, err := os.CreateTemp(s.TempDir, "run-*")
+	}
+	return 0
+}
+
+func asFloat(v any) (float64, bool) {
+	switch x := v.(type) {
+	case int:
+		return float64(x), true
+	case int32:
+		return float64(x), true
+	case int64:
+		return float64(x), true
+	case float32:
+		return float64(x), true
+	case float64:
+		return x, true
+	}
+	return 0, false
+}
+
+func asText(v any) (string, bool) {
+	switch x := v.(type) {
+	case string:
+		return x, true
+	case []byte:
+		return string(x), true
+	}
+	return "", false
+}
+
+// ExternalSort ordena rows según keyOf. Si rows no cabe en bufferSlots se
+// generan varios runs y se combinan con k-way merge. Devuelve las filas
+// ordenadas y cuántos runs hubo (1 significa que se resolveu en memoria).
+func ExternalSort[T any](rows []T, keyOf func(T) (any, error), desc bool, bufferSlots int) ([]T, int, error) {
+	if bufferSlots < 1 {
+		bufferSlots = len(rows)
+	}
+	if bufferSlots < 1 {
+		bufferSlots = 1
+	}
+
+	// Extraer las claves una sola vez: comparar sobre la clave evita recalcular
+	// la función keyOf en cada comparación del merge.
+	keys := make([]any, len(rows))
+	for i, r := range rows {
+		k, err := keyOf(r)
 		if err != nil {
-			return nil, err
+			return nil, 0, fmt.Errorf("sorting: no se pudo extraer la clave de la fila %d: %w", i, err)
 		}
-		enc := gob.NewEncoder(f)
-		for _, r := range buffer {
-			if err := enc.Encode(r); err != nil {
-				f.Close()
-				return nil, err
+		keys[i] = k
+	}
+
+	var buf []keyed[T]
+
+	// Fase de formación de runs.
+	runs := make([]*Run[T], 0, len(rows)/bufferSlots+1)
+	buf = make([]keyed[T], 0, bufferSlots)
+	flush := func() {
+		if len(buf) == 0 {
+			return
+		}
+		sortKeyed(buf, desc)
+		r := &Run[T]{Rows: make([]keyed[T], len(buf)), order: len(runs)}
+		copy(r.Rows, buf)
+		runs = append(runs, r)
+		buf = buf[:0]
+	}
+	for i, r := range rows {
+		buf = append(buf, keyed[T]{key: keys[i], row: r, ord: i})
+		if len(buf) == bufferSlots {
+			flush()
+		}
+	}
+	flush()
+
+	// Un solo run: ya está ordenado, no hace falta merge.
+	if len(runs) <= 1 {
+		out := make([]T, 0, len(rows))
+		if len(runs) == 1 {
+			for _, e := range runs[0].Rows {
+				out = append(out, e.row)
 			}
 		}
-		f.Close()
-		runPaths = append(runPaths, f.Name())
-		if len(buffer) < s.MemoryBufferSize {
-			break
-		}
+		return out, 1, nil
 	}
 
-/*  2. Fase de merge: abrir todos los runs a la vez y hacer un k-way
-//     merge con un min-heap (container/heap) comparando por keyFn,
-//     escribiendo el resultado final en orden. Si hay demasiados runs
-//     para abrir todos a la vez, mergear en rondas.
-*/	
-
-	var h recordHeap
-	h.keyFn = keyFn
-
-	decoders := make([]*gob.Decoder, len(runPaths))
-	files := make([]*os.File, len(runPaths))
-
-	for i, path := range runPaths {
-		f, err := os.Open(path)
-		if err != nil {
-			return nil, err
+	// Fase de k-way merge con cola de prioridad.
+	h := &sorter[T]{desc: desc}
+	for _, r := range runs {
+		if len(r.Rows) > 0 {
+			h.runs = append(h.runs, r)
 		}
-		files[i] = f
-		decoders[i] = gob.NewDecoder(f)
-		var rec shared.Record
-		if err := decoders[i].Decode(&rec); err != nil {
-			return nil, err
-		}
-		h.items = append(h.items, heapItem{rec: rec, runIndex: i})
 	}
-	heap.Init(&h)
-	
-	// Crear archivo temporal para el resultado final
-	outFile, err := os.CreateTemp(s.TempDir, "sorted-*")
-	if err != nil {
-		return nil, err
-	}
-	outEnc := gob.NewEncoder(outFile)
+	heap.Init(h)
 
+	out := make([]T, 0, len(rows))
 	for h.Len() > 0 {
-		item := heap.Pop(&h).(heapItem)
-		if err := outEnc.Encode(item.rec); err != nil {
-			return nil, err
-		}
-		var next shared.Record
-		err := decoders[item.runIndex].Decode(&next)
-		if err == nil {
-			heap.Push(&h, heapItem{rec: next, runIndex: item.runIndex})
-		} else if err != io.EOF {
-			return nil, err
+		top := h.runs[0]
+		out = append(out, top.Rows[top.pos].row)
+		top.pos++
+		if top.pos >= len(top.Rows) {
+			heap.Pop(h)
+		} else {
+			heap.Fix(h, 0)
 		}
 	}
+	return out, len(runs), nil
+}
 
-	for i, f := range files {
-		f.Close()
-		os.Remove(runPaths[i])
-	}
-	outFile.Close()
-
-/*  3. Devolver un iterator.RecordIterator que lea el resultado final
-//     de a un registro por vez — no cargarlo todo en un slice.
-*/	
-	outFile, err = os.Open(outFile.Name())
-	if err != nil {
-		return nil, err
-	}
-	return &fileIterator{
-		dec: gob.NewDecoder(outFile),
-		f: outFile,
-	}, nil
+// sortKeyed ordena por la clave y usa ord como desempate, de modo que el
+// resultado sea determinista entre ejecuciones.
+func sortKeyed[T any](s []keyed[T], desc bool) {
+	sort.SliceStable(s, func(i, j int) bool {
+		c := compare(s[i].key, s[j].key)
+		if c != 0 {
+			if desc {
+				return c > 0
+			}
+			return c < 0
+		}
+		return s[i].ord < s[j].ord
+	})
 }
