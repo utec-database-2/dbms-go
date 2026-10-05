@@ -5,7 +5,7 @@ import {
   Settings
 } from "lucide-react";
 
-function Header({ darkMode, toggleTheme }) {
+function Header({ darkMode, toggleTheme, apiOk }) {
   return (
     <header className="header">
 
@@ -28,8 +28,8 @@ function Header({ darkMode, toggleTheme }) {
 
         {/* ESTADO */}
         <div className="connection-status">
-          <span className="status-dot"></span>
-          <span>Conectado</span>
+          <span className={apiOk ? "status-dot" : "status-dot offline"}></span>
+          <span>{apiOk ? "Conectado" : "Servidor no disponible"}</span>
         </div>
 
         {/* CAMBIO DE TEMA */}

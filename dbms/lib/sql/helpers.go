@@ -180,11 +180,15 @@ func storageKind(t *Table) string {
 
 // TableFileInfo describe el almacenamiento de una tabla para el panel de archivos.
 type TableFileInfo struct {
-	Name        string
-	Columns     []string
-	Types       []string
-	Clustered   bool
-	Indexes     []string
+	Name      string
+	Columns   []string
+	Types     []string
+	Clustered bool
+	// PrimaryKey son las columnas de la clave primaria, en orden.
+	PrimaryKey []string
+	Indexes    []string
+	// IndexKinds es la técnica de cada índice de Indexes (misma posición).
+	IndexKinds  []string
 	Rows        int64
 	Pages       int32
 	PageSize    int32
@@ -203,6 +207,16 @@ func (t *Table) FileInfo() TableFileInfo {
 		Columns:   append([]string(nil), t.Schema.Columns...),
 		Clustered: t.Clustered,
 		Indexes:   t.IndexNames(),
+	}
+	for _, k := range t.Schema.KeyCols {
+		info.PrimaryKey = append(info.PrimaryKey, t.Schema.Columns[k])
+	}
+	for _, name := range info.Indexes {
+		kind := ""
+		if idx, ok := t.Index(name); ok {
+			kind = idx.Kind().String()
+		}
+		info.IndexKinds = append(info.IndexKinds, kind)
 	}
 	for _, ty := range t.Schema.Types {
 		info.Types = append(info.Types, ty.String())
