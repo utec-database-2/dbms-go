@@ -7,25 +7,49 @@ import {
   TileLayer,
   Circle,
   CircleMarker,
+  Polygon,
+  Polyline,
   Popup,
   useMap,
+  useMapEvents,
 } from "react-leaflet";
-import { Map as MapIcon, Search } from "lucide-react";
+import { Map as MapIcon, Search, Trash2, Undo2 } from "lucide-react";
 
-import { searchSpatialKNN, searchSpatialRange } from "../api";
+import {
+  searchSpatialKNN,
+  searchSpatialPolygon,
+  searchSpatialRange,
+} from "../api";
 
 const DEFAULT_CENTER = [-12.0432, -77.0282];
 
+// Agrega un vértice al polígono en borrador con cada clic sobre el mapa.
+function PolygonDrawer({ active, onAdd }) {
+  useMapEvents({
+    click(event) {
+      if (active) {
+        onAdd([event.latlng.lat, event.latlng.lng]);
+      }
+    },
+  });
+
+  return null;
+}
+
 // Encuadra el mapa en cada búsqueda nueva (resetKey cambia en cada una). Si la
-// consulta tiene un alcance (extentMeters > 0, el radio o la distancia al
-// vecino más lejano) se ajusta el zoom para que todo el círculo quede a la
-// vista; si no, se centra en el punto con zoom fijo.
-function MapUpdater({ center, extentMeters, resetKey }) {
+// consulta es de polígono (boundsKey trae sus vértices en JSON) se ajusta a
+// ellos; si tiene un alcance (extentMeters > 0, el radio o la distancia al
+// vecino más lejano) se ajusta para que todo el círculo quede a la vista; si
+// no, se centra en el punto con zoom fijo.
+function MapUpdater({ center, extentMeters, boundsKey, resetKey }) {
   const map = useMap();
   const [lat, lon] = center;
 
   useEffect(() => {
-    if (extentMeters > 0) {
+    if (boundsKey) {
+      const bounds = L.latLngBounds(JSON.parse(boundsKey));
+      map.fitBounds(bounds, { padding: [24, 24], maxZoom: 16 });
+    } else if (extentMeters > 0) {
       // toBounds recibe el lado del cuadrado en metros (el diámetro del círculo).
       const bounds = L.latLng(lat, lon).toBounds(extentMeters * 2);
       map.fitBounds(bounds, { padding: [24, 24], maxZoom: 15 });
@@ -39,7 +63,7 @@ function MapUpdater({ center, extentMeters, resetKey }) {
     }, 100);
 
     return () => clearTimeout(timer);
-  }, [map, lat, lon, extentMeters, resetKey]);
+  }, [map, lat, lon, extentMeters, boundsKey, resetKey]);
 
   useEffect(() => {
     const resizeObserver = new ResizeObserver(() => {
@@ -63,8 +87,10 @@ function MapPanel() {
   const [metric, setMetric] = useState("haversine");
 
   // "range": todos los puntos dentro de un radio. "knn": los k más cercanos.
+  // "polygon": los puntos dentro de un polígono dibujado con clics en el mapa.
   const [mode, setMode] = useState("range");
   const [k, setK] = useState("10");
+  const [draft, setDraft] = useState([]);
 
   // Se incrementa con cada búsqueda exitosa para que el mapa se vuelva a encuadrar.
   const [searchCount, setSearchCount] = useState(0);
@@ -89,6 +115,31 @@ function MapPanel() {
 
   const handleSearch = async () => {
     setError(null);
+
+    if (mode === "polygon") {
+      if (draft.length < 3) {
+        setError("Marca al menos 3 vértices en el mapa para formar un polígono.");
+        return;
+      }
+
+      setLoading(true);
+
+      try {
+        const data = await searchSpatialPolygon({
+          vertices: draft.map(([lat, lon]) => ({ lat, lon })),
+        });
+
+        setSpatialResult(data);
+        setSearchCount((n) => n + 1);
+      } catch (err) {
+        setError(err.message);
+        setSpatialResult(null);
+      } finally {
+        setLoading(false);
+      }
+
+      return;
+    }
 
     const lat = Number(latitude);
     const lon = Number(longitude);
@@ -138,9 +189,16 @@ function MapPanel() {
     }
   };
 
+  const isPolygonResult = Boolean(spatialResult?.vertices);
+
   const mapCenter = spatialResult?.center
     ? [spatialResult.center.lat, spatialResult.center.lon]
     : DEFAULT_CENTER;
+
+  const resultVertices = isPolygonResult
+    ? spatialResult.vertices.map((v) => [v.lat, v.lon])
+    : [];
+  const boundsKey = isPolygonResult ? JSON.stringify(resultVertices) : "";
 
   const results = spatialResult?.results || [];
 
@@ -160,9 +218,10 @@ function MapPanel() {
    * vecino más lejano.
    */
   const resultMetric = spatialResult?.metric ?? metric;
-  const resultExtent = spatialResult
-    ? (spatialResult.maxDistance ?? spatialResult.radius ?? 0)
-    : 0;
+  const resultExtent =
+    spatialResult && !isPolygonResult
+      ? (spatialResult.maxDistance ?? spatialResult.radius ?? 0)
+      : 0;
   const circleRadiusMeters =
     resultMetric === "haversine" ? resultExtent * 1000 : resultExtent * 111195;
 
@@ -175,9 +234,9 @@ function MapPanel() {
           <div>
             <h2>Consulta espacial</h2>
             <p>
-              {mode === "knn"
-                ? "k vecinos más cercanos sobre el R-Tree"
-                : "Consulta por rango sobre el R-Tree"}
+              {mode === "knn" && "k vecinos más cercanos sobre el R-Tree"}
+              {mode === "range" && "Consulta por rango sobre el R-Tree"}
+              {mode === "polygon" && "Puntos dentro de un polígono sobre el R-Tree"}
             </p>
           </div>
         </div>
@@ -194,30 +253,35 @@ function MapPanel() {
           <select value={mode} onChange={(e) => setMode(e.target.value)}>
             <option value="range">Por radio</option>
             <option value="knn">k vecinos (k-NN)</option>
+            <option value="polygon">Dentro de un polígono</option>
           </select>
         </div>
 
-        <div className="spatial-field">
-          <label>Latitud</label>
-          <input
-            type="number"
-            step="any"
-            value={latitude}
-            onChange={(e) => setLatitude(e.target.value)}
-          />
-        </div>
+        {mode !== "polygon" && (
+          <>
+            <div className="spatial-field">
+              <label>Latitud</label>
+              <input
+                type="number"
+                step="any"
+                value={latitude}
+                onChange={(e) => setLatitude(e.target.value)}
+              />
+            </div>
 
-        <div className="spatial-field">
-          <label>Longitud</label>
-          <input
-            type="number"
-            step="any"
-            value={longitude}
-            onChange={(e) => setLongitude(e.target.value)}
-          />
-        </div>
+            <div className="spatial-field">
+              <label>Longitud</label>
+              <input
+                type="number"
+                step="any"
+                value={longitude}
+                onChange={(e) => setLongitude(e.target.value)}
+              />
+            </div>
+          </>
+        )}
 
-        {mode === "range" ? (
+        {mode === "range" && (
           <div className="spatial-field">
             <label>Radio {metric === "haversine" ? "(km)" : "(grados)"}</label>
 
@@ -229,7 +293,9 @@ function MapPanel() {
               onChange={(e) => setRadius(e.target.value)}
             />
           </div>
-        ) : (
+        )}
+
+        {mode === "knn" && (
           <div className="spatial-field">
             <label>k (vecinos)</label>
 
@@ -243,14 +309,47 @@ function MapPanel() {
           </div>
         )}
 
-        <div className="spatial-field">
-          <label>Métrica</label>
+        {mode !== "polygon" && (
+          <div className="spatial-field">
+            <label>Métrica</label>
 
-          <select value={metric} onChange={handleMetricChange}>
-            <option value="haversine">Haversine</option>
-            <option value="euclidean">Euclidiana</option>
-          </select>
-        </div>
+            <select value={metric} onChange={handleMetricChange}>
+              <option value="haversine">Haversine</option>
+              <option value="euclidean">Euclidiana</option>
+            </select>
+          </div>
+        )}
+
+        {mode === "polygon" && (
+          <>
+            <div className="spatial-hint">
+              Haz clic en el mapa para marcar los vértices
+              <strong> ({draft.length})</strong>
+            </div>
+
+            <button
+              className="spatial-secondary-button"
+              onClick={() => setDraft((v) => v.slice(0, -1))}
+              disabled={draft.length === 0}
+            >
+              <Undo2 size={15} />
+              Deshacer
+            </button>
+
+            <button
+              className="spatial-secondary-button"
+              onClick={() => {
+                setDraft([]);
+                setSpatialResult(null);
+                setError(null);
+              }}
+              disabled={draft.length === 0 && !spatialResult}
+            >
+              <Trash2 size={15} />
+              Limpiar
+            </button>
+          </>
+        )}
 
         <button
           className="spatial-search-button"
@@ -264,7 +363,13 @@ function MapPanel() {
 
       {error && <div className="spatial-error">{error}</div>}
 
-      <div className="spatial-map-wrapper">
+      <div
+        className={
+          mode === "polygon"
+            ? "spatial-map-wrapper polygon-mode"
+            : "spatial-map-wrapper"
+        }
+      >
         <MapContainer
           center={DEFAULT_CENTER}
           zoom={13}
@@ -274,7 +379,13 @@ function MapPanel() {
           <MapUpdater
             center={mapCenter}
             extentMeters={circleRadiusMeters}
+            boundsKey={boundsKey}
             resetKey={searchCount}
+          />
+
+          <PolygonDrawer
+            active={mode === "polygon"}
+            onAdd={(vertex) => setDraft((v) => [...v, vertex])}
           />
 
           <TileLayer
@@ -283,26 +394,74 @@ function MapPanel() {
           />
 
           {/* Centro de la consulta */}
-          <CircleMarker
-            center={mapCenter}
-            radius={9}
-            pathOptions={{
-              color: "#2563eb",
-              fillColor: "#2563eb",
-              fillOpacity: 0.9,
-            }}
-          >
-            <Popup>
-              <strong>Punto de consulta</strong>
-              <br />
-              Latitud: {mapCenter[0].toFixed(6)}
-              <br />
-              Longitud: {mapCenter[1].toFixed(6)}
-            </Popup>
-          </CircleMarker>
+          {!isPolygonResult && mode !== "polygon" && (
+            <CircleMarker
+              center={mapCenter}
+              radius={9}
+              pathOptions={{
+                color: "#2563eb",
+                fillColor: "#2563eb",
+                fillOpacity: 0.9,
+              }}
+            >
+              <Popup>
+                <strong>Punto de consulta</strong>
+                <br />
+                Latitud: {mapCenter[0].toFixed(6)}
+                <br />
+                Longitud: {mapCenter[1].toFixed(6)}
+              </Popup>
+            </CircleMarker>
+          )}
+
+          {/* Polígono consultado */}
+          {isPolygonResult && (
+            <Polygon
+              positions={resultVertices}
+              pathOptions={{
+                color: "#16a34a",
+                fillColor: "#16a34a",
+                fillOpacity: 0.12,
+                interactive: false,
+              }}
+            />
+          )}
+
+          {/* Polígono que se está dibujando */}
+          {mode === "polygon" && draft.length >= 3 && (
+            <Polygon
+              positions={draft}
+              pathOptions={{
+                color: "#f59e0b",
+                dashArray: "6 6",
+                fillOpacity: 0.05,
+                interactive: false,
+              }}
+            />
+          )}
+          {mode === "polygon" && draft.length === 2 && (
+            <Polyline
+              positions={draft}
+              pathOptions={{ color: "#f59e0b", dashArray: "6 6", interactive: false }}
+            />
+          )}
+          {mode === "polygon" &&
+            draft.map((vertex, i) => (
+              <CircleMarker
+                key={`${vertex[0]}-${vertex[1]}-${i}`}
+                center={vertex}
+                radius={5}
+                pathOptions={{
+                  color: "#f59e0b",
+                  fillColor: "#f59e0b",
+                  fillOpacity: 1,
+                  interactive: false,
+                }}
+              />
+            ))}
 
           {/* Radio de búsqueda */}
-          {spatialResult && (
+          {spatialResult && !isPolygonResult && (
             <Circle
               center={mapCenter}
               radius={circleRadiusMeters}
@@ -335,11 +494,15 @@ function MapPanel() {
                 Latitud: {point.lat.toFixed(6)}
                 <br />
                 Longitud: {point.lon.toFixed(6)}
-                <br />
-                Distancia:{" "}
-                {resultMetric === "haversine"
-                  ? `${point.distance.toFixed(2)} km`
-                  : point.distance.toFixed(6)}
+                {point.distance !== undefined && (
+                  <>
+                    <br />
+                    Distancia:{" "}
+                    {resultMetric === "haversine"
+                      ? `${point.distance.toFixed(2)} km`
+                      : point.distance.toFixed(6)}
+                  </>
+                )}
               </Popup>
             </CircleMarker>
           ))}

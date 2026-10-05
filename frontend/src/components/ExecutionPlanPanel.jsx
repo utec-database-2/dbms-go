@@ -15,7 +15,13 @@ import {
 function iconFor(step) {
   const s = step.toLowerCase();
   if (s.includes("order by") || s.includes("sort")) return <ArrowDownUp size={17} />;
-  if (s.includes("búsqueda") || s.includes("scan")) return <Search size={17} />;
+  if (
+    s.includes("búsqueda") ||
+    s.includes("scan") ||
+    s.includes("r-tree") ||
+    s.includes("k-nn")
+  )
+    return <Search size={17} />;
   if (s.includes("heap") || s.includes("recuperados")) return <Table2 size={17} />;
   return <Database size={17} />;
 }

@@ -68,3 +68,16 @@ export async function searchSpatialKNN(data) {
 
   return parseJSON(res);
 }
+
+// Registros dentro de un polígono: { vertices: [{ lat, lon }, ...] }
+export async function searchSpatialPolygon(data) {
+  const res = await fetch(`${BASE_URL}/api/spatial/polygon`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(data),
+  });
+
+  return parseJSON(res);
+}

@@ -2393,4 +2393,43 @@ body {
 
 }
 
+/* =========================
+   MODO POLÍGONO DEL MAPA
+========================= */
 
+.spatial-hint {
+  align-self: center;
+
+  font-size: 12px;
+  color: var(--secondary-text);
+}
+
+.spatial-secondary-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  gap: 6px;
+
+  min-height: 34px;
+
+  padding: 8px 12px;
+
+  border: 1px solid var(--border);
+  border-radius: 6px;
+
+  background: transparent;
+  color: var(--text);
+
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.spatial-secondary-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.polygon-mode .leaflet-container {
+  cursor: crosshair;
+}
