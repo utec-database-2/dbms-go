@@ -408,6 +408,13 @@ func rowToSQLTuple(info *TableInfo, record []string) (string, error) {
 				return "", fmt.Errorf("columna %q: %q no es un entero", col.Name, raw)
 			}
 			vals[i] = raw
+		case "point":
+			// Acepta "POINT(lat lon)" o "lat lon"; el motor valida el rango.
+			clean := strings.NewReplacer(`"`, "", `'`, "").Replace(raw)
+			if !strings.HasPrefix(strings.ToUpper(clean), "POINT") {
+				clean = "POINT(" + clean + ")"
+			}
+			vals[i] = "'" + clean + "'"
 		case "bool":
 			switch strings.ToLower(raw) {
 			case "true", "1":

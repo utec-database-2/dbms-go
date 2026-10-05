@@ -133,3 +133,33 @@ func TestSearchKNNWithoutTable(t *testing.T) {
 		t.Fatalf("esperaba un error de tabla inexistente, obtuve %v", err)
 	}
 }
+
+// TestStoreConColumnaPoint: el panel de mapa también funciona si la tabla
+// guarda las coordenadas en una columna POINT en vez de latitud/longitud.
+func TestStoreConColumnaPoint(t *testing.T) {
+	db, err := sql.Open("test", sql.Options{Dir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(db.Close)
+	for _, q := range []string{
+		"CREATE TABLE ubicaciones (id INT PRIMARY KEY, nombre VARCHAR(40), tipo VARCHAR(20), ubicacion POINT)",
+		`INSERT INTO ubicaciones VALUES
+			(1, 'Tienda Centro',  'tienda', POINT(-12.0432, -77.0282)),
+			(2, 'Tienda Norte',   'tienda', POINT(-12.0200, -77.0282)),
+			(3, 'Tienda Cercana', 'tienda', POINT(-12.0500, -77.0282))`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	resp, err := NewStore(db, "ubicaciones").SearchKNN(KNNRequest{
+		Latitude: -12.0432, Longitude: -77.0282, K: 2, Metric: "haversine",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Results) != 2 || resp.Results[0].Name != "Tienda Centro" || resp.Results[1].Name != "Tienda Cercana" {
+		t.Fatalf("k-NN sobre columna POINT: %+v", resp.Results)
+	}
+}

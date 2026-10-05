@@ -696,3 +696,10 @@ func (e *Engine) planKNN(tbl *Table, n *ast.Select) ([]storage.Tuple, []Step, bo
 		Cost: len(rows) + idx.Entries()/16,
 	}}, true, nil
 }
+
+// ParsePoint lee un valor de una columna POINT ("POINT(lat lon)") y devuelve
+// sus coordenadas. Lo usan los clientes del motor, como el panel de mapa.
+func ParsePoint(v any) (lat, lon float64, err error) {
+	p, err := parsePoint(v)
+	return p.Lat, p.Lon, err
+}

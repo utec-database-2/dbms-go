@@ -87,6 +87,8 @@ func (s *Store) Refresh() error {
 	typePos := -1
 	latPos := -1
 	lonPos := -1
+	// Alternativa: una sola columna POINT con las dos coordenadas.
+	pointPos := -1
 
 	for i, col := range res.Columns {
 
@@ -106,17 +108,20 @@ func (s *Store) Refresh() error {
 
 		case "longitud":
 			lonPos = i
+
+		case "ubicacion", "ubicación", "punto", "coordenadas":
+			pointPos = i
 		}
 	}
 
+	hasLatLon := latPos != -1 && lonPos != -1
 	if idPos == -1 ||
 		namePos == -1 ||
 		typePos == -1 ||
-		latPos == -1 ||
-		lonPos == -1 {
+		(!hasLatLon && pointPos == -1) {
 
 		return fmt.Errorf(
-			"la tabla %q debe tener las columnas: id, nombre, tipo, latitud, longitud",
+			"la tabla %q debe tener las columnas: id, nombre, tipo y latitud, longitud (o una columna POINT llamada ubicacion)",
 			s.TableName,
 		)
 	}
@@ -127,7 +132,7 @@ func (s *Store) Refresh() error {
 
 	for i, values := range res.Rows {
 
-		if len(values) <= lonPos {
+		if len(values) <= max(idPos, namePos, typePos, latPos, lonPos, pointPos) {
 			continue
 		}
 
@@ -147,14 +152,19 @@ func (s *Store) Refresh() error {
 			continue
 		}
 
-		lat, ok := numberValue(values[latPos])
-		if !ok {
-			continue
-		}
-
-		lon, ok := numberValue(values[lonPos])
-		if !ok {
-			continue
+		var lat, lon float64
+		if hasLatLon {
+			if lat, ok = numberValue(values[latPos]); !ok {
+				continue
+			}
+			if lon, ok = numberValue(values[lonPos]); !ok {
+				continue
+			}
+		} else {
+			var err error
+			if lat, lon, err = sql.ParsePoint(values[pointPos]); err != nil {
+				continue
+			}
 		}
 
 		location := Location{
