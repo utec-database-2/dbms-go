@@ -62,6 +62,8 @@
   {\Large Motor de base de datos en Go con índices\\clásicos e índice espacial\par}
   \vspace{0.8cm}
   {\large\color{acento} Informe del proyecto: Parte 1 y Parte 2\par}
+  \vspace{0.8cm}
+  {\normalsize Repositorio: \url{https://github.com/utec-database-2/dbms-go}\par}
   \vfill
   {\large\bfseries Integrantes\par}
   \vspace{0.3cm}
@@ -805,6 +807,14 @@ Los puntos se generan uniformemente en una caja de Lima (latitud $-12.10$ a $-11
 \section{Reproducción de los experimentos}
 \label{sec:reproducir}
 % ===========================================================================
+
+El código fuente está en \url{https://github.com/utec-database-2/dbms-go}, rama \texttt{conexion}. El \texttt{README} del repositorio explica la instalación y el uso.
+
+\begin{lstlisting}
+git clone -b conexion https://github.com/utec-database-2/dbms-go.git
+cd dbms-go
+go build ./...
+\end{lstlisting}
 
 Los tres experimentos se ejecutan con el comando de línea del proyecto. Cada uno escribe sus resultados en CSV (\texttt{archivos.csv}, \texttt{indices.csv} y \texttt{espacial.csv}) y genera las gráficas.
 
