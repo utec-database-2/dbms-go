@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   Table2,
   Search,
@@ -14,9 +14,11 @@ function ResultPanel({ result, error, loading }) {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
 
-  useEffect(() => {
+  const [shownResult, setShownResult] = useState(result);
+  if (result !== shownResult) {
+    setShownResult(result);
     setPage(1);
-  }, [result]);
+  }
 
   const columns = result?.Columns || [];
   const rows = result?.Rows || [];

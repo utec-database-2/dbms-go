@@ -28,24 +28,35 @@ function App() {
 
   const toggleTheme = () => setDarkMode((v) => !v);
 
+  const applyTables = useCallback((data) => {
+    const list = data || [];
+    setTables(list);
+    setTablesError(null);
+    setSelectedTableName((current) => {
+      if (current && list.some((t) => t.Name === current)) return current;
+      return list[0]?.Name ?? null;
+    });
+  }, []);
+
   const refreshTables = useCallback(async () => {
     try {
-      const data = await listTables();
-      const list = data || [];
-      setTables(list);
-      setTablesError(null);
-      setSelectedTableName((current) => {
-        if (current && list.some((t) => t.Name === current)) return current;
-        return list[0]?.Name ?? null;
-      });
+      applyTables(await listTables());
     } catch (err) {
       setTablesError(err.message);
     }
-  }, []);
+  }, [applyTables]);
 
   useEffect(() => {
-    refreshTables();
-  }, [refreshTables]);
+    let active = true;
+
+    listTables()
+      .then((data) => active && applyTables(data))
+      .catch((err) => active && setTablesError(err.message));
+
+    return () => {
+      active = false;
+    };
+  }, [applyTables]);
 
   const handleExecute = useCallback(async () => {
     if (!query.trim()) return;
