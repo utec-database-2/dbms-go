@@ -1,6 +1,7 @@
 package lockmanager
 
 import (
+	"runtime"
 	"testing"
 	"time"
 )
@@ -94,5 +95,36 @@ func TestUpgrade(t *testing.T) {
 	snapshot := lm.Snapshot()
 	if snapshot["A"].Granted[0].Mode != Exclusive {
 		t.Fatal("expected upgraded X lock")
+	}
+}
+
+// TestDeadlockDetectado: T1 tiene A y pide B; T2 tiene B y pide A. La segunda
+// petición cerraría el ciclo, así que se rechaza con ErrDeadlock y, al abortar
+// T2, T1 obtiene B.
+func TestDeadlockDetectado(t *testing.T) {
+	lm := NewLockManager()
+	if err := lm.Lock(1, "A", Exclusive); err != nil {
+		t.Fatal(err)
+	}
+	if err := lm.Lock(2, "B", Exclusive); err != nil {
+		t.Fatal(err)
+	}
+
+	got := make(chan error, 1)
+	go func() { got <- lm.Lock(1, "B", Exclusive) }()
+	// Espera a que T1 quede encolado en B.
+	for len(lm.table.BuildWaitForGraph().Edges()[1]) == 0 {
+		runtime.Gosched()
+	}
+
+	if err := lm.Lock(2, "A", Exclusive); err != ErrDeadlock {
+		t.Fatalf("T2 debía ser la víctima del deadlock, obtuvo %v", err)
+	}
+	lm.AbortTransaction(2)
+	if err := <-got; err != nil {
+		t.Fatalf("T1 debía obtener B tras abortar T2: %v", err)
+	}
+	if lm.HasDeadlock() {
+		t.Fatal("no debería quedar ningún ciclo")
 	}
 }

@@ -52,6 +52,17 @@ func (lt *LockTable) Lock(txnID TransactionID, resource string, mode LockMode) e
 
 	request := newLockRequest(txnID, mode)
 	rl.Waiting = append(rl.Waiting, request)
+
+	// Detección de deadlocks: si esperar cierra un ciclo en el grafo de
+	// espera, nadie del ciclo avanzaría nunca. La transacción que pide el
+	// bloqueo es la víctima: se retira de la cola y se le devuelve el error
+	// para que aborte y libere lo que tiene.
+	if lt.buildWaitForGraphLocked().InCycle(txnID) {
+		rl.Waiting = rl.Waiting[:len(rl.Waiting)-1]
+		lt.cleanup(resource, rl)
+		lt.mu.Unlock()
+		return ErrDeadlock
+	}
 	lt.mu.Unlock()
 
 	select {

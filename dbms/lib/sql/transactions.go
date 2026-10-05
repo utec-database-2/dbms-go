@@ -19,20 +19,21 @@ import (
 // inverso y los revierte uno a uno. Si el proceso se corta a mitad, el siguiente
 // arranque deshace con Recover todo lo que no tenga commit.
 //
-// El motor es de una sola sesión, así que hay como mucho una transacción activa:
-// los bloqueos lógicos (2PL estricto) se piden al lockmanager por clave
-// tocada y se liberan al confirmar o al deshacer.
+// Cada sesión tiene como mucho una transacción activa y puede haber varias
+// sesiones a la vez (session.go). Los bloqueos lógicos (2PL estricto) se piden
+// al lockmanager por tabla antes de cada sentencia y por clave tocada durante
+// ella, y se liberan al confirmar o al deshacer.
 
 // execBegin abre una transacción.
 func (e *Engine) execBegin(_ *ast.BeginTransaction) (*Result, error) {
 	if e.txs == nil {
 		return nil, fmt.Errorf("sql: el motor no tiene WAL abierto")
 	}
+	if e.active != nil {
+		return nil, fmt.Errorf("sql: ya hay una transacción activa (id %d) en esta sesión", e.active.ID)
+	}
 	tx, err := e.txs.Begin()
 	if err != nil {
-		if err == transaction.ErrTransactionExists {
-			return nil, fmt.Errorf("sql: ya hay una transacción activa (id %d)", e.active.ID)
-		}
 		return nil, err
 	}
 	lockTx := e.lockTxs.Begin()
@@ -208,16 +209,12 @@ func (e *Engine) recover() error {
 	return nil
 }
 
-// InTransaction indica si hay una transacción abierta.
-func (e *Engine) InTransaction() bool { return e.active != nil }
+// InTransaction indica si la sesión por defecto tiene una transacción abierta.
+func (e *Engine) InTransaction() bool { return e.def.InTransaction() }
 
-// TransactionID devuelve el identificador de la transacción activa (0 si no hay).
-func (e *Engine) TransactionID() uint64 {
-	if e.active == nil {
-		return 0
-	}
-	return e.active.ID
-}
+// TransactionID devuelve el identificador de la transacción activa de la sesión
+// por defecto (0 si no hay).
+func (e *Engine) TransactionID() uint64 { return e.def.TransactionID() }
 
 // Recovery devuelve lo que hizo la recuperación del WAL al abrir la base.
 func (e *Engine) Recovery() RecoveryInfo { return e.recovery }
@@ -225,13 +222,9 @@ func (e *Engine) Recovery() RecoveryInfo { return e.recovery }
 // WALPath devuelve la ruta del write-ahead log.
 func (e *Engine) WALPath() string { return e.walPath() }
 
-// Locks devuelve los bloqueos que tiene la transacción activa.
-func (e *Engine) Locks() []string {
-	if e.active == nil {
-		return nil
-	}
-	return e.active.Locks.Held()
-}
+// Locks devuelve los bloqueos de fila que tiene la transacción activa de la
+// sesión por defecto.
+func (e *Engine) Locks() []string { return e.def.Locks() }
 
 // lockKey es el recurso lógico que se bloquea: tabla y clave primaria del valor.
 // Así dos transacciones que tocan filas distintas no se estorban.

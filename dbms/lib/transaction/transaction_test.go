@@ -284,13 +284,30 @@ func TestCommitDejaCambiosYStats(t *testing.T) {
 	}
 }
 
-func TestBeginSinTransaccionPrevia(t *testing.T) {
+// TestVariasTransaccionesActivas: cada sesión del motor tiene su propia
+// transacción, así que el gestor admite varias abiertas a la vez y el commit de
+// una no afecta a la otra.
+func TestVariasTransaccionesActivas(t *testing.T) {
 	m, _, _ := NewManager(walPath(t))
-	if _, err := m.Begin(); err != nil {
-		t.Fatalf("begin: %v", err)
+	t1, err := m.Begin()
+	if err != nil {
+		t.Fatalf("begin 1: %v", err)
 	}
-	if _, err := m.Begin(); err == nil {
-		t.Fatal("permitió dos transacciones activas")
+	t2, err := m.Begin()
+	if err != nil {
+		t.Fatalf("begin 2: %v", err)
+	}
+	if t1.ID == t2.ID || m.ActiveCount() != 2 {
+		t.Fatalf("se esperaban dos transacciones distintas, activas=%d", m.ActiveCount())
+	}
+	if err := m.Commit(t1); err != nil {
+		t.Fatal(err)
+	}
+	if m.ActiveCount() != 1 || m.Active() != t2 || t2.Status != StatusActive {
+		t.Fatalf("el commit de t1 no debe tocar a t2")
+	}
+	if err := m.Checkpoint(); err == nil {
+		t.Fatal("no se puede hacer checkpoint con t2 abierta")
 	}
 }
 

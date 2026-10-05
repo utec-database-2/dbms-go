@@ -58,3 +58,26 @@ func (g *WaitForGraph) Edges() map[TransactionID][]TransactionID {
 	}
 	return result
 }
+
+// InCycle indica si node forma parte de un ciclo, es decir, si siguiendo las
+// esperas desde node se vuelve a node.
+func (g *WaitForGraph) InCycle(node TransactionID) bool {
+	visited := make(map[TransactionID]bool)
+	var dfs func(TransactionID) bool
+	dfs = func(cur TransactionID) bool {
+		for next := range g.edges[cur] {
+			if next == node {
+				return true
+			}
+			if visited[next] {
+				continue
+			}
+			visited[next] = true
+			if dfs(next) {
+				return true
+			}
+		}
+		return false
+	}
+	return dfs(node)
+}

@@ -43,6 +43,7 @@ const (
 	StepBegin        StepKind = "begin"
 	StepCommit       StepKind = "commit"
 	StepRollback     StepKind = "rollback"
+	StepLock         StepKind = "lock"
 )
 
 // Step es un nodo del plan de ejecución.
@@ -105,10 +106,21 @@ type Engine struct {
 	catalogMu sync.Mutex
 
 	// Control de concurrencia y de fallos.
-	txs      *transaction.Manager
-	lockTxs  *lockmanager.TransactionManager
+	txs     *transaction.Manager
+	lockTxs *lockmanager.TransactionManager
+	// active y activeLk son la transacción de la sesión que está ejecutando
+	// la sentencia en curso: Session.Exec los carga bajo stmtMu y los guarda
+	// de vuelta al terminar (ver session.go).
 	active   *transaction.Tx
 	activeLk *lockmanager.Transaction
+	// stmtMu serializa la ejecución de sentencias: cada sentencia es atómica
+	// frente a las de otras sesiones. El aislamiento entre transacciones lo
+	// dan los bloqueos de tabla, que se esperan sin tener tomado stmtMu.
+	stmtMu sync.Mutex
+	// def es la sesión que usa Engine.Exec; sessions son todas las abiertas.
+	def        *Session
+	sessionsMu sync.Mutex
+	sessions   map[*Session]struct{}
 	// walFound describe lo que había en el WAL al abrir la base.
 	walFound transaction.Stats
 	// recovery cuenta los cambios que se deshacieron al montar el motor.
@@ -153,7 +165,8 @@ func New(dir string, opt Options) *Engine {
 	if opt.Newline == "" {
 		opt.Newline = "\n"
 	}
-	e := &Engine{cat: newCatalog(dir), opt: opt}
+	e := &Engine{cat: newCatalog(dir), opt: opt, sessions: make(map[*Session]struct{})}
+	e.def = e.NewSession()
 	// El directorio de datos se crea aquí: así CREATE TABLE funciona sobre una
 	// ruta que aún no existe. El error se reporta al abrir el motor con Open.
 	_ = os.MkdirAll(e.dbDir(), 0o755)
@@ -210,9 +223,21 @@ func Open(name string, opt Options) (*Engine, error) {
 // deshace (como haría un cliente al desconectarse) y después se hace checkpoint
 // del WAL, que ya no tiene nada que recuperar.
 func (e *Engine) Close() {
-	if e.active != nil {
-		_, _ = e.execRollback(&ast.Rollback{})
+	e.sessionsMu.Lock()
+	open := make([]*Session, 0, len(e.sessions))
+	for s := range e.sessions {
+		open = append(open, s)
 	}
+	e.sessionsMu.Unlock()
+	e.stmtMu.Lock()
+	for _, s := range open {
+		if s.active != nil {
+			s.swapIn()
+			_, _ = e.execRollback(&ast.Rollback{})
+			s.swapOut()
+		}
+	}
+	e.stmtMu.Unlock()
 	if e.txs != nil {
 		if err := e.txs.Checkpoint(); err == nil {
 			_ = e.txs.Close()
@@ -231,8 +256,14 @@ func (e *Engine) Close() {
 	}
 }
 
-// Exec parsea y ejecuta una sentencia SQL.
+// Exec parsea y ejecuta una sentencia SQL en la sesión por defecto del motor.
+// Para varios usuarios concurrentes cada uno usa su propia sesión (NewSession).
 func (e *Engine) Exec(sql string) (*Result, error) {
+	return e.def.Exec(sql)
+}
+
+// parse convierte el texto SQL en el nodo raíz del AST.
+func (e *Engine) parse(sql string) (ast.ASTNode, error) {
 	lex := lexer.Tokenize(sql, e.opt.Newline)
 	if err := lex.Err(); err != nil {
 		return nil, fmt.Errorf("sql: error léxico: %w", err)
@@ -241,10 +272,16 @@ func (e *Engine) Exec(sql string) (*Result, error) {
 	if err := p.Err(); err != nil {
 		return nil, fmt.Errorf("sql: error de sintaxis: %w", err)
 	}
+	return p.Parent(), nil
+}
+
+// execNode ejecuta una sentencia ya parseada. Se llama con stmtMu tomado y con
+// la transacción de la sesión cargada en e.active.
+func (e *Engine) execNode(root ast.ASTNode) (*Result, error) {
 	if e.initErr != nil {
 		return nil, e.initErr
 	}
-	switch node := p.Parent().(type) {
+	switch node := root.(type) {
 	case *ast.Select:
 		return e.execSelect(node)
 	case *ast.Insert:
@@ -284,7 +321,7 @@ func (e *Engine) Exec(sql string) (*Result, error) {
 		}
 		return e.execTruncate(node)
 	default:
-		return nil, fmt.Errorf("sql: sentencia no soportada %T", p.Parent())
+		return nil, fmt.Errorf("sql: sentencia no soportada %T", root)
 	}
 }
 

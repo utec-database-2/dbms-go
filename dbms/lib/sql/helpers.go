@@ -170,7 +170,11 @@ func mustCol(t *Table, name string) int {
 func (e *Engine) tables() []*Table { return e.cat.all() }
 
 // TableNames lista las tablas del catálogo.
-func (e *Engine) TableNames() []string { return e.cat.names() }
+func (e *Engine) TableNames() []string {
+	e.stmtMu.Lock()
+	defer e.stmtMu.Unlock()
+	return e.cat.names()
+}
 
 // storageKind indica si una tabla es agrupada o no.
 func storageKind(t *Table) string {
@@ -252,6 +256,8 @@ func (t *Table) FileInfo() TableFileInfo {
 
 // Files describe todas las tablas; lo usa el panel de archivos del frontend.
 func (e *Engine) Files() []TableFileInfo {
+	e.stmtMu.Lock()
+	defer e.stmtMu.Unlock()
 	tables := e.cat.all()
 	out := make([]TableFileInfo, 0, len(tables))
 	for _, t := range tables {

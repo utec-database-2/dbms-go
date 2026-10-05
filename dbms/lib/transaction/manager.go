@@ -86,7 +86,9 @@ type Manager struct {
 	file   *os.File
 	nextID uint64
 	lsn    uint64
-	active *Tx
+	// active son las transacciones abiertas. Hay una por sesión: el motor
+	// admite varias sesiones concurrentes y los bloqueos (2PL) las aíslan.
+	active map[uint64]*Tx
 	// stats lleva la cuenta de lo que escribe este proceso, para el panel.
 	stats Stats
 	// found es lo que había en el WAL cuando se abrió.
@@ -153,7 +155,7 @@ func (m *Manager) Checkpoint() error {
 	if m.file == nil {
 		return nil
 	}
-	if m.active != nil {
+	if len(m.active) > 0 {
 		return fmt.Errorf("transaction: no se puede hacer checkpoint con una transacción activa")
 	}
 	m.lsn = 0
@@ -213,9 +215,6 @@ func (m *Manager) truncate() error {
 func (m *Manager) Begin() (*Tx, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.active != nil {
-		return nil, ErrTransactionExists
-	}
 	m.nextID++
 	tx := &Tx{
 		ID:         m.nextID,
@@ -227,15 +226,31 @@ func (m *Manager) Begin() (*Tx, error) {
 	if err := m.append(rec); err != nil {
 		return nil, err
 	}
-	m.active = tx
+	if m.active == nil {
+		m.active = make(map[uint64]*Tx)
+	}
+	m.active[tx.ID] = tx
 	return tx, nil
 }
 
-// Active devuelve la transacción abierta, si la hay.
+// Active devuelve la transacción abierta más reciente, si la hay.
 func (m *Manager) Active() *Tx {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.active
+	var last *Tx
+	for _, tx := range m.active {
+		if last == nil || tx.ID > last.ID {
+			last = tx
+		}
+	}
+	return last
+}
+
+// ActiveCount devuelve cuántas transacciones están abiertas.
+func (m *Manager) ActiveCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.active)
 }
 
 // Add registra un cambio de la transacción activa en el WAL y en su lista de
@@ -331,9 +346,7 @@ func (m *Manager) Commit(tx *Tx) error {
 	tx.Status = StatusCommitted
 	tx.Locks.ReleaseAll()
 	m.stats.Committed++
-	if m.active == tx {
-		m.active = nil
-	}
+	delete(m.active, tx.ID)
 	return nil
 }
 
@@ -366,9 +379,7 @@ func (m *Manager) Rollback(tx *Tx, undo UndoFunc) error {
 	if err := m.append(rec); err != nil && firstErr == nil {
 		firstErr = err
 	}
-	if m.active == tx {
-		m.active = nil
-	}
+	delete(m.active, tx.ID)
 	return firstErr
 }
 

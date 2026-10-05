@@ -40,3 +40,6 @@ func (tm *TransactionManager) Remove(id TransactionID) {
 	defer tm.mu.Unlock()
 	delete(tm.transactions, id)
 }
+
+// LockManager devuelve el gestor de bloqueos que comparten las transacciones.
+func (tm *TransactionManager) LockManager() *LockManager { return tm.lm }
