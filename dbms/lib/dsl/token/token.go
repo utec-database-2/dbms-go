@@ -57,22 +57,73 @@ const (
 
 	// Keywords
 	TokenSelect
+	TokenDistinct
 	TokenFrom
 	TokenWhere
-	TokenInsert
-	TokenValues
-	TokenDelete
-	TokenCreate
-	TokenUpdate
-	TokenTable
-	TokenInto
+	TokenGroup
+	TokenHaving
 	TokenOrder
 	TokenBy
+	TokenTo
+	TokenLimit
+	TokenOffset
+	TokenInsert
+	TokenInto
+	TokenValues
+	TokenUpdate
+	TokenSet
+	TokenDelete
+	TokenCreate
+	TokenTable
+	TokenClustered
+	TokenDrop
+	TokenAlter
+	TokenTruncate
+	TokenIndex
+	TokenView
+	TokenConstraint
+	TokenPrimary
+	TokenKey
+	TokenUnique
+	TokenNull
+	TokenNot
+	TokenDefault
+	TokenIf
+	TokenElse
+	TokenExists
+	TokenLike
+	TokenBetween
+	TokenIs
+	TokenCast
+	TokenST
+	TokenGeometry
+	TokenSTArea
+	TokenSTLength
+	TokenSTDistance
+	TokenSTIntersects
+	TokenSTContains
+	TokenSTWithin
+	TokenSTAsText
+	TokenSTGeomFromText
+
+	TokenJoin
+	TokenInner
+	TokenLeft
+	TokenRight
+	TokenFull
+	TokenCross
+	TokenOn
+	TokenUsing
+
 	TokenIn
 	TokenAs
 
-	TokenIf
-	TokenElse
+	TokenBegin
+	TokenTransaction
+	TokenCommit
+	TokenRollback
+	TokenSavepoint
+	TokenRelease
 
 	TokenTrue
 	TokenFalse
@@ -117,23 +168,83 @@ var tokenSymbols = map[TokenType]string{
 	TokenAsterisk:    "*",
 
 	// Keywords
+	// Keywords
 	TokenIf:   "if",
 	TokenElse: "else",
 
-	TokenSelect: "select",
-	TokenFrom:   "from",
-	TokenWhere:  "where",
+	TokenSelect:   "select",
+	TokenDistinct: "distinct",
+	TokenFrom:     "from",
+	TokenWhere:    "where",
+	TokenGroup:    "group",
+	TokenHaving:   "having",
+	TokenOrder:    "order",
+	TokenBy:       "by",
+	TokenTo:       "to",
+	TokenLimit:    "limit",
+	TokenOffset:   "offset",
+
 	TokenInsert: "insert",
-	TokenValues: "values",
-	TokenDelete: "delete",
-	TokenCreate: "create",
-	TokenUpdate: "update",
-	TokenTable:  "table",
 	TokenInto:   "into",
-	TokenOrder:  "order",
-	TokenBy:     "by",
-	TokenIn:     "in",
-	TokenAs:     "as",
+	TokenValues: "values",
+
+	TokenUpdate: "update",
+	TokenSet:    "set",
+
+	TokenDelete: "delete",
+
+	TokenCreate:     "create",
+	TokenTable:      "table",
+	TokenClustered:  "clustered",
+	TokenIndex:      "index",
+	TokenView:       "view",
+	TokenConstraint: "constraint",
+	TokenPrimary:    "primary",
+	TokenKey:        "key",
+	TokenUnique:     "unique",
+	TokenNull:       "null",
+	TokenNot:        "not",
+	TokenDefault:    "default",
+
+	TokenDrop:     "drop",
+	TokenAlter:    "alter",
+	TokenTruncate: "truncate",
+	TokenExists:   "exists",
+	TokenLike:     "like",
+	TokenBetween:  "between",
+	TokenIs:       "is",
+	TokenCast:     "cast",
+
+	// Spatial functions (basic)
+	TokenST:             "st",
+	TokenGeometry:       "geometry",
+	TokenSTArea:         "st_area",
+	TokenSTLength:       "st_length",
+	TokenSTDistance:     "st_distance",
+	TokenSTIntersects:   "st_intersects",
+	TokenSTContains:     "st_contains",
+	TokenSTWithin:       "st_within",
+	TokenSTAsText:       "st_astext",
+	TokenSTGeomFromText: "st_geomfromtext",
+
+	TokenJoin:  "join",
+	TokenInner: "inner",
+	TokenLeft:  "left",
+	TokenRight: "right",
+	TokenFull:  "full",
+	TokenCross: "cross",
+	TokenOn:    "on",
+	TokenUsing: "using",
+
+	TokenIn: "in",
+	TokenAs: "as",
+
+	TokenBegin:       "begin",
+	TokenTransaction: "transaction",
+	TokenCommit:      "commit",
+	TokenRollback:    "rollback",
+	TokenSavepoint:   "savepoint",
+	TokenRelease:     "release",
 
 	TokenTrue:  "true",
 	TokenFalse: "false",
@@ -149,6 +260,7 @@ var (
 	keywordSymbols = map[string]TokenType{
 		"and": TokenAnd,
 		"or":  TokenOr,
+		"not": TokenNot,
 	}
 )
 

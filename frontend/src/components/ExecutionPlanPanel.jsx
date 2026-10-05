@@ -8,14 +8,26 @@ import {
   HardDrive,
   Table2,
   ListChecks,
+  GitMerge,
+  Boxes,
+  Lock,
 } from "lucide-react";
 
 // Elige un ícono según palabras clave del paso real que devolvió el
 // executor (dbms/lib/sql), en vez de un árbol inventado.
 function iconFor(step) {
   const s = step.toLowerCase();
+  if (s.startsWith("[lock]")) return <Lock size={17} />;
+  if (s.startsWith("[join]")) return <GitMerge size={17} />;
+  if (s.startsWith("[group-by]")) return <Boxes size={17} />;
   if (s.includes("order by") || s.includes("sort")) return <ArrowDownUp size={17} />;
-  if (s.includes("búsqueda") || s.includes("scan")) return <Search size={17} />;
+  if (
+    s.includes("búsqueda") ||
+    s.includes("scan") ||
+    s.includes("r-tree") ||
+    s.includes("k-nn")
+  )
+    return <Search size={17} />;
   if (s.includes("heap") || s.includes("recuperados")) return <Table2 size={17} />;
   return <Database size={17} />;
 }

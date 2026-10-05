@@ -15,7 +15,10 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
+	"github.com/dbms-go/v2/dbms/lib/spatial"
 	"github.com/dbms-go/v2/dbms/lib/sql"
 )
 
@@ -24,19 +27,158 @@ func main() {
 	dir := flag.String("dir", "./data", "directorio donde persisten los .heap de cada tabla")
 	flag.Parse()
 
-	db, err := sql.Open(*dir)
+	engine, err := sql.Open("minigestor", sql.Options{Dir: *dir})
 	if err != nil {
 		log.Fatalf("no se pudo abrir la base de datos en %q: %v", *dir, err)
 	}
-	defer db.Close()
+	defer engine.Close()
+	db := &database{eng: engine}
+
+	//------------------------------------------
+	// SPATIAL
+	spatialStore := spatial.NewStore(engine, "ubicaciones")
+	//------------------------------------------
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/tables", handleListTables(db))
-	mux.HandleFunc("POST /api/query", handleQuery(db))
-	mux.HandleFunc("POST /api/tables/{name}/import", handleImportCSV(db))
+	mux.HandleFunc("POST /api/query", handleQuery(db, spatialStore))
+	mux.HandleFunc("POST /api/tables/{name}/import", handleImportCSV(db, spatialStore))
+	mux.HandleFunc("POST /api/spatial/range", db.locked(handleSpatialRange(spatialStore)))
+	mux.HandleFunc("POST /api/spatial/knn", db.locked(handleSpatialKNN(spatialStore)))
+	mux.HandleFunc("POST /api/spatial/polygon", db.locked(handleSpatialPolygon(spatialStore)))
 
 	log.Printf("MinigestorBD escuchando en %s (datos en %s)", *addr, *dir)
 	log.Fatal(http.ListenAndServe(*addr, withCORS(mux)))
+}
+
+// database envuelve el sql.Engine para el servidor HTTP. El engine guarda la
+// transacción activa como estado propio (una sola sesión), así que las
+// peticiones se serializan con un mutex.
+type database struct {
+	mu  sync.Mutex
+	eng *sql.Engine
+}
+
+// locked serializa un handler que toca el engine (los espaciales leen la
+// tabla con un SELECT al reconstruir el R-Tree).
+func (db *database) locked(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		db.mu.Lock()
+		defer db.mu.Unlock()
+		h(w, r)
+	}
+}
+
+// queryResult es la respuesta de /api/query con la forma que espera el
+// frontend: el plan va como texto legible, un paso por línea.
+type queryResult struct {
+	Columns   []string
+	Rows      [][]any
+	Affected  int
+	Message   string
+	Plan      []string
+	ElapsedMs float64
+}
+
+// execute corre una sentencia; el llamador debe tener db.mu tomado.
+func (db *database) execute(query string) (*queryResult, error) {
+	start := time.Now()
+	res, err := db.eng.Exec(query)
+	if err != nil {
+		return nil, err
+	}
+	out := &queryResult{
+		Columns:   res.Columns,
+		Rows:      res.Rows,
+		Affected:  res.Affected,
+		Message:   res.Message,
+		Plan:      make([]string, 0, len(res.Plan)),
+		ElapsedMs: float64(time.Since(start).Microseconds()) / 1000,
+	}
+	if out.Rows == nil {
+		out.Rows = [][]any{}
+	}
+	for _, st := range res.Plan {
+		line := fmt.Sprintf("[%s] %s", st.Kind, st.Detail)
+		if st.Rows > 0 {
+			line += fmt.Sprintf(" · %d fila(s)", st.Rows)
+		}
+		if st.Cost > 0 {
+			line += fmt.Sprintf(" · costo ≈ %d página(s)", st.Cost)
+		}
+		out.Plan = append(out.Plan, line)
+	}
+	return out, nil
+}
+
+// ColumnInfo y TableInfo describen una tabla para el panel de archivos.
+type ColumnInfo struct {
+	Name string
+	Type string
+	Key  bool
+}
+
+type TableInfo struct {
+	Name      string
+	Columns   []ColumnInfo
+	Records   int64
+	Pages     int32
+	IndexName string
+	IndexType string
+}
+
+func tableInfoFrom(f sql.TableFileInfo) *TableInfo {
+	isKey := make(map[string]bool, len(f.PrimaryKey))
+	for _, k := range f.PrimaryKey {
+		isKey[strings.ToLower(k)] = true
+	}
+	info := &TableInfo{
+		Name:    f.Name,
+		Columns: make([]ColumnInfo, len(f.Columns)),
+		Records: f.Rows,
+		Pages:   f.Pages,
+	}
+	for i, c := range f.Columns {
+		typ := ""
+		if i < len(f.Types) {
+			typ = f.Types[i]
+		}
+		info.Columns[i] = ColumnInfo{Name: c, Type: typ, Key: isKey[strings.ToLower(c)]}
+	}
+	switch {
+	case len(f.Indexes) > 0:
+		info.IndexName = strings.Join(f.Indexes, ", ")
+		info.IndexType = strings.Join(f.IndexKinds, ", ")
+		if f.Clustered {
+			info.IndexType = "secuencial agrupado + " + info.IndexType
+		}
+	case f.Clustered:
+		info.IndexName = "pk_" + strings.ToLower(f.Name)
+		info.IndexType = "secuencial agrupado (" + f.Allocation + ")"
+	default:
+		info.IndexName = "—"
+		info.IndexType = "heap file sin índice"
+	}
+	return info
+}
+
+// tablesInfo y tableInfo leen el catálogo; el llamador debe tener db.mu.
+func (db *database) tablesInfo() []*TableInfo {
+	files := db.eng.Files()
+	out := make([]*TableInfo, 0, len(files))
+	for _, f := range files {
+		out = append(out, tableInfoFrom(f))
+	}
+	return out
+}
+
+func (db *database) tableInfo(name string) (*TableInfo, bool) {
+	for _, f := range db.eng.Files() {
+		if strings.EqualFold(f.Name, name) {
+			return tableInfoFrom(f), true
+		}
+	}
+	return nil, false
 }
 
 // withCORS permite que el frontend (servido en otro puerto por Vite en
@@ -65,9 +207,11 @@ func writeError(w http.ResponseWriter, status int, err error) {
 }
 
 // GET /api/tables
-func handleListTables(db *sql.Database) http.HandlerFunc {
+func handleListTables(db *database) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, db.TablesInfo())
+		db.mu.Lock()
+		defer db.mu.Unlock()
+		writeJSON(w, http.StatusOK, db.tablesInfo())
 	}
 }
 
@@ -76,7 +220,7 @@ type queryRequest struct {
 }
 
 // POST /api/query {"sql": "SELECT ..."}
-func handleQuery(db *sql.Database) http.HandlerFunc {
+func handleQuery(db *database, spatialStore *spatial.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req queryRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -87,12 +231,50 @@ func handleQuery(db *sql.Database) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("falta el campo \"sql\""))
 			return
 		}
-		res, err := db.Execute(req.SQL)
+		db.mu.Lock()
+		defer db.mu.Unlock()
+		res, err := db.execute(req.SQL)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, res)
+
+		// Si la consulta modifica la tabla espacial,
+		// reconstruimos el R-Tree.
+		upperSQL := strings.ToUpper(
+			strings.TrimSpace(req.SQL),
+		)
+
+		if strings.HasPrefix(
+			upperSQL,
+			"CREATE TABLE UBICACIONES",
+		) ||
+			strings.HasPrefix(
+				upperSQL,
+				"INSERT INTO UBICACIONES",
+			) ||
+			strings.HasPrefix(
+				upperSQL,
+				"DELETE FROM UBICACIONES",
+			) ||
+			strings.HasPrefix(
+				upperSQL,
+				"UPDATE UBICACIONES",
+			) ||
+			strings.HasPrefix(
+				upperSQL,
+				"DROP TABLE UBICACIONES",
+			) ||
+			strings.HasPrefix(
+				upperSQL,
+				"TRUNCATE",
+			) ||
+			strings.HasPrefix(upperSQL, "COMMIT") ||
+			strings.HasPrefix(upperSQL, "ROLLBACK") {
+
+			_ = spatialStore.Refresh()
+		}
 	}
 }
 
@@ -100,10 +282,12 @@ func handleQuery(db *sql.Database) http.HandlerFunc {
 // La tabla debe existir de antemano (CREATE TABLE) con el mismo número y
 // orden de columnas que el CSV. La primera fila del CSV se asume encabezado
 // y se descarta.
-func handleImportCSV(db *sql.Database) http.HandlerFunc {
+func handleImportCSV(db *database, spatialStore *spatial.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tableName := r.PathValue("name")
-		info, ok := db.TableInfo(tableName)
+		db.mu.Lock()
+		defer db.mu.Unlock()
+		info, ok := db.tableInfo(tableName)
 		if !ok {
 			writeError(w, http.StatusNotFound, fmt.Errorf("la tabla %q no existe; créala primero con CREATE TABLE", tableName))
 			return
@@ -121,6 +305,9 @@ func handleImportCSV(db *sql.Database) http.HandlerFunc {
 		defer file.Close()
 
 		inserted, skipped, errs := importRows(db, info, file)
+		if strings.EqualFold(tableName, "ubicaciones") && inserted > 0 {
+			_ = spatialStore.Refresh()
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"table":    tableName,
 			"inserted": inserted,
@@ -130,7 +317,7 @@ func handleImportCSV(db *sql.Database) http.HandlerFunc {
 	}
 }
 
-func importRows(db *sql.Database, info *sql.TableInfo, file multipart.File) (inserted, skipped int, errs []string) {
+func importRows(db *database, info *TableInfo, file multipart.File) (inserted, skipped int, errs []string) {
 	const batchSize = 200
 
 	reader := csv.NewReader(file)
@@ -156,7 +343,7 @@ func importRows(db *sql.Database, info *sql.TableInfo, file multipart.File) (ins
 			return
 		}
 		stmt := fmt.Sprintf("INSERT INTO %s VALUES %s;", info.Name, strings.Join(batch, ", "))
-		if _, err := db.Execute(stmt); err != nil {
+		if _, err := db.execute(stmt); err != nil {
 			skipped += len(batch)
 			errs = append(errs, err.Error())
 		} else {
@@ -196,7 +383,7 @@ func importRows(db *sql.Database, info *sql.TableInfo, file multipart.File) (ins
 	return inserted, skipped, errs
 }
 
-func columnNames(info *sql.TableInfo) string {
+func columnNames(info *TableInfo) string {
 	names := make([]string, len(info.Columns))
 	for i, c := range info.Columns {
 		names[i] = c.Name
@@ -206,7 +393,7 @@ func columnNames(info *sql.TableInfo) string {
 
 // rowToSQLTuple convierte una fila del CSV en un literal "(v1, v2, ...)"
 // que el parser SQL del proyecto pueda leer, según el tipo de cada columna.
-func rowToSQLTuple(info *sql.TableInfo, record []string) (string, error) {
+func rowToSQLTuple(info *TableInfo, record []string) (string, error) {
 	n := len(info.Columns)
 	if len(record) < n {
 		return "", fmt.Errorf("faltan valores: se esperaban %d, llegaron %d", n, len(record))
@@ -214,18 +401,21 @@ func rowToSQLTuple(info *sql.TableInfo, record []string) (string, error) {
 	vals := make([]string, n)
 	for i, col := range info.Columns {
 		raw := strings.TrimSpace(record[i])
-		switch strings.ToUpper(col.Type) {
-		case "INT":
-			if _, err := strconv.Atoi(raw); err != nil {
+		// Los tipos son los del storage del engine (storage.Type.String()).
+		switch strings.ToLower(col.Type) {
+		case "int32", "int64":
+			if _, err := strconv.ParseInt(raw, 10, 64); err != nil {
 				return "", fmt.Errorf("columna %q: %q no es un entero", col.Name, raw)
 			}
 			vals[i] = raw
-		case "DECIMAL":
-			if _, err := strconv.ParseFloat(raw, 64); err != nil {
-				return "", fmt.Errorf("columna %q: %q no es un decimal", col.Name, raw)
+		case "point":
+			// Acepta "POINT(lat lon)" o "lat lon"; el motor valida el rango.
+			clean := strings.NewReplacer(`"`, "", `'`, "").Replace(raw)
+			if !strings.HasPrefix(strings.ToUpper(clean), "POINT") {
+				clean = "POINT(" + clean + ")"
 			}
-			vals[i] = raw
-		case "BOOL":
+			vals[i] = "'" + clean + "'"
+		case "bool":
 			switch strings.ToLower(raw) {
 			case "true", "1":
 				vals[i] = "true"
@@ -234,12 +424,46 @@ func rowToSQLTuple(info *sql.TableInfo, record []string) (string, error) {
 			default:
 				return "", fmt.Errorf("columna %q: %q no es un booleano", col.Name, raw)
 			}
-		default: // STRING
+		default: // string / bytes
 			// El lexer del proyecto no soporta comillas escapadas dentro de
 			// un literal, así que se quitan para no romper el parseo.
 			clean := strings.NewReplacer(`"`, "", `'`, "").Replace(raw)
-			vals[i] = `"` + clean + `"`
+			vals[i] = "'" + clean + "'"
 		}
 	}
 	return "(" + strings.Join(vals, ", ") + ")", nil
+}
+
+// POST /api/spatial/range
+func handleSpatialRange(store *spatial.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+
+		var req spatial.RangeRequest
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(
+				w,
+				http.StatusBadRequest,
+				fmt.Errorf("body inválido: %w", err),
+			)
+			return
+		}
+
+		result, err := store.SearchRange(req)
+
+		if err != nil {
+			writeError(
+				w,
+				http.StatusBadRequest,
+				err,
+			)
+			return
+		}
+
+		writeJSON(
+			w,
+			http.StatusOK,
+			result,
+		)
+	}
 }

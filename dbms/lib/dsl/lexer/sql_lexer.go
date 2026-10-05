@@ -92,7 +92,10 @@ func (ctx *LexerContext) NextWord() token.Token {
 	if ctx.HasNext() {
 		ctx.current++ // jump closing quote
 	}
-	content := ctx.src[ctx.first:ctx.current]
+	// Se descartan las comillas delimitadoras: el contenido del token es el
+	// texto del literal. Un '' dentro del literal representa una comilla.
+	content := ctx.src[ctx.first+1 : ctx.current-1]
+	content = strings.ReplaceAll(content, string(quote)+string(quote), string(quote))
 	return token.CreateToken(token.TokenString, content, 0, 0) // FIXME: Position
 }
 

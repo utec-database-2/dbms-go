@@ -1,250 +1,219 @@
-// Package hashing implementa External Hashing (particionado por hash)
-// para GROUP BY y JOIN.
+// Package hashing implementa external hashing: reparte un conjunto de filas en
+// particiones según el hash de una clave, de modo que todas las filas con la
+// misma clave caen en la misma partición. Así un GROUP BY o un JOIN se resuelven
+// partición por partición, con una tabla hash que solo necesita caber en
+// memoria para una partición a la vez (Grace hash).
+//
+// Si las filas no caben en el buffer, cada partición se vuelca a un archivo
+// temporal con el formato
+//
+//	[u32 len][fila codificada] ...
+//
+// y se vuelve a leer cuando le toca. Con pocas filas todo queda en memoria.
 package hashing
 
 import (
-	"encoding/gob"
+	"bufio"
+	"encoding/binary"
 	"fmt"
 	"hash/fnv"
 	"io"
 	"os"
-	"sort"
-
-	"github.com/dbms-go/v2/dbms/lib/external/iterator"
-	"github.com/dbms-go/v2/dbms/lib/shared"
 )
 
-// GroupResult es un grupo producido por GroupBy.
-type GroupResult struct {
-	Key     any
-	Records []shared.Record
+// Options configura el particionado.
+type Options struct {
+	// Partitions es el número de particiones (por defecto 8).
+	Partitions int
+	// BufferSlots es cuántas filas caben en memoria. Si la entrada lo supera,
+	// las particiones se vuelcan a disco. Con 0 nunca se vuelca.
+	BufferSlots int
+	// Dir es el directorio de los temporales (vacío = directorio temporal).
+	Dir string
+	// Prefix da nombre a los temporales (por defecto "hashpart").
+	Prefix string
+	// NoSpill mantiene todo en memoria aunque se supere el buffer.
+	NoSpill bool
 }
 
-// JoinedPair es un par emparejado producido por HashJoin.
-type JoinedPair struct {
-	Left  shared.Record
-	Right shared.Record
+// Partitioned es el resultado de Partition: las particiones, en memoria o en
+// disco, y las estadísticas de E/S para el plan de ejecución.
+type Partitioned[T any] struct {
+	parts  [][]T
+	files  []string
+	counts []int
+	decode func([]byte) (T, error)
+
+	// Spilled indica que las particiones se escribieron a disco.
+	Spilled bool
+	// BytesWritten y BytesRead son la E/S del volcado.
+	BytesWritten int64
+	BytesRead    int64
 }
 
-// Hasher es el contrato de External Hashing.
-type Hasher interface {
-	GroupBy(input iterator.RecordIterator, keyFn iterator.KeyFunc) ([]GroupResult, error)
-	HashJoin(left, right iterator.RecordIterator, leftKeyFn, rightKeyFn iterator.KeyFunc) ([]JoinedPair, error)
+// HashKey es la función de hash de las claves (FNV-1a de 32 bits).
+func HashKey(key []byte) uint32 {
+	h := fnv.New32a()
+	_, _ = h.Write(key)
+	return h.Sum32()
 }
 
-// ExternalHashProcessor implementa Hasher con hashing externo particionado.
-//
-// TODO(Sergio):
-//
-
-type ExternalHashProcessor struct {
-	NumPartitions int
-	TempDir       string
-}
-
-func New(numPartitions int, tempDir string) *ExternalHashProcessor {
-	return &ExternalHashProcessor{NumPartitions: numPartitions, TempDir: tempDir}
-}
-
-// Compile-time check: *ExternalHashProcessor debe satisfacer Hasher.
-var _ Hasher = (*ExternalHashProcessor)(nil)
-
-// hashKey combina el tipo y el valor de la clave para que claves de distinto
-// tipo (p.ej. int 1 vs string "1") no colisionen en la misma partición.
-func hashKey(k any) uint64 {
-	h := fnv.New64a()
-	h.Write([]byte(fmt.Sprintf("%T:%v", k, k)))
-	return h.Sum64()
-}
-
-func (p *ExternalHashProcessor) partitionCount() int {
-	if p.NumPartitions < 1 {
-		return 1
+// Partition reparte items en particiones por el hash de keyOf. Dos llamadas con
+// el mismo número de particiones mandan claves iguales a la misma partición,
+// que es lo que permite el hash join.
+func Partition[T any](
+	items []T,
+	keyOf func(T) ([]byte, error),
+	encode func(T) ([]byte, error),
+	decode func([]byte) (T, error),
+	opt Options,
+) (*Partitioned[T], error) {
+	n := opt.Partitions
+	if n <= 0 {
+		n = 8
 	}
-	return p.NumPartitions
+	p := &Partitioned[T]{
+		parts:  make([][]T, n),
+		counts: make([]int, n),
+		decode: decode,
+	}
+	spill := !opt.NoSpill && opt.BufferSlots > 0 && len(items) > opt.BufferSlots
+
+	var (
+		writers []*bufio.Writer
+		files   []*os.File
+	)
+	if spill {
+		prefix := opt.Prefix
+		if prefix == "" {
+			prefix = "hashpart"
+		}
+		dir := opt.Dir
+		if dir == "" {
+			dir = os.TempDir()
+		}
+		for i := 0; i < n; i++ {
+			f, err := os.CreateTemp(dir, fmt.Sprintf("%s-%d-*.tmp", prefix, i))
+			if err != nil {
+				closeAll(files)
+				p.files = names(files)
+				_ = p.Close()
+				return nil, fmt.Errorf("hashing: no se pudo crear la partición %d: %w", i, err)
+			}
+			files = append(files, f)
+			writers = append(writers, bufio.NewWriter(f))
+		}
+		p.files = names(files)
+		p.Spilled = true
+	}
+
+	head := make([]byte, 4)
+	for _, it := range items {
+		key, err := keyOf(it)
+		if err != nil {
+			closeAll(files)
+			_ = p.Close()
+			return nil, err
+		}
+		i := int(HashKey(key) % uint32(n))
+		p.counts[i]++
+		if !spill {
+			p.parts[i] = append(p.parts[i], it)
+			continue
+		}
+		buf, err := encode(it)
+		if err != nil {
+			closeAll(files)
+			_ = p.Close()
+			return nil, err
+		}
+		binary.LittleEndian.PutUint32(head, uint32(len(buf)))
+		if _, err := writers[i].Write(head); err != nil {
+			closeAll(files)
+			_ = p.Close()
+			return nil, err
+		}
+		if _, err := writers[i].Write(buf); err != nil {
+			closeAll(files)
+			_ = p.Close()
+			return nil, err
+		}
+		p.BytesWritten += int64(4 + len(buf))
+	}
+	for i, w := range writers {
+		if err := w.Flush(); err != nil {
+			closeAll(files)
+			_ = p.Close()
+			return nil, fmt.Errorf("hashing: no se pudo escribir la partición %d: %w", i, err)
+		}
+	}
+	closeAll(files)
+	return p, nil
 }
 
-// partitionToFiles vuelca un iterador en NumPartitions archivos temporales,
-// usando hashKey(keyFn(rec)) % NumPartitions como función de partición.
-// Al terminar cierra todos los archivos; las particiones vacías no crean archivo.
-func (p *ExternalHashProcessor) partitionToFiles(
-	input iterator.RecordIterator,
-	keyFn iterator.KeyFunc,
-	pattern string,
-	paths *[]string,
-) (err error) {
-	parts := p.partitionCount()
-	pathsArr := make([]string, parts)
-	writers := make([]*os.File, parts)
-	encoders := make([]*gob.Encoder, parts)
-	defer func() {
-		for _, w := range writers {
-			if w != nil {
-				w.Close()
-			}
-		}
-		if err != nil {
-			for _, path := range pathsArr {
-				if path != "" {
-					os.Remove(path)
-				}
-			}
-		} else {
-			*paths = pathsArr
-		}
-	}()
+// Len devuelve el número de particiones.
+func (p *Partitioned[T]) Len() int { return len(p.counts) }
 
+// Count devuelve cuántas filas hay en la partición i.
+func (p *Partitioned[T]) Count(i int) int { return p.counts[i] }
+
+// Read devuelve las filas de la partición i, leyéndolas de disco si hizo falta.
+func (p *Partitioned[T]) Read(i int) ([]T, error) {
+	if !p.Spilled {
+		return p.parts[i], nil
+	}
+	f, err := os.Open(p.files[i])
+	if err != nil {
+		return nil, fmt.Errorf("hashing: no se pudo abrir la partición %d: %w", i, err)
+	}
+	defer f.Close()
+	r := bufio.NewReader(f)
+	out := make([]T, 0, p.counts[i])
+	head := make([]byte, 4)
 	for {
-		rec, ok, err := input.Next()
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return nil
-		}
-
-		idx := int(hashKey(keyFn(rec)) % uint64(parts))
-		if writers[idx] == nil {
-			f, err := os.CreateTemp(p.TempDir, pattern)
-			if err != nil {
-				return err
+		if _, err := io.ReadFull(r, head); err != nil {
+			if err == io.EOF {
+				break
 			}
-			writers[idx] = f
-			pathsArr[idx] = f.Name()
-			encoders[idx] = gob.NewEncoder(f)
+			return nil, fmt.Errorf("hashing: partición %d truncada: %w", i, err)
 		}
-		if err := encoders[idx].Encode(rec); err != nil {
-			return err
+		size := binary.LittleEndian.Uint32(head)
+		buf := make([]byte, size)
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return nil, fmt.Errorf("hashing: partición %d truncada: %w", i, err)
 		}
-	}
-}
-
-func (p *ExternalHashProcessor) GroupBy(input iterator.RecordIterator, keyFn iterator.KeyFunc) ([]GroupResult, error) {
-	parts := p.partitionCount()
-
-	var paths []string
-	if err := p.partitionToFiles(input, keyFn, "groupby-*", &paths); err != nil {
-		return nil, err
-	}
-	defer func() {
-		for _, path := range paths {
-			os.Remove(path)
-		}
-	}()
-
-	// Cada partición cabe en memoria si el hash fue parejo: se agrupa con un
-	// map por partición y se emite un GroupResult por clave.
-	var groups []GroupResult
-	for i := 0; i < parts; i++ {
-		if paths[i] == "" {
-			continue
-		}
-		f, err := os.Open(paths[i])
+		p.BytesRead += int64(4 + len(buf))
+		it, err := p.decode(buf)
 		if err != nil {
 			return nil, err
 		}
-		dec := gob.NewDecoder(f)
-		buckets := make(map[any][]shared.Record)
-		for {
-			var rec shared.Record
-			if err := dec.Decode(&rec); err != nil {
-				if err == io.EOF {
-					break
-				}
-				f.Close()
-				return nil, err
-			}
-			key := keyFn(rec)
-			buckets[key] = append(buckets[key], rec)
-		}
-		f.Close()
-
-		for key, recs := range buckets {
-			groups = append(groups, GroupResult{Key: key, Records: recs})
-		}
+		out = append(out, it)
 	}
-
-	// Orden determinista para que el resultado no dependa de la iteración de map.
-	sort.Slice(groups, func(i, j int) bool {
-		return fmt.Sprintf("%T:%v", groups[i].Key, groups[i].Key) <
-			fmt.Sprintf("%T:%v", groups[j].Key, groups[j].Key)
-	})
-	return groups, nil
+	return out, nil
 }
 
-func (p *ExternalHashProcessor) HashJoin(
-	left, right iterator.RecordIterator,
-	leftKeyFn, rightKeyFn iterator.KeyFunc,
-) ([]JoinedPair, error) {
-	parts := p.partitionCount()
-
-	var leftPaths, rightPaths []string
-	if err := p.partitionToFiles(left, leftKeyFn, "join-left-*", &leftPaths); err != nil {
-		return nil, err
+// Close borra los archivos temporales.
+func (p *Partitioned[T]) Close() error {
+	var first error
+	for _, name := range p.files {
+		if err := os.Remove(name); err != nil && !os.IsNotExist(err) && first == nil {
+			first = err
+		}
 	}
-	defer func() {
-		for _, path := range leftPaths {
-			os.Remove(path)
-		}
-	}()
-	if err := p.partitionToFiles(right, rightKeyFn, "join-right-*", &rightPaths); err != nil {
-		return nil, err
-	}
-	defer func() {
-		for _, path := range rightPaths {
-			os.Remove(path)
-		}
-	}()
+	p.files = nil
+	return first
+}
 
-	// Hash join clásico: por cada partición i, build con la partición i de left
-	// (la idealmente más chica) y probe en streaming con la partición i de right.
-	var pairs []JoinedPair
-	for i := 0; i < parts; i++ {
-		buckets := make(map[any][]shared.Record)
-		if leftPaths[i] != "" {
-			f, err := os.Open(leftPaths[i])
-			if err != nil {
-				return nil, err
-			}
-			dec := gob.NewDecoder(f)
-			for {
-				var rec shared.Record
-				if err := dec.Decode(&rec); err != nil {
-					if err == io.EOF {
-						break
-					}
-					f.Close()
-					return nil, err
-				}
-				key := leftKeyFn(rec)
-				buckets[key] = append(buckets[key], rec)
-			}
-			f.Close()
-		}
-
-		if rightPaths[i] == "" {
-			continue
-		}
-		f, err := os.Open(rightPaths[i])
-		if err != nil {
-			return nil, err
-		}
-		dec := gob.NewDecoder(f)
-		for {
-			var rec shared.Record
-			if err := dec.Decode(&rec); err != nil {
-				if err == io.EOF {
-					break
-				}
-				f.Close()
-				return nil, err
-			}
-			key := rightKeyFn(rec)
-			for _, lrec := range buckets[key] {
-				pairs = append(pairs, JoinedPair{Left: lrec, Right: rec})
-			}
-		}
-		f.Close()
+func closeAll(files []*os.File) {
+	for _, f := range files {
+		_ = f.Close()
 	}
-	return pairs, nil
+}
+
+func names(files []*os.File) []string {
+	out := make([]string, len(files))
+	for i, f := range files {
+		out[i] = f.Name()
+	}
+	return out
 }

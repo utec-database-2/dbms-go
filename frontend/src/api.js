@@ -34,9 +34,50 @@ export async function runQuery(sql) {
 export async function importCsv(tableName, file) {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch(`${BASE_URL}/api/tables/${encodeURIComponent(tableName)}/import`, {
+  const res = await fetch(
+    `${BASE_URL}/api/tables/${encodeURIComponent(tableName)}/import`,
+    {
+      method: "POST",
+      body: form,
+    },
+  );
+  return parseJSON(res);
+}
+
+export async function searchSpatialRange(data) {
+  const res = await fetch(`${BASE_URL}/api/spatial/range`, {
     method: "POST",
-    body: form,
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(data),
   });
+
+  return parseJSON(res);
+}
+
+// k vecinos más cercanos: { latitude, longitude, k, metric }
+export async function searchSpatialKNN(data) {
+  const res = await fetch(`${BASE_URL}/api/spatial/knn`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(data),
+  });
+
+  return parseJSON(res);
+}
+
+// Registros dentro de un polígono: { vertices: [{ lat, lon }, ...] }
+export async function searchSpatialPolygon(data) {
+  const res = await fetch(`${BASE_URL}/api/spatial/polygon`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(data),
+  });
+
   return parseJSON(res);
 }

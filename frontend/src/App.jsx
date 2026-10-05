@@ -5,6 +5,7 @@ import FilePanel from "./components/FilePanel";
 import QueryPanel from "./components/QueryPanel";
 import ResultPanel from "./components/ResultPanel";
 import ExecutionPlanPanel from "./components/ExecutionPlanPanel";
+import MapPanel from "./components/MapPanel";
 import { importCsv, listTables, runQuery } from "./api";
 import "./App.css";
 
@@ -16,7 +17,7 @@ function App() {
   const [selectedTableName, setSelectedTableName] = useState(null);
 
   const [query, setQuery] = useState(
-    "CREATE TABLE alumno (codigo INT, nombre STRING, ciclo INT);",
+    "CREATE TABLE alumno (codigo INT PRIMARY KEY, nombre VARCHAR(40), ciclo INT);",
   );
   const [result, setResult] = useState(null);
   const [lastQuery, setLastQuery] = useState("");
@@ -27,24 +28,35 @@ function App() {
 
   const toggleTheme = () => setDarkMode((v) => !v);
 
+  const applyTables = useCallback((data) => {
+    const list = data || [];
+    setTables(list);
+    setTablesError(null);
+    setSelectedTableName((current) => {
+      if (current && list.some((t) => t.Name === current)) return current;
+      return list[0]?.Name ?? null;
+    });
+  }, []);
+
   const refreshTables = useCallback(async () => {
     try {
-      const data = await listTables();
-      const list = data || [];
-      setTables(list);
-      setTablesError(null);
-      setSelectedTableName((current) => {
-        if (current && list.some((t) => t.Name === current)) return current;
-        return list[0]?.Name ?? null;
-      });
+      applyTables(await listTables());
     } catch (err) {
       setTablesError(err.message);
     }
-  }, []);
+  }, [applyTables]);
 
   useEffect(() => {
-    refreshTables();
-  }, [refreshTables]);
+    let active = true;
+
+    listTables()
+      .then((data) => active && applyTables(data))
+      .catch((err) => active && setTablesError(err.message));
+
+    return () => {
+      active = false;
+    };
+  }, [applyTables]);
 
   const handleExecute = useCallback(async () => {
     if (!query.trim()) return;
@@ -91,7 +103,11 @@ function App() {
 
   return (
     <div className={darkMode ? "app dark" : "app light"}>
-      <Header darkMode={darkMode} toggleTheme={toggleTheme} apiOk={!tablesError} />
+      <Header
+        darkMode={darkMode}
+        toggleTheme={toggleTheme}
+        apiOk={!tablesError}
+      />
 
       <Toolbar
         tables={tables}
@@ -134,6 +150,9 @@ function App() {
 
         <ExecutionPlanPanel result={result} query={lastQuery} />
       </main>
+      <div className="spatial-section">
+        <MapPanel />
+      </div>
     </div>
   );
 }
