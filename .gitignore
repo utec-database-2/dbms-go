@@ -40,3 +40,5 @@ go.work.sum
 # Copias y exportaciones del informe (la fuente es informe/main.tex)
 informe.zip
 informe/informe_overleaf/
+
+informe_actualizado.zip

@@ -68,7 +68,6 @@ Cada sesión toma bloqueos de tabla (S para leer, X para escribir) antes de ejec
 | `dbms/cli` | `dbms bench` (comparaciones experimentales) y `dbms concurrencia` (demo con hilos). |
 | `frontend` | Interfaz web (React + Vite + Leaflet). |
 | `informe`, `presentacion` | Informe (LaTeX) y presentación (Beamer). |
-| `indexes/` | Versión anterior del B+, reemplazada por `dbms/lib/index/bplus`. No compila; los comandos usan `./dbms/...`. |
 
 ## Instalación
 
@@ -81,7 +80,7 @@ Requisitos:
 ```bash
 git clone https://github.com/utec-database-2/dbms-go.git
 cd dbms-go
-go build ./dbms/...
+go build ./...
 cd frontend && npm install
 ```
 
@@ -171,7 +170,7 @@ El tipo de índice se elige por nombre: `pk_<tabla>` es el índice de la clave p
 ## Pruebas
 
 ```bash
-go test ./dbms/...
+go test ./...
 go test -race ./dbms/lib/sql ./dbms/lib/lockmanager   # pruebas de concurrencia con el detector de carreras
 cd frontend && npm run lint && npm run build
 ```
