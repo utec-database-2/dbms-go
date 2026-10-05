@@ -7,50 +7,55 @@ import (
 	"github.com/dbms-go/v2/dbms/lib/storage/heap"
 )
 
-// Rebuild reemplaza el contenido del índice por el de un escaneo completo del
-// heap. Construye un índice nuevo aparte y lo intercambia al final, así que
-// las búsquedas concurrentes ven siempre el contenido viejo o el nuevo
-// completo, nunca uno vacío o a medias. Si falla, el índice no cambia.
+// Rebuild reconstruye explícitamente el índice desde el HeapFile. No se llama
+// durante Open; queda disponible para CREATE INDEX/REINDEX o recuperación.
 func (idx *Index) Rebuild(hf *heap.HeapFile, keyOf storage.KeyExtractor) error {
 	if hf == nil {
-		return fmt.Errorf("%w: heap file", errNilArg)
+		return fmt.Errorf("extendible: heap file is nil")
 	}
 	if keyOf == nil {
-		return fmt.Errorf("%w: key extractor", errNilArg)
-	}
-	if heap.Strategy(hf.Header().Strategy) == heap.MoveTheLast {
-		return storage.ErrUnstableRIDs
+		return fmt.Errorf("extendible: key extractor is nil")
 	}
 
-	fresh, err := NewWithOptions(idx.opts)
-	if err != nil {
+	idx.mu.Lock()
+	if err := idx.ensureOpenLocked(); err != nil {
+		idx.mu.Unlock()
 		return err
 	}
+	if err := idx.resetLocked(); err != nil {
+		idx.mu.Unlock()
+		return err
+	}
+	idx.mu.Unlock()
+
 	it := hf.Scan()
 	for it.Next() {
 		key, err := keyOf(it.Tuple())
 		if err != nil {
 			return err
 		}
-		if err := fresh.Insert(key, it.RID()); err != nil {
+		if err := idx.Insert(key, it.RID()); err != nil {
 			return err
 		}
 	}
 	if err := it.Err(); err != nil {
 		return err
 	}
-
-	idx.mu.Lock()
-	idx.globalDepth, idx.directory = fresh.globalDepth, fresh.directory
-	idx.keys, idx.records, idx.depthCount = fresh.keys, fresh.records, fresh.depthCount
-	idx.mu.Unlock()
-	return nil
+	return idx.Sync()
 }
 
-// NewFromStorage crea un índice y lo reconstruye escaneando el heap.
+// NewFromStorage conserva la firma anterior. El índice ahora también es
+// file-backed, aunque el archivo es temporal y se elimina en Close.
 func NewFromStorage(bucketSize int, hf *heap.HeapFile, keyOf storage.KeyExtractor) (*Index, error) {
+	if hf == nil {
+		return nil, fmt.Errorf("extendible: heap file is nil")
+	}
+	if keyOf == nil {
+		return nil, fmt.Errorf("extendible: key extractor is nil")
+	}
 	idx := New(bucketSize)
 	if err := idx.Rebuild(hf, keyOf); err != nil {
+		_ = idx.Close()
 		return nil, err
 	}
 	return idx, nil

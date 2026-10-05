@@ -1,342 +1,991 @@
-// Package extendible implementa un índice de Hashing Extensible (Dinámico):
-// un directorio de punteros a cubetas que se duplica solo cuando hace falta,
-// y cubetas que se dividen (localDepth++) en vez de reescribir todo el
-// índice en cada crecimiento. Al borrar, las cubetas "hermanas" vuelven a
-// fusionarse y el directorio se reduce, de modo que el índice también encoge.
+// Package extendible implementa un índice de Hashing Extensible (Dinámico)
+// persistente en disco.
 //
-// Es un índice en memoria que se reconstruye desde el heap (ver Rebuild). Las
-// claves se codifican con storage.EncodeKey, así que sirven int, int32,
-// int64, bool, string, []byte y tuplas (claves compuestas) sin riesgo de
-// panic por tipos no hasheables.
+// El directorio se mantiene temporalmente en RAM como caché, pero su estado
+// durable se guarda en el archivo .idx. Cada bucket se almacena en una cadena
+// de páginas identificadas por PageID; por tanto, cerrar y volver a abrir el
+// proceso NO requiere reconstruir el índice desde el HeapFile.
 package extendible
 
 import (
+	"bytes"
+	"encoding/binary"
+	"encoding/gob"
 	"errors"
 	"fmt"
-	"slices"
+	"hash/fnv"
+	"os"
 	"sync"
 
 	"github.com/dbms-go/v2/dbms/lib/index/common"
 	"github.com/dbms-go/v2/dbms/lib/storage"
+	"github.com/dbms-go/v2/dbms/lib/storage/heap"
 )
 
-// MaxGlobalDepth es la profundidad máxima permitida del directorio (2^24
-// punteros, ~128 MB en el peor caso). hashKey produce 32 bits, pero la
-// profundidad útil se alcanza mucho antes: crece ~log2(claves/BucketSize).
-const MaxGlobalDepth = 24
+const (
+	// MaxGlobalDepth conserva el límite de la implementación original.
+	MaxGlobalDepth = 24
 
-const defaultBucketSize = 4
+	DefaultPageSize = 4096
+	indexVersion    = uint32(1)
 
-// Options configura el índice.
+	metaPageID      = PageID(0)
+	firstDataPageID = PageID(1)
+	invalidPageID   = PageID(^uint32(0))
+
+	pageHeaderSize = 12
+	pageKindFree   = byte(0)
+	pageKindDir    = byte(1)
+	pageKindBucket = byte(2)
+)
+
+// Options conserva la configuración del índice en memoria y permite ajustar
+// el tamaño de página al crear un índice temporal con NewWithOptions.
 type Options struct {
-	// BucketSize es la capacidad objetivo de RIDs por cubeta (por defecto 4).
-	// Una cubeta puede excederla en dos casos que splitear no resuelve: una
-	// sola clave con más RIDs que BucketSize, o claves distintas que
-	// comparten todos los bits de hash hasta MaxDepth.
 	BucketSize int
-	// Unique rechaza con ErrDuplicateKey una clave que ya tiene otro RID
-	// (para índices sobre la clave primaria). Reinsertar el mismo (clave,
-	// RID) es siempre idempotente.
-	Unique bool
-	// MaxDepth acota el directorio; 0 usa MaxGlobalDepth.
-	MaxDepth int
+	Unique     bool
+	MaxDepth   int
+	PageSize   int
 }
 
-type entry struct {
-	hash uint32
-	rids []storage.RID
-}
+var (
+	ErrCorruptIndex       = errors.New("extendible: corrupt index")
+	ErrClosedIndex        = errors.New("extendible: index is closed")
+	ErrBucketSizeMismatch = errors.New("extendible: persisted bucket size differs from requested bucket size")
+	ErrPageSizeTooSmall   = errors.New("extendible: page size too small")
+)
 
-// bucket es una cubeta del directorio. records cuenta RIDs (no claves).
+var indexMagic = [8]byte{'E', 'X', 'H', 'A', 'S', 'H', '0', '1'}
+
+type PageID uint32
+
+func (p PageID) valid() bool { return p != invalidPageID }
+
+// bucket es la representación lógica de una cubeta. No contiene punteros a
+// memoria ni offsets físicos: la relación con el directorio se realiza mediante
+// el PageID de la primera página de su cadena.
 type bucket struct {
-	localDepth int
-	records    int
-	entries    map[string]*entry // clave codificada -> RIDs (admite duplicados)
+	LocalDepth int
+	Entries    map[string][]storage.RID // clave codificada -> lista de RID
 }
 
 func newBucket(localDepth int) *bucket {
-	return &bucket{localDepth: localDepth, entries: make(map[string]*entry)}
+	return &bucket{
+		LocalDepth: localDepth,
+		Entries:    make(map[string][]storage.RID),
+	}
 }
 
-// Index implementa common.Index usando Hashing Extensible (Dinámico).
+func (b *bucket) recordCount() int {
+	count := 0
+	for _, rids := range b.Entries {
+		count += len(rids)
+	}
+	return count
+}
+
+func (b *bucket) distinctKeyCount() int { return len(b.Entries) }
+
+// Index implementa common.Index usando Hashing Extensible persistente.
+//
+// Layout del archivo:
+//   - página 0: metadata del índice;
+//   - páginas >= 1: cadenas de páginas para el directorio y para los buckets.
+//
+// El directorio también queda cargado en RAM para no releerlo en cada Search,
+// pero se escribe a disco cada vez que cambia (por ejemplo, durante un split).
+// Los buckets se leen desde disco cuando una operación los necesita.
 type Index struct {
 	mu sync.RWMutex
 
-	opts        Options
-	globalDepth int
-	directory   []*bucket
-	keys        int // claves distintas
-	records     int // RIDs en total
+	file     *os.File
+	path     string
+	pageSize int
+	closed   bool
 
-	// depthCount[d] es la cantidad de cubetas distintas con localDepth d. Con
-	// él, saber si el directorio puede reducirse es O(1) en vez de recorrerlo
-	// entero tras cada fusión (que con millones de posiciones domina el costo).
-	depthCount [MaxGlobalDepth + 2]int
+	globalDepth int
+	bucketSize  int
+	unique      bool
+	maxDepth    int
+	directory   []PageID // caché del directorio persistido
+
+	directoryHead PageID
+	nextPageID    PageID
+	freeHead      PageID
+
+	// New/NewFromStorage usan un archivo temporal para conservar compatibilidad
+	// con la API antigua. Los índices durables deben usar Create/Open.
+	removeOnClose bool
 }
 
-// Compile-time check: *Index debe satisfacer common.Index.
 var _ common.Index = (*Index)(nil)
 
-// New crea un índice con profundidad global inicial 1 (2 entradas de
-// directorio apuntando a 2 cubetas con localDepth 1). bucketSize menor a 1
-// se ajusta a 1: con bucketSize <= 0 cualquier insert dispararía splits
-// infinitos hasta chocar con MaxGlobalDepth en vano.
+// Create crea un índice persistente nuevo y trunca path si ya existía.
+func Create(path string, bucketSize int) (*Index, error) {
+	return CreateWithPageSize(path, bucketSize, DefaultPageSize)
+}
+
+func CreateWithPageSize(path string, bucketSize, pageSize int) (*Index, error) {
+	if bucketSize < 1 {
+		bucketSize = 1
+	}
+	if pageSize < 512 || pageSize <= pageHeaderSize {
+		return nil, fmt.Errorf("%w: %d", ErrPageSizeTooSmall, pageSize)
+	}
+
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return nil, err
+	}
+
+	idx := &Index{
+		file:          f,
+		path:          path,
+		pageSize:      pageSize,
+		globalDepth:   1,
+		bucketSize:    bucketSize,
+		maxDepth:      MaxGlobalDepth,
+		nextPageID:    firstDataPageID,
+		freeHead:      invalidPageID,
+		directoryHead: invalidPageID,
+	}
+
+	if err := idx.initializeEmptyLocked(); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return idx, nil
+}
+
+// Open abre un índice existente directamente desde el archivo .idx.
+// No escanea el HeapFile ni llama a Rebuild.
+func Open(path string) (*Index, error) {
+	f, err := os.OpenFile(path, os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+
+	idx := &Index{file: f, path: path}
+	if err := idx.readMetaLocked(); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if err := idx.loadDirectoryLocked(); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	idx.maxDepth = MaxGlobalDepth
+	if err := idx.validateLocked(); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return idx, nil
+}
+
+// OpenOrCreate abre path si ya existe; si no existe, crea el índice.
+func OpenOrCreate(path string, bucketSize int) (*Index, error) {
+	idx, err := Open(path)
+	if err == nil {
+		if idx.bucketSize != max(bucketSize, 1) {
+			_ = idx.Close()
+			return nil, fmt.Errorf("%w: disk=%d requested=%d", ErrBucketSizeMismatch, idx.bucketSize, max(bucketSize, 1))
+		}
+		return idx, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	return Create(path, bucketSize)
+}
+
+// New conserva la firma antigua. Ahora también es file-backed, pero usa un
+// archivo temporal que se elimina al cerrar. Para persistencia real usa
+// Create/Open/OpenOrCreate con una ruta explícita.
 func New(bucketSize int) *Index {
-	idx, _ := NewWithOptions(Options{BucketSize: max(bucketSize, 1)})
+	idx, err := NewWithOptions(Options{BucketSize: bucketSize})
+	if err != nil {
+		panic(err)
+	}
 	return idx
 }
 
-// NewWithOptions es New con opciones; valida los parámetros.
+// NewWithOptions crea un índice temporal usando las opciones compatibles con
+// la implementación anterior. Para un índice durable use Create/Open.
 func NewWithOptions(opts Options) (*Index, error) {
 	if opts.BucketSize == 0 {
-		opts.BucketSize = defaultBucketSize
+		opts.BucketSize = 4
+	}
+	if opts.BucketSize < 1 || opts.MaxDepth > MaxGlobalDepth || opts.MaxDepth < 0 {
+		return nil, fmt.Errorf("%w: invalid options", storage.ErrBadOptions)
 	}
 	if opts.MaxDepth == 0 {
 		opts.MaxDepth = MaxGlobalDepth
 	}
-	if opts.BucketSize < 0 || opts.MaxDepth < 1 || opts.MaxDepth > MaxGlobalDepth {
-		return nil, fmt.Errorf("%w: BucketSize=%d MaxDepth=%d", storage.ErrBadOptions, opts.BucketSize, opts.MaxDepth)
+	pageSize := opts.PageSize
+	if pageSize == 0 {
+		pageSize = DefaultPageSize
 	}
-	idx := &Index{
-		opts:        opts,
-		globalDepth: 1,
-		directory:   []*bucket{newBucket(1), newBucket(1)},
+	f, err := os.CreateTemp("", "dbms-go-extendible-*.idx")
+	if err != nil {
+		return nil, err
 	}
-	idx.depthCount[1] = 2
+	path := f.Name()
+	if err := f.Close(); err != nil {
+		_ = os.Remove(path)
+		return nil, err
+	}
+	idx, err := CreateWithPageSize(path, opts.BucketSize, pageSize)
+	if err != nil {
+		_ = os.Remove(path)
+		return nil, err
+	}
+	idx.unique = opts.Unique
+	idx.maxDepth = opts.MaxDepth
+	idx.removeOnClose = true
 	return idx, nil
 }
 
-// hashEncoded: FNV-1a seguido del finalizador de MurmurHash3 (fmix32). FNV
-// solo deja mal repartidos los bits bajos, que son justo los que usa el
-// directorio; fmix32 es biyectivo y los mezcla.
-func hashEncoded(b []byte) uint32 {
-	h := uint32(2166136261)
-	for _, c := range b {
-		h ^= uint32(c)
-		h *= 16777619
-	}
-	h ^= h >> 16
-	h *= 0x85ebca6b
-	h ^= h >> 13
-	h *= 0xc2b2ae35
-	h ^= h >> 16
-	return h
+func (idx *Index) Path() string {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.path
 }
 
-func encode(key any) (string, uint32, error) {
-	b, err := storage.EncodeKey(key)
-	if err != nil {
-		return "", 0, err
-	}
-	return string(b), hashEncoded(b), nil
+func (idx *Index) PageSize() int {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.pageSize
 }
 
-func (idx *Index) slot(h uint32) uint32 {
-	return h & (uint32(1)<<uint(idx.globalDepth) - 1)
+func (idx *Index) BucketSize() int {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.bucketSize
 }
 
-// Insert agrega (key, rid). Es idempotente para el mismo par; con Unique
-// devuelve ErrDuplicateKey si la clave ya existe con otro RID.
-func (idx *Index) Insert(key any, rid storage.RID) error {
-	k, h, err := encode(key)
-	if err != nil {
-		return err
-	}
+func (idx *Index) Close() error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	di := idx.slot(h)
-	b := idx.directory[di]
-	if e, ok := b.entries[k]; ok {
-		if slices.Contains(e.rids, rid) {
-			return nil
-		}
-		if idx.opts.Unique {
-			return fmt.Errorf("%w: %v", storage.ErrDuplicateKey, key)
-		}
-		e.rids = append(e.rids, rid)
-	} else {
-		b.entries[k] = &entry{hash: h, rids: []storage.RID{rid}}
-		idx.keys++
+	if idx.closed {
+		return nil
 	}
-	b.records++
-	idx.records++
-
-	// Splitear mientras la cubeta de esta clave desborde y splitear sirva:
-	// con una sola clave, o en MaxDepth, se acepta la cubeta sobrecargada.
-	for b.records > idx.opts.BucketSize && len(b.entries) > 1 && b.localDepth < idx.opts.MaxDepth {
-		idx.splitLocked(b, di)
-		di = idx.slot(h)
-		b = idx.directory[di]
+	if err := idx.persistDirectoryLocked(); err != nil {
+		return err
+	}
+	if err := idx.writeMetaLocked(); err != nil {
+		return err
+	}
+	if err := idx.file.Sync(); err != nil {
+		return err
+	}
+	if err := idx.file.Close(); err != nil {
+		return err
+	}
+	idx.closed = true
+	if idx.removeOnClose {
+		return os.Remove(idx.path)
 	}
 	return nil
 }
 
-// splitLocked divide b en dos cubetas con localDepth+1 según el bit
-// localDepth del hash, duplicando el directorio si hace falta. di es una
-// posición del directorio que apunta a b.
-func (idx *Index) splitLocked(b *bucket, di uint32) {
-	if b.localDepth == idx.globalDepth {
-		idx.directory = append(idx.directory, idx.directory...)
-		idx.globalDepth++
+func (idx *Index) Sync() error {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	if err := idx.ensureOpenLocked(); err != nil {
+		return err
 	}
-	d := b.localDepth
-	bit := uint32(1) << uint(d)
-	b0, b1 := newBucket(d+1), newBucket(d+1)
-	for k, e := range b.entries {
-		t := b0
-		if e.hash&bit != 0 {
-			t = b1
+	if err := idx.writeMetaLocked(); err != nil {
+		return err
+	}
+	return idx.file.Sync()
+}
+
+func encodeKey(key any) (string, uint32, error) {
+	data, err := storage.EncodeKey(key)
+	if err != nil {
+		return "", 0, err
+	}
+	return string(data), hashBytes(data), nil
+}
+
+func hashBytes(data []byte) uint32 {
+	h := fnv.New32a()
+	_, _ = h.Write(data)
+	return h.Sum32()
+}
+
+func (idx *Index) directoryIndexLocked(hash uint32) uint32 {
+	mask := uint32(1)<<uint(idx.globalDepth) - 1
+	return hash & mask
+}
+
+func (idx *Index) Insert(key any, rid storage.RID) error {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	if err := idx.ensureOpenLocked(); err != nil {
+		return err
+	}
+
+	encodedKey, hash, err := encodeKey(key)
+	if err != nil {
+		return err
+	}
+	dirIndex := idx.directoryIndexLocked(hash)
+	bucketHead := idx.directory[dirIndex]
+	b, err := idx.readBucketLocked(bucketHead)
+	if err != nil {
+		return err
+	}
+	if rids, ok := b.Entries[encodedKey]; ok && idx.unique {
+		for _, existing := range rids {
+			if existing != rid {
+				return fmt.Errorf("%w: %v", storage.ErrDuplicateKey, key)
+			}
 		}
-		t.entries[k] = e
-		t.records += len(e.rids)
 	}
-	idx.depthCount[d]--
-	idx.depthCount[d+1] += 2
-	// Las posiciones que apuntan a b son las que comparten sus d bits bajos.
-	for i := int(di & (bit - 1)); i < len(idx.directory); i += int(bit) {
-		if uint32(i)&bit == 0 {
-			idx.directory[i] = b0
-		} else {
-			idx.directory[i] = b1
+	b.Entries[encodedKey] = append(b.Entries[encodedKey], rid)
+
+	for {
+		if b.recordCount() <= idx.bucketSize || b.distinctKeyCount() <= 1 || b.LocalDepth >= idx.maxDepth {
+			if _, err := idx.writeBucketLocked(bucketHead, b); err != nil {
+				return err
+			}
+			return idx.writeMetaLocked()
+		}
+
+		oldDepth := b.LocalDepth
+		if oldDepth == idx.globalDepth {
+			if idx.globalDepth >= idx.maxDepth {
+				if _, err := idx.writeBucketLocked(bucketHead, b); err != nil {
+					return err
+				}
+				return idx.writeMetaLocked()
+			}
+			oldLen := len(idx.directory)
+			idx.directory = append(idx.directory, make([]PageID, oldLen)...)
+			copy(idx.directory[oldLen:], idx.directory[:oldLen])
+			idx.globalDepth++
+		}
+
+		left := newBucket(oldDepth + 1)
+		right := newBucket(oldDepth + 1)
+		splitBit := uint32(1) << uint(oldDepth)
+		for k, rids := range b.Entries {
+			if hashBytes([]byte(k))&splitBit == 0 {
+				left.Entries[k] = rids
+			} else {
+				right.Entries[k] = rids
+			}
+		}
+
+		leftHead, err := idx.writeBucketLocked(bucketHead, left)
+		if err != nil {
+			return err
+		}
+		rightHead, err := idx.writeBucketLocked(invalidPageID, right)
+		if err != nil {
+			return err
+		}
+
+		// Todas las posiciones que antes apuntaban al bucket dividido se
+		// redirigen según el nuevo bit de profundidad local.
+		for i, head := range idx.directory {
+			if head != bucketHead {
+				continue
+			}
+			if uint32(i)&splitBit == 0 {
+				idx.directory[i] = leftHead
+			} else {
+				idx.directory[i] = rightHead
+			}
+		}
+
+		if err := idx.persistDirectoryLocked(); err != nil {
+			return err
+		}
+		if err := idx.writeMetaLocked(); err != nil {
+			return err
+		}
+
+		// La clave insertada puede seguir en un bucket sobrecargado; continúa
+		// dividiendo solo ese bucket hasta que sea válido o se alcance el límite.
+		dirIndex = idx.directoryIndexLocked(hash)
+		bucketHead = idx.directory[dirIndex]
+		b, err = idx.readBucketLocked(bucketHead)
+		if err != nil {
+			return err
 		}
 	}
 }
 
-// Search devuelve (una copia de) todos los RID de key; slice vacío si no hay.
 func (idx *Index) Search(key any) ([]storage.RID, error) {
-	k, h, err := encode(key)
+	encodedKey, hash, err := encodeKey(key)
 	if err != nil {
 		return nil, err
 	}
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
-
-	if e, ok := idx.directory[idx.slot(h)].entries[k]; ok {
-		return slices.Clone(e.rids), nil
+	if err := idx.ensureOpenLocked(); err != nil {
+		return nil, err
 	}
-	return []storage.RID{}, nil
+
+	i := idx.directoryIndexLocked(hash)
+	b, err := idx.readBucketLocked(idx.directory[i])
+	if err != nil {
+		return nil, err
+	}
+	rids := b.Entries[encodedKey]
+	out := make([]storage.RID, len(rids))
+	copy(out, rids)
+	return out, nil
 }
 
 func (idx *Index) RangeSearch(keyMin, keyMax any) ([]storage.RID, error) {
 	return nil, common.ErrRangeNotSupported
 }
 
-// Delete quita (key, rid) y devuelve si existía. Tras borrar, fusiona
-// cubetas hermanas y reduce el directorio cuando es posible.
 func (idx *Index) Delete(key any, rid storage.RID) (bool, error) {
-	k, h, err := encode(key)
+	encodedKey, hash, err := encodeKey(key)
 	if err != nil {
 		return false, err
 	}
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
+	if err := idx.ensureOpenLocked(); err != nil {
+		return false, err
+	}
 
-	b := idx.directory[idx.slot(h)]
-	e, ok := b.entries[k]
-	if !ok {
+	i := idx.directoryIndexLocked(hash)
+	head := idx.directory[i]
+	b, err := idx.readBucketLocked(head)
+	if err != nil {
+		return false, err
+	}
+	rids, exists := b.Entries[encodedKey]
+	if !exists {
 		return false, nil
 	}
-	j := slices.Index(e.rids, rid)
-	if j < 0 {
-		return false, nil
-	}
-	e.rids = slices.Delete(e.rids, j, j+1)
-	b.records--
-	idx.records--
-	if len(e.rids) == 0 {
-		delete(b.entries, k)
-		idx.keys--
-	}
-	idx.mergeLocked(h)
-	return true, nil
-}
-
-// mergeLocked fusiona la cubeta de h con su hermana mientras tengan la misma
-// profundidad local y quepan juntas, y después reduce el directorio.
-func (idx *Index) mergeLocked(h uint32) {
-	merged := false
-	for {
-		b := idx.directory[idx.slot(h)]
-		d := b.localDepth
-		if d <= 1 {
-			break
+	for j, r := range rids {
+		if r != rid {
+			continue
 		}
-		prefix := h & (uint32(1)<<uint(d) - 1)
-		buddy := idx.directory[prefix^(uint32(1)<<uint(d-1))]
-		if buddy.localDepth != d || b.records+buddy.records > idx.opts.BucketSize {
-			break
+		b.Entries[encodedKey] = append(rids[:j], rids[j+1:]...)
+		if len(b.Entries[encodedKey]) == 0 {
+			delete(b.Entries, encodedKey)
 		}
-		nb := newBucket(d - 1)
-		for _, src := range []*bucket{b, buddy} {
-			for k, e := range src.entries {
-				nb.entries[k] = e
-			}
+		if _, err := idx.writeBucketLocked(head, b); err != nil {
+			return false, err
 		}
-		nb.records = b.records + buddy.records
-		idx.depthCount[d] -= 2
-		idx.depthCount[d-1]++
-		step := 1 << uint(d-1)
-		for i := int(prefix) & (step - 1); i < len(idx.directory); i += step {
-			idx.directory[i] = nb
+		if err := idx.writeMetaLocked(); err != nil {
+			return false, err
 		}
-		merged = true
+		return true, nil
 	}
-	if merged {
-		idx.shrinkLocked()
-	}
-}
-
-// shrinkLocked reduce el directorio a la mitad mientras ninguna cubeta use
-// toda la profundidad global.
-func (idx *Index) shrinkLocked() {
-	for idx.globalDepth > 1 && idx.depthCount[idx.globalDepth] == 0 {
-		idx.directory = slices.Clone(idx.directory[:len(idx.directory)/2])
-		idx.globalDepth--
-	}
+	return false, nil
 }
 
 func (idx *Index) SupportsRange() bool { return false }
 
-// GlobalDepth expone la profundidad global actual del directorio, útil
-// para inspección/depuración y para la comparación experimental del proyecto.
 func (idx *Index) GlobalDepth() int {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 	return idx.globalDepth
 }
 
-// Stats resume el estado del índice.
+// Stats expone métricas útiles para los experimentos del proyecto.
 type Stats struct {
-	GlobalDepth      int
-	DirectorySize    int
-	Buckets          int
-	Keys             int     // claves distintas
-	Records          int     // RIDs
-	MaxBucketRecords int     // RIDs de la cubeta más llena
-	Overflowing      int     // cubetas por encima de BucketSize
-	LoadFactor       float64 // Records / (Buckets * BucketSize)
+	GlobalDepth    int
+	BucketSize     int
+	DirectorySlots int
+	UniqueBuckets  int
+	Records        int
+	PageSize       int
+	FilePages      uint32
+	FreePages      uint32
+	FileBytes      int64
 }
 
 func (idx *Index) Stats() Stats {
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
-
-	s := Stats{GlobalDepth: idx.globalDepth, DirectorySize: len(idx.directory), Keys: idx.keys, Records: idx.records}
-	seen := make(map[*bucket]struct{}, len(idx.directory))
-	for _, b := range idx.directory {
-		if _, dup := seen[b]; dup {
-			continue
-		}
-		seen[b] = struct{}{}
-		s.MaxBucketRecords = max(s.MaxBucketRecords, b.records)
-		if b.records > idx.opts.BucketSize {
-			s.Overflowing++
-		}
-	}
-	s.Buckets = len(seen)
-	s.LoadFactor = float64(s.Records) / float64(s.Buckets*idx.opts.BucketSize)
-	return s
+	stats, _ := idx.StatsWithError()
+	return stats
 }
 
-var errNilArg = errors.New("extendible: argumento nil")
+// StatsWithError devuelve métricas y propaga errores de lectura del archivo.
+func (idx *Index) StatsWithError() (Stats, error) {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	if err := idx.ensureOpenLocked(); err != nil {
+		return Stats{}, err
+	}
+
+	unique := make(map[PageID]struct{})
+	records := 0
+	for _, p := range idx.directory {
+		if _, ok := unique[p]; ok {
+			continue
+		}
+		unique[p] = struct{}{}
+		b, err := idx.readBucketLocked(p)
+		if err != nil {
+			return Stats{}, err
+		}
+		records += b.recordCount()
+	}
+	free, err := idx.countFreePagesLocked()
+	if err != nil {
+		return Stats{}, err
+	}
+	info, err := idx.file.Stat()
+	if err != nil {
+		return Stats{}, err
+	}
+	return Stats{
+		GlobalDepth:    idx.globalDepth,
+		BucketSize:     idx.bucketSize,
+		DirectorySlots: len(idx.directory),
+		UniqueBuckets:  len(unique),
+		Records:        records,
+		PageSize:       idx.pageSize,
+		FilePages:      uint32(idx.nextPageID),
+		FreePages:      free,
+		FileBytes:      info.Size(),
+	}, nil
+}
+
+// Validate verifica que el directorio y todos sus buckets sean consistentes.
+func (idx *Index) Validate() error {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	if err := idx.ensureOpenLocked(); err != nil {
+		return err
+	}
+	return idx.validateLocked()
+}
+
+func (idx *Index) validateLocked() error {
+	if idx.globalDepth < 1 || idx.globalDepth > MaxGlobalDepth {
+		return fmt.Errorf("%w: invalid global depth %d", ErrCorruptIndex, idx.globalDepth)
+	}
+	expectedDirLen := 1 << uint(idx.globalDepth)
+	if len(idx.directory) != expectedDirLen {
+		return fmt.Errorf("%w: directory length=%d expected=%d", ErrCorruptIndex, len(idx.directory), expectedDirLen)
+	}
+
+	seen := make(map[PageID]*bucket)
+	refs := make(map[PageID]int)
+	for _, head := range idx.directory {
+		if !head.valid() || head == metaPageID || head >= idx.nextPageID {
+			return fmt.Errorf("%w: invalid bucket page %d", ErrCorruptIndex, head)
+		}
+		refs[head]++
+		if _, ok := seen[head]; ok {
+			continue
+		}
+		b, err := idx.readBucketLocked(head)
+		if err != nil {
+			return err
+		}
+		if b.LocalDepth < 1 || b.LocalDepth > idx.globalDepth {
+			return fmt.Errorf("%w: bucket %d localDepth=%d globalDepth=%d", ErrCorruptIndex, head, b.LocalDepth, idx.globalDepth)
+		}
+		seen[head] = b
+	}
+
+	for head, b := range seen {
+		expectedRefs := 1 << uint(idx.globalDepth-b.LocalDepth)
+		if refs[head] != expectedRefs {
+			return fmt.Errorf("%w: bucket %d refs=%d expected=%d", ErrCorruptIndex, head, refs[head], expectedRefs)
+		}
+		for key := range b.Entries {
+			i := idx.directoryIndexLocked(hashBytes([]byte(key)))
+			if idx.directory[i] != head {
+				return fmt.Errorf("%w: key %v hashes to bucket %d, stored in %d", ErrCorruptIndex, key, idx.directory[i], head)
+			}
+		}
+	}
+	return nil
+}
+
+type keyExtractor = storage.KeyExtractor
+
+// CreateFromStorage crea un índice durable en path y lo construye escaneando
+// el HeapFile una única vez.
+func CreateFromStorage(path string, bucketSize int, hf *heap.HeapFile, keyOf keyExtractor) (*Index, error) {
+	if hf == nil {
+		return nil, fmt.Errorf("extendible: heap file is nil")
+	}
+	if keyOf == nil {
+		return nil, fmt.Errorf("extendible: key extractor is nil")
+	}
+	idx, err := Create(path, bucketSize)
+	if err != nil {
+		return nil, err
+	}
+	if err := idx.Rebuild(hf, keyOf); err != nil {
+		_ = idx.Close()
+		return nil, err
+	}
+	return idx, nil
+}
+
+// OpenOrCreateFromStorage abre el índice si ya existe. Solo si no existe lo
+// crea y lo construye desde el HeapFile. De esta manera la reapertura normal
+// no vuelve a recorrer todos los registros.
+func OpenOrCreateFromStorage(path string, bucketSize int, hf *heap.HeapFile, keyOf keyExtractor) (*Index, error) {
+	idx, err := Open(path)
+	if err == nil {
+		if idx.bucketSize != max(bucketSize, 1) {
+			_ = idx.Close()
+			return nil, fmt.Errorf("%w: disk=%d requested=%d", ErrBucketSizeMismatch, idx.bucketSize, max(bucketSize, 1))
+		}
+		return idx, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	return CreateFromStorage(path, bucketSize, hf, keyOf)
+}
+
+// -----------------------------------------------------------------------------
+// Persistencia paginada
+// -----------------------------------------------------------------------------
+
+func (idx *Index) ensureOpenLocked() error {
+	if idx.closed || idx.file == nil {
+		return ErrClosedIndex
+	}
+	return nil
+}
+
+func (idx *Index) initializeEmptyLocked() error {
+	leftHead, err := idx.writeBucketLocked(invalidPageID, newBucket(1))
+	if err != nil {
+		return err
+	}
+	rightHead, err := idx.writeBucketLocked(invalidPageID, newBucket(1))
+	if err != nil {
+		return err
+	}
+	idx.directory = []PageID{leftHead, rightHead}
+	if err := idx.persistDirectoryLocked(); err != nil {
+		return err
+	}
+	return idx.writeMetaLocked()
+}
+
+func (idx *Index) resetLocked() error {
+	if err := idx.file.Truncate(0); err != nil {
+		return err
+	}
+	idx.globalDepth = 1
+	idx.directory = nil
+	idx.directoryHead = invalidPageID
+	idx.nextPageID = firstDataPageID
+	idx.freeHead = invalidPageID
+	return idx.initializeEmptyLocked()
+}
+
+func (idx *Index) writeMetaLocked() error {
+	if err := idx.ensureOpenLocked(); err != nil {
+		return err
+	}
+	buf := make([]byte, idx.pageSize)
+	copy(buf[0:8], indexMagic[:])
+	binary.LittleEndian.PutUint32(buf[8:12], indexVersion)
+	binary.LittleEndian.PutUint32(buf[12:16], uint32(idx.pageSize))
+	binary.LittleEndian.PutUint32(buf[16:20], uint32(idx.globalDepth))
+	binary.LittleEndian.PutUint32(buf[20:24], uint32(idx.bucketSize))
+	binary.LittleEndian.PutUint32(buf[24:28], uint32(idx.directoryHead))
+	binary.LittleEndian.PutUint32(buf[28:32], uint32(idx.nextPageID))
+	binary.LittleEndian.PutUint32(buf[32:36], uint32(idx.freeHead))
+	_, err := idx.file.WriteAt(buf, 0)
+	return err
+}
+
+func (idx *Index) readMetaLocked() error {
+	prefix := make([]byte, 64)
+	if _, err := idx.file.ReadAt(prefix, 0); err != nil {
+		return err
+	}
+	var magic [8]byte
+	copy(magic[:], prefix[0:8])
+	if magic != indexMagic {
+		return fmt.Errorf("%w: invalid magic", ErrCorruptIndex)
+	}
+	version := binary.LittleEndian.Uint32(prefix[8:12])
+	if version != indexVersion {
+		return fmt.Errorf("%w: unsupported version %d", ErrCorruptIndex, version)
+	}
+	idx.pageSize = int(binary.LittleEndian.Uint32(prefix[12:16]))
+	if idx.pageSize < 512 || idx.pageSize <= pageHeaderSize {
+		return fmt.Errorf("%w: invalid page size %d", ErrCorruptIndex, idx.pageSize)
+	}
+	idx.globalDepth = int(binary.LittleEndian.Uint32(prefix[16:20]))
+	idx.bucketSize = int(binary.LittleEndian.Uint32(prefix[20:24]))
+	idx.directoryHead = PageID(binary.LittleEndian.Uint32(prefix[24:28]))
+	idx.nextPageID = PageID(binary.LittleEndian.Uint32(prefix[28:32]))
+	idx.freeHead = PageID(binary.LittleEndian.Uint32(prefix[32:36]))
+	if idx.bucketSize < 1 || idx.nextPageID < firstDataPageID || !idx.directoryHead.valid() {
+		return fmt.Errorf("%w: invalid metadata", ErrCorruptIndex)
+	}
+	return nil
+}
+
+func (idx *Index) pageOffset(pid PageID) int64 {
+	return int64(pid) * int64(idx.pageSize)
+}
+
+type pageHeader struct {
+	kind byte
+	next PageID
+	used uint32
+}
+
+func (idx *Index) readPageHeaderLocked(pid PageID) (pageHeader, error) {
+	if !pid.valid() || pid == metaPageID || pid >= idx.nextPageID {
+		return pageHeader{}, fmt.Errorf("%w: invalid page id %d", ErrCorruptIndex, pid)
+	}
+	buf := make([]byte, pageHeaderSize)
+	if _, err := idx.file.ReadAt(buf, idx.pageOffset(pid)); err != nil {
+		return pageHeader{}, err
+	}
+	return pageHeader{
+		kind: buf[0],
+		next: PageID(binary.LittleEndian.Uint32(buf[4:8])),
+		used: binary.LittleEndian.Uint32(buf[8:12]),
+	}, nil
+}
+
+func (idx *Index) writePageLocked(pid PageID, kind byte, next PageID, data []byte) error {
+	capacity := idx.pageSize - pageHeaderSize
+	if len(data) > capacity {
+		return fmt.Errorf("%w: page payload %d > %d", ErrCorruptIndex, len(data), capacity)
+	}
+	buf := make([]byte, idx.pageSize)
+	buf[0] = kind
+	binary.LittleEndian.PutUint32(buf[4:8], uint32(next))
+	binary.LittleEndian.PutUint32(buf[8:12], uint32(len(data)))
+	copy(buf[pageHeaderSize:], data)
+	_, err := idx.file.WriteAt(buf, idx.pageOffset(pid))
+	return err
+}
+
+func (idx *Index) allocPageLocked() (PageID, error) {
+	if idx.freeHead.valid() {
+		pid := idx.freeHead
+		h, err := idx.readPageHeaderLocked(pid)
+		if err != nil {
+			return invalidPageID, err
+		}
+		if h.kind != pageKindFree {
+			return invalidPageID, fmt.Errorf("%w: free list page %d is kind %d", ErrCorruptIndex, pid, h.kind)
+		}
+		idx.freeHead = h.next
+		return pid, nil
+	}
+	pid := idx.nextPageID
+	idx.nextPageID++
+	return pid, nil
+}
+
+func (idx *Index) freePageLocked(pid PageID) error {
+	if !pid.valid() || pid == metaPageID || pid >= idx.nextPageID {
+		return fmt.Errorf("%w: cannot free page %d", ErrCorruptIndex, pid)
+	}
+	if err := idx.writePageLocked(pid, pageKindFree, idx.freeHead, nil); err != nil {
+		return err
+	}
+	idx.freeHead = pid
+	return nil
+}
+
+func (idx *Index) gatherChainLocked(head PageID, expectedKind byte) ([]PageID, error) {
+	if !head.valid() {
+		return nil, nil
+	}
+	var pages []PageID
+	seen := make(map[PageID]struct{})
+	for p := head; p.valid(); {
+		if _, ok := seen[p]; ok {
+			return nil, fmt.Errorf("%w: cycle in page chain at %d", ErrCorruptIndex, p)
+		}
+		seen[p] = struct{}{}
+		h, err := idx.readPageHeaderLocked(p)
+		if err != nil {
+			return nil, err
+		}
+		if h.kind != expectedKind {
+			return nil, fmt.Errorf("%w: page %d kind=%d expected=%d", ErrCorruptIndex, p, h.kind, expectedKind)
+		}
+		pages = append(pages, p)
+		p = h.next
+	}
+	return pages, nil
+}
+
+func (idx *Index) readObjectLocked(head PageID, expectedKind byte) ([]byte, error) {
+	pages, err := idx.gatherChainLocked(head, expectedKind)
+	if err != nil {
+		return nil, err
+	}
+	if len(pages) == 0 {
+		return nil, fmt.Errorf("%w: empty object chain", ErrCorruptIndex)
+	}
+	capacity := idx.pageSize - pageHeaderSize
+	var out bytes.Buffer
+	for _, p := range pages {
+		buf := make([]byte, idx.pageSize)
+		if _, err := idx.file.ReadAt(buf, idx.pageOffset(p)); err != nil {
+			return nil, err
+		}
+		used := binary.LittleEndian.Uint32(buf[8:12])
+		if used > uint32(capacity) {
+			return nil, fmt.Errorf("%w: page %d used=%d", ErrCorruptIndex, p, used)
+		}
+		_, _ = out.Write(buf[pageHeaderSize : pageHeaderSize+int(used)])
+	}
+	return out.Bytes(), nil
+}
+
+func (idx *Index) writeObjectLocked(existingHead PageID, kind byte, data []byte) (PageID, error) {
+	capacity := idx.pageSize - pageHeaderSize
+	needed := (len(data) + capacity - 1) / capacity
+	if needed == 0 {
+		needed = 1
+	}
+
+	existing, err := idx.gatherChainLocked(existingHead, kind)
+	if err != nil {
+		return invalidPageID, err
+	}
+	pages := append([]PageID(nil), existing...)
+	for len(pages) < needed {
+		p, err := idx.allocPageLocked()
+		if err != nil {
+			return invalidPageID, err
+		}
+		pages = append(pages, p)
+	}
+
+	usedPages := pages[:needed]
+	for i, pid := range usedPages {
+		start := i * capacity
+		end := start + capacity
+		if end > len(data) {
+			end = len(data)
+		}
+		next := invalidPageID
+		if i+1 < len(usedPages) {
+			next = usedPages[i+1]
+		}
+		if err := idx.writePageLocked(pid, kind, next, data[start:end]); err != nil {
+			return invalidPageID, err
+		}
+	}
+
+	for _, pid := range pages[needed:] {
+		if err := idx.freePageLocked(pid); err != nil {
+			return invalidPageID, err
+		}
+	}
+	return usedPages[0], nil
+}
+
+func encodeGob(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode(v); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func decodeGob(data []byte, v any) error {
+	return gob.NewDecoder(bytes.NewReader(data)).Decode(v)
+}
+
+func (idx *Index) writeBucketLocked(head PageID, b *bucket) (PageID, error) {
+	if b == nil || b.Entries == nil {
+		return invalidPageID, fmt.Errorf("%w: nil bucket", ErrCorruptIndex)
+	}
+	data, err := encodeGob(b)
+	if err != nil {
+		return invalidPageID, fmt.Errorf("extendible: encode bucket: %w", err)
+	}
+	return idx.writeObjectLocked(head, pageKindBucket, data)
+}
+
+func (idx *Index) readBucketLocked(head PageID) (*bucket, error) {
+	data, err := idx.readObjectLocked(head, pageKindBucket)
+	if err != nil {
+		return nil, err
+	}
+	var b bucket
+	if err := decodeGob(data, &b); err != nil {
+		return nil, fmt.Errorf("%w: decode bucket %d: %v", ErrCorruptIndex, head, err)
+	}
+	if b.Entries == nil {
+		b.Entries = make(map[string][]storage.RID)
+	}
+	return &b, nil
+}
+
+func (idx *Index) persistDirectoryLocked() error {
+	data, err := encodeGob(idx.directory)
+	if err != nil {
+		return fmt.Errorf("extendible: encode directory: %w", err)
+	}
+	head, err := idx.writeObjectLocked(idx.directoryHead, pageKindDir, data)
+	if err != nil {
+		return err
+	}
+	idx.directoryHead = head
+	return nil
+}
+
+func (idx *Index) loadDirectoryLocked() error {
+	data, err := idx.readObjectLocked(idx.directoryHead, pageKindDir)
+	if err != nil {
+		return err
+	}
+	var directory []PageID
+	if err := decodeGob(data, &directory); err != nil {
+		return fmt.Errorf("%w: decode directory: %v", ErrCorruptIndex, err)
+	}
+	idx.directory = directory
+	return nil
+}
+
+func (idx *Index) countFreePagesLocked() (uint32, error) {
+	var count uint32
+	seen := make(map[PageID]struct{})
+	for p := idx.freeHead; p.valid(); {
+		if _, ok := seen[p]; ok {
+			return 0, fmt.Errorf("%w: cycle in free list at %d", ErrCorruptIndex, p)
+		}
+		seen[p] = struct{}{}
+		h, err := idx.readPageHeaderLocked(p)
+		if err != nil {
+			return 0, err
+		}
+		if h.kind != pageKindFree {
+			return 0, fmt.Errorf("%w: free page %d has kind %d", ErrCorruptIndex, p, h.kind)
+		}
+		count++
+		p = h.next
+	}
+	return count, nil
+}
+
+// max evita depender de una versión particular del helper predeclared en
+// llamadas donde queremos dejar explícita la normalización del bucketSize.
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
