@@ -32,11 +32,13 @@ func chartBarras(path, titulo, ejeX, ejeY string, categorias []string, series []
 	}
 
 	const (
-		ancho  = 900
-		alto   = 460
-		izq    = 110
-		arr    = 70
-		base   = 60
+		ancho = 900
+		alto  = 500
+		izq   = 110
+		arr   = 70
+		// base es el espacio bajo el eje X: etiquetas de categoría, título del
+		// eje y leyenda, cada uno en su propia franja para que no se encimen.
+		base   = 110
 		fuente = 13
 	)
 
@@ -65,7 +67,12 @@ func chartBarras(path, titulo, ejeX, ejeY string, categorias []string, series []
 		if math.IsInf(minV, 1) {
 			minV = 0.1
 		}
-		minimo = math.Log10(minV)
+		// El piso del eje es la potencia de 10 por debajo del menor valor: si
+		// fuera el propio mínimo, esa barra quedaría con altura cero.
+		minimo = math.Floor(math.Log10(minV))
+		if minimo == math.Log10(minV) {
+			minimo--
+		}
 		maxV = math.Log10(maxV)
 		if maxV-minimo < 1 {
 			maxV = minimo + 1
@@ -137,13 +144,13 @@ func chartBarras(path, titulo, ejeX, ejeY string, categorias []string, series []
 			float64(izq)+float64(ci)*anchoCat+anchoCat/2, alto-base+22, escape(cat))
 	}
 	fmt.Fprintf(&b, "  <text x=\"%d\" y=\"%d\" font-size=\"12\" fill=\"#555\" text-anchor=\"middle\">%s</text>\n",
-		ancho/2, alto-14, escape(ejeX))
+		ancho/2, alto-base+44, escape(ejeX))
 
 	// Leyenda.
 	lx := izq
 	for si, s := range series {
-		fmt.Fprintf(&b, "  <rect x=\"%d\" y=\"%d\" width=\"12\" height=\"12\" fill=\"%s\"/>\n", lx, alto-46, colorDe(si))
-		fmt.Fprintf(&b, "  <text x=\"%d\" y=\"%d\" font-size=\"12\" fill=\"#333\">%s</text>\n", lx+17, alto-36, escape(s.nombre))
+		fmt.Fprintf(&b, "  <rect x=\"%d\" y=\"%d\" width=\"12\" height=\"12\" fill=\"%s\"/>\n", lx, alto-base+62, colorDe(si))
+		fmt.Fprintf(&b, "  <text x=\"%d\" y=\"%d\" font-size=\"12\" fill=\"#333\">%s</text>\n", lx+17, alto-base+72, escape(s.nombre))
 		lx += 22 + len(s.nombre)*7
 		_ = si
 	}

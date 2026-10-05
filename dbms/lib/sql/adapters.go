@@ -124,6 +124,18 @@ func (s *seqAdapter) Scan(fn func(storage.Tuple) bool) error {
 	return it.Err()
 }
 
+// RangeScan entrega en orden las filas con lo <= PK <= hi. El secuencial se
+// posiciona con búsqueda binaria en lo y se detiene al pasar hi.
+func (s *seqAdapter) RangeScan(lo, hi storage.Tuple, fn func(storage.Tuple) bool) error {
+	it := s.file.Range(lo, hi)
+	for it.Next() {
+		if !fn(it.Tuple()) {
+			break
+		}
+	}
+	return it.Err()
+}
+
 // Stats expone las métricas del secuencial (páginas, desperdicio, overflow).
 func (s *seqAdapter) Stats() seqStats {
 	st := s.file.Stats()

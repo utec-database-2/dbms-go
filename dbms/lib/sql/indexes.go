@@ -199,16 +199,27 @@ func (idx *clusteredIndex) SearchExact(key any) ([]storage.Tuple, error) {
 	return []storage.Tuple{t}, nil
 }
 
+// SearchRange lee del secuencial solo las filas con low <= PK <= high: se
+// posiciona con búsqueda binaria y se detiene al pasar high.
 func (idx *clusteredIndex) SearchRange(low, high any) ([]storage.Tuple, error) {
 	var out []storage.Tuple
-	err := idx.seq.Scan(func(tp storage.Tuple) bool {
-		key := idx.table.Schema.KeyOf(tp)
-		if compareAny(key, low) < 0 {
+	if keys := idx.table.Schema.KeyCols; len(keys) != 1 {
+		// PK compuesta: el rango es sobre la primera columna; se recorre en
+		// orden de PK y se corta al pasar high.
+		first := keys[0]
+		err := idx.seq.Scan(func(tp storage.Tuple) bool {
+			if compareAny(tp[first], low) < 0 {
+				return true
+			}
+			if compareAny(tp[first], high) > 0 {
+				return false
+			}
+			out = append(out, tp)
 			return true
-		}
-		if compareAny(key, high) > 0 {
-			return false
-		}
+		})
+		return out, err
+	}
+	err := idx.seq.RangeScan(storage.Tuple{low}, storage.Tuple{high}, func(tp storage.Tuple) bool {
 		out = append(out, tp)
 		return true
 	})

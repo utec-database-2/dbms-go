@@ -188,6 +188,22 @@ func TestClusteredSequential(t *testing.T) {
 		t.Fatalf("se esperaba index-seek:\n%s", planText(res))
 	}
 
+	// Rangos sobre el índice agrupado: cerrados, abiertos y de un solo lado.
+	for q, want := range map[string]string{
+		"SELECT id FROM t WHERE id >= 2 AND id <= 3": "[[2] [3]]",
+		"SELECT id FROM t WHERE id > 1":              "[[2] [3]]",
+		"SELECT id FROM t WHERE id < 3":              "[[1] [2]]",
+		"SELECT id FROM t WHERE id > 5":              "[]",
+	} {
+		res = run(t, e, q)
+		if got := fmt.Sprint(res.Rows); got != want {
+			t.Fatalf("%s: %s, se esperaba %s\n%s", q, got, want, planText(res))
+		}
+		if !hasKind(res, StepIndexSeek) {
+			t.Fatalf("%s debería usar el B+ agrupado:\n%s", q, planText(res))
+		}
+	}
+
 	if r := run(t, e, "UPDATE t SET v = 99 WHERE id = 2"); r.Affected != 1 {
 		t.Fatalf("UPDATE afecta %d", r.Affected)
 	}

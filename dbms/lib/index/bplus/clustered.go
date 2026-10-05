@@ -13,6 +13,14 @@ type KeyedTupleStorage interface {
 	Scan(func(storage.Tuple) bool) error
 }
 
+// RangeScanner es un almacenamiento ordenado por PK que sabe posicionarse en
+// la primera clave >= lo y recorrer en orden hasta hi (ambas inclusivas). El
+// archivo secuencial lo implementa con búsqueda binaria, así que un rango lee
+// solo las filas del rango y no el archivo entero.
+type RangeScanner interface {
+	RangeScan(lo, hi storage.Tuple, fn func(storage.Tuple) bool) error
+}
+
 type ClusteredIndex struct {
 	mu      sync.RWMutex
 	tree    *Tree[uint8]
@@ -166,13 +174,28 @@ func (idx *ClusteredIndex) RangeSearch(low, high storage.Tuple) ([]storage.Tuple
 	}
 
 	out := make([]storage.Tuple, 0, len(entries))
+	// Con un almacenamiento ordenado que sabe posicionarse, se leen solo las
+	// filas del rango: es la ventaja del índice agrupado.
+	if rs, ok := idx.storage.(RangeScanner); ok {
+		if err := rs.RangeScan(low, high, func(tp storage.Tuple) bool {
+			out = append(out, tp)
+			return true
+		}); err != nil {
+			return nil, err
+		}
+		return out, nil
+	}
+	// Sin posicionamiento: recorrido en orden de PK, que se corta al pasar hi.
 	if err := idx.storage.Scan(func(tp storage.Tuple) bool {
 		enc, e := idx.encodePK(idx.table.KeyOf(tp))
 		if e != nil {
 			err = e
 			return false
 		}
-		if bytes.Compare(enc, lo) >= 0 && bytes.Compare(enc, hi) <= 0 {
+		if bytes.Compare(enc, hi) > 0 {
+			return false
+		}
+		if bytes.Compare(enc, lo) >= 0 {
 			out = append(out, tp)
 		}
 		return true

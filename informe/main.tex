@@ -78,7 +78,7 @@
 \end{titlepage}
 
 \begin{abstract}
-\texttt{dbms-go} es un motor de base de datos relacional escrito en Go, con una interfaz web en React. En la Parte 1 se implementaron dos organizaciones de archivo (\emph{heap file} y archivo secuencial paginado), tres estructuras de indexación (B+ agrupado, B+ no agrupado y hashing extensible), un lenguaje SQL con planificador de consultas y \emph{external sorting}. En la Parte 2 se agregó un índice espacial R-Tree con división estilo R*, consultas por radio, por polígono y de $k$ vecinos más cercanos, expuestas por una API REST y un mapa interactivo. Se presentan tres comparaciones experimentales con 1\,000, 10\,000 y 100\,000 registros. El archivo secuencial busca por clave primaria unas 760 veces más rápido que el \emph{heap file}, pero inserta unas 7.7 veces más lento. El hash extensible es la mejor opción para igualdad y para altas y bajas, y el B+ agrupado lo es para recorrer en orden. El R-Tree resuelve $k$-NN unas 580 veces más rápido que la búsqueda secuencial y unas 8 veces más rápido que el GiST de PostgreSQL.
+\texttt{dbms-go} es un motor de base de datos relacional escrito en Go, con una interfaz web en React. En la Parte 1 se implementaron dos organizaciones de archivo (\emph{heap file} y archivo secuencial paginado), tres estructuras de indexación (B+ agrupado, B+ no agrupado y hashing extensible), un lenguaje SQL con planificador de consultas y \emph{external sorting}. En la Parte 2 se agregó un índice espacial R-Tree con división estilo R*, consultas por radio, por polígono y de $k$ vecinos más cercanos, expuestas por una API REST y un mapa interactivo. Se presentan tres comparaciones experimentales con 1\,000, 10\,000 y 100\,000 registros. El archivo secuencial busca por clave primaria unas 760 veces más rápido que el \emph{heap file}, pero inserta unas 7.7 veces más lento. El hash extensible es la mejor opción para igualdad y para altas y bajas, y el B+ agrupado lo es para rangos y recorridos en orden. El R-Tree resuelve $k$-NN unas 580 veces más rápido que la búsqueda secuencial y unas 8 veces más rápido que el GiST de PostgreSQL.
 \end{abstract}
 
 \tableofcontents
@@ -363,7 +363,8 @@ Los mismos escenarios están cubiertos por pruebas automatizadas que se ejecutan
   \item Las claves se insertan en \textbf{orden aleatorio}: es el caso realista, y obliga al archivo secuencial a usar su auxiliar y a reconstruirse.
   \item Archivos: 200 búsquedas por clave primaria por medición; para la reorganización se borra el 20\% de las filas.
   \item Índices: orden del B+ igual a 50, cubetas del hash de 32 entradas, 500 consultas de igualdad y 51 consultas de rango (cada una cubre $\approx$1\% de las claves). Las altas y bajas son un 5\% de inserciones más un 5\% de eliminaciones.
-  \item Varias gráficas usan \textbf{escala logarítmica}. En ellas, la barra del valor mínimo queda a ras del eje; su valor se lee en la etiqueta.
+  \item Varias gráficas usan \textbf{escala logarítmica}; el eje empieza en la potencia de 10 por debajo del menor valor, así que todas las barras son visibles.
+  \item La comparación de índices se repitió en un Apple M2 Pro con 16\,GB de RAM después de corregir la búsqueda por rango del B+ agrupado (Sección~\ref{sec:exp-indices}); por eso sus tiempos absolutos no son comparables con los de la comparación de archivos.
 \end{itemize}
 
 \subsection{Heap file vs.\ archivo secuencial}
@@ -418,20 +419,20 @@ Los mismos escenarios están cubiertos por pruebas automatizadas que se ejecutan
     \toprule
     $n$ & Técnica & Construcción (ms) & Costo del índice (ms) & Igualdad ($\mu$s) & Rango 1\% ($\mu$s) & Recorrido ordenado (ms) & Alta/baja ($\mu$s) \\
     \midrule
-    \multirow{3}{*}{1\,000}   & B+ agrupado    & 8.88     & 6.45     & 8.92  & 418.1     & 0.51  & 381.0 \\
-                              & B+ no agrupado & 6.50     & 4.08     & 2.64  & 24.2      & 1.97  & 232.4 \\
-                              & Hash dinámico  & 3.63     & 1.21     & 0.23  & 263.7     & 1.15  & 8.4 \\
+    \multirow{3}{*}{1\,000}   & B+ agrupado    & 64.0     & 48.5     & 12.79 & 25.7      & 0.22  & 436.4 \\
+                              & B+ no agrupado & 7.09     & $-8.5$   & 1.68  & 22.1      & 1.59  & 150.0 \\
+                              & Hash dinámico  & 8.42     & $-7.1$   & 0.13  & 133.3     & 0.58  & 42.0 \\
     \midrule
-    \multirow{3}{*}{10\,000}  & B+ agrupado    & 184.6    & 132.2    & 10.54 & 5\,004.9  & 5.25  & 4\,558.7 \\
-                              & B+ no agrupado & 49.4     & $-2.9$   & 4.02  & 435.3     & 32.0  & 3\,016.4 \\
-                              & Hash dinámico  & 43.1     & $-9.3$   & 0.32  & 3\,504.5  & 17.2  & 45.3 \\
+    \multirow{3}{*}{10\,000}  & B+ agrupado    & 348.2    & 297.5    & 10.46 & 60.7      & 2.85  & 2\,529.3 \\
+                              & B+ no agrupado & 56.6     & 5.9      & 1.81  & 187.4     & 18.7  & 1\,625.0 \\
+                              & Hash dinámico  & 61.9     & 11.2     & 0.17  & 1\,596.9  & 9.61  & 30.9 \\
     \midrule
-    \multirow{3}{*}{100\,000} & B+ agrupado    & 2\,453.3 & 2\,088.9 & 12.51 & 51\,780.8 & 69.4  & 53\,704.8 \\
-                              & B+ no agrupado & 686.5    & 322.1    & 3.77  & 3\,718.1  & 316.9 & 31\,764.1 \\
-                              & Hash dinámico  & 418.9    & 54.5     & 1.05  & 29\,513.7 & 215.6 & 361.8 \\
+    \multirow{3}{*}{100\,000} & B+ agrupado    & 2\,490.2 & 2\,034.6 & 14.53 & 433.8     & 24.6  & 24\,606.0 \\
+                              & B+ no agrupado & 587.7    & 132.1    & 2.60  & 1\,781.4  & 168.3 & 15\,463.0 \\
+                              & Hash dinámico  & 555.8    & 100.2    & 0.29  & 15\,250.0 & 95.7  & 194.5 \\
     \bottomrule
   \end{tabular}}
-  \caption{Tiempos de la comparación de índices (\texttt{indices.csv}). El costo del índice es la construcción menos la carga de las mismas filas sin índice (2.4, 52.3 y 364.4 ms).}
+  \caption{Tiempos de la comparación de índices (\texttt{indices.csv}). El costo del índice es la construcción menos la carga de las mismas filas sin índice (15.6, 50.7 y 455.6 ms).}
   \label{tab:indices-tiempo}
 \end{table}
 
@@ -442,13 +443,13 @@ Los mismos escenarios están cubiertos por pruebas automatizadas que se ejecutan
     \toprule
     $n$ & Técnica & Disco de la tabla & Memoria del índice & Altura & Nodos / cubetas \\
     \midrule
-    \multirow{3}{*}{1\,000}   & B+ agrupado    & 33.3 kB  & 89.1 kB  & 2 & 40 \\
-                              & B+ no agrupado & 139.3 kB & 72.6 kB  & 2 & 26 \\
-                              & Hash dinámico  & 135.2 kB & 77.8 kB  & -- & 46 \\
+    \multirow{3}{*}{1\,000}   & B+ agrupado    & 33.3 kB  & 94.6 kB  & 2 & 40 \\
+                              & B+ no agrupado & 139.3 kB & 77.7 kB  & 2 & 26 \\
+                              & Hash dinámico  & 135.2 kB & 77.5 kB  & -- & 46 \\
     \midrule
-    \multirow{3}{*}{10\,000}  & B+ agrupado    & 330.2 kB & 765.9 kB & 3 & 415 \\
-                              & B+ no agrupado & 1.39 MB  & 719.8 kB & 3 & 264 \\
-                              & Hash dinámico  & 1.32 MB  & 779.1 kB & -- & 465 \\
+    \multirow{3}{*}{10\,000}  & B+ agrupado    & 330.2 kB & 776.7 kB & 3 & 415 \\
+                              & B+ no agrupado & 1.39 MB  & 726.4 kB & 3 & 264 \\
+                              & Hash dinámico  & 1.32 MB  & 778.8 kB & -- & 465 \\
     \midrule
     \multirow{3}{*}{100\,000} & B+ agrupado    & 3.30 MB  & 7.88 MB  & 4 & 4\,158 \\
                               & B+ no agrupado & 13.88 MB & 7.35 MB  & 4 & 2\,562 \\
@@ -480,15 +481,34 @@ Los mismos escenarios están cubiertos por pruebas automatizadas que se ejecutan
 
 \paragraph{Análisis.}
 \begin{itemize}
-  \item \textbf{Igualdad.} El hash extensible es el más rápido en todos los tamaños (1.05~$\mu$s con 100\,000 filas), seguido del B+ no agrupado (3.8~$\mu$s) y del B+ agrupado (12.5~$\mu$s). Los tiempos del B+ crecen muy poco con $n$, como corresponde a una altura de 2 a 4 niveles.
-  \item \textbf{Rango.} El B+ no agrupado es el mejor (3.7~ms con 100\,000 filas): baja una vez y avanza por las hojas enlazadas. El hash no soporta rangos y debe recorrer el \emph{heap} completo (29.5~ms). El B+ agrupado resultó el más lento (51.8~ms), contrario a lo esperado en teoría, donde las filas del rango están contiguas. La causa más probable es que, con claves insertadas en desorden, parte de las filas siguen en el auxiliar del archivo secuencial y su lectura no es contigua. Es un punto a revisar en la implementación.
-  \item \textbf{Recorrido ordenado.} Aquí sí gana el B+ agrupado (69~ms frente a 317~ms del no agrupado): el orden físico coincide con el del índice. El B+ no agrupado paga un acceso aleatorio al \emph{heap} por cada fila, y el hash debe recorrer y luego ordenar.
-  \item \textbf{Altas y bajas.} El hash es dos órdenes de magnitud más rápido (362~$\mu$s por operación con 100\,000 filas, frente a 32--54~ms de los B+). En ambos B+, el costo por operación crece casi linealmente con $n$ (unas 140 veces de 1\,000 a 100\,000 filas), lo que coincide con la eliminación $O(N)$ por reconstrucción del árbol. Implementar la eliminación con redistribución y fusión de nodos es la mejora más importante pendiente.
-  \item \textbf{Construcción.} El B+ agrupado es el más caro (2.45~s con 100\,000 filas), porque mantener el orden físico con claves desordenadas implica reconstrucciones del archivo secuencial. En los otros dos, el costo propio del índice es pequeño frente a la carga de los datos; en 10\,000 filas incluso sale negativo, lo que indica que esa diferencia está dentro del ruido de medición.
+  \item \textbf{Igualdad.} El hash extensible es el más rápido en todos los tamaños (0.29~$\mu$s con 100\,000 filas), seguido del B+ no agrupado (2.6~$\mu$s) y del B+ agrupado (14.5~$\mu$s). Los tiempos del B+ crecen muy poco con $n$, como corresponde a una altura de 2 a 4 niveles.
+  \item \textbf{Rango.} El B+ agrupado es el mejor (0.43~ms con 100\,000 filas): se posiciona con búsqueda binaria en la primera clave del rango y lee las filas en orden, contiguas en el archivo secuencial, hasta pasar el límite superior. El B+ no agrupado baja una vez y avanza por las hojas enlazadas, pero paga un acceso aleatorio al \emph{heap} por cada fila (1.8~ms). El hash no soporta rangos y debe recorrer el \emph{heap} completo (15.3~ms). En una primera medición el B+ agrupado salía el más lento (51.8~ms): la búsqueda por rango usaba el árbol solo para saber si había claves y después recorría el archivo secuencial entero. Al leer solo el rango, la consulta se volvió unas 120 veces más rápida con 100\,000 filas.
+  \item \textbf{Recorrido ordenado.} También gana el B+ agrupado (25~ms frente a 168~ms del no agrupado): el orden físico coincide con el del índice. El B+ no agrupado paga un acceso aleatorio al \emph{heap} por cada fila, y el hash debe recorrer y luego ordenar.
+  \item \textbf{Altas y bajas.} El hash es dos órdenes de magnitud más rápido (195~$\mu$s por operación con 100\,000 filas, frente a 15--25~ms de los B+). En ambos B+, el costo por operación crece casi linealmente con $n$ (unas 100 veces de 1\,000 a 100\,000 filas), lo que coincide con la eliminación $O(N)$ por reconstrucción del árbol. Implementar la eliminación con redistribución y fusión de nodos es la mejora más importante pendiente.
+  \item \textbf{Construcción.} El B+ agrupado es el más caro (2.49~s con 100\,000 filas), porque mantener el orden físico con claves desordenadas implica reconstrucciones del archivo secuencial. En los otros dos, el costo propio del índice es pequeño frente a la carga de los datos; con 1\,000 filas incluso sale negativo, lo que indica que esa diferencia está dentro del ruido de medición.
   \item \textbf{Espacio.} Los tres índices ocupan una memoria parecida ($\approx$73--79 bytes por clave con 100\,000 filas). La diferencia está en la tabla: el archivo secuencial del B+ agrupado ocupa unas \textbf{4.2 veces menos} disco que el \emph{heap} de los otros dos.
 \end{itemize}
 
-\paragraph{Recomendación.} Usar hashing extensible para columnas consultadas solo por igualdad y con muchas actualizaciones; B+ no agrupado para columnas con consultas por rango; y una tabla agrupada cuando predominan los recorridos completos en orden de la clave primaria y el espacio en disco importa.
+\paragraph{Recomendación.} Usar hashing extensible para columnas consultadas solo por igualdad y con muchas actualizaciones; una tabla agrupada (B+ agrupado) cuando predominan los rangos y recorridos en orden de la clave primaria y el espacio en disco importa; y B+ no agrupado para rangos sobre columnas que no son la clave primaria, o cuando las altas y bajas son frecuentes.
+
+\begin{table}[H]
+  \centering
+  \small
+  \begin{tabular}{@{}p{2.4cm}p{4.4cm}p{4.4cm}p{4.0cm}@{}}
+    \toprule
+    \textbf{Técnica} & \textbf{Ventajas} & \textbf{Desventajas} & \textbf{Cuándo usarla} \\
+    \midrule
+    \emph{Heap file} & Inserción más rápida (7.7$\times$ frente al secuencial); reutiliza \emph{slots} libres. & Búsqueda por clave lineal (760$\times$ más lenta); 4$\times$ más disco. & Cargas masivas y tablas que se consultan por un índice secundario. \\
+    Archivo secuencial & Búsqueda binaria por PK; rangos y recorridos en orden; menos disco. & Inserción en desorden más lenta (auxiliar y reconstrucciones). & Tablas consultadas por su clave primaria o en orden. \\
+    \midrule
+    B+ agrupado & El mejor en rangos y recorridos por PK; tabla más compacta. & Construcción más cara; altas y bajas $O(N)$; solo para la PK. & Rangos y \texttt{ORDER BY} sobre la clave primaria. \\
+    B+ no agrupado & Rangos sobre cualquier columna; varios por tabla. & Un acceso aleatorio al \emph{heap} por fila; altas y bajas $O(N)$. & Rangos sobre columnas que no son la PK. \\
+    Hash extensible & Igualdad en $O(1)$ (0.29~$\mu$s); altas y bajas 100$\times$ más rápidas. & No sirve para rangos ni orden: recorre la tabla. & Columnas consultadas solo por igualdad y muy actualizadas. \\
+    \bottomrule
+  \end{tabular}
+  \caption{Resumen de la Parte 1: ventajas, desventajas y uso recomendado de cada técnica.}
+  \label{tab:resumen-parte1}
+\end{table}
 
 % ===========================================================================
 \section{Parte 2: índice espacial R-Tree}
@@ -728,13 +748,28 @@ Los puntos se generan uniformemente en una caja de Lima (latitud $-12.10$ a $-11
   \item \textbf{Conclusión.} Un índice espacial vale la pena sobre todo para consultas selectivas y para $k$-NN, donde evita recorrer todo el conjunto. Para consultas que devuelven una fracción grande de los datos, el beneficio se reduce mucho.
 \end{itemize}
 
+\begin{table}[H]
+  \centering
+  \small
+  \begin{tabular}{@{}p{2.4cm}p{4.4cm}p{4.4cm}p{4.0cm}@{}}
+    \toprule
+    \textbf{Técnica} & \textbf{Ventajas} & \textbf{Desventajas} & \textbf{Cuándo usarla} \\
+    \midrule
+    Búsqueda secuencial & Sin costo de construcción ni espacio extra; simple. & Crece linealmente: 580$\times$ más lenta que el R-Tree en $k$-NN con 100\,000 puntos. & Pocos datos, o consultas que devuelven gran parte del conjunto. \\
+    R-Tree (propio) & $k$-NN casi constante con $n$; radio selectivo 117$\times$ más rápido; construcción 3.4$\times$ más rápida y 2.6$\times$ menos espacio que GiST. & Vive en memoria y se reconstruye al abrir; no contempla el antimeridiano. & Consultas por radio selectivas, $k$-NN y polígonos dentro del motor. \\
+    GiST (PostgreSQL) & Persistente en disco, concurrente e integrado con el planificador de PostgreSQL. & Costo fijo por consulta ($\approx$0.13--0.28~ms); más lento con resultados grandes. & Sistemas en producción que necesitan persistencia y concurrencia. \\
+    \bottomrule
+  \end{tabular}
+  \caption{Resumen de la Parte 2: ventajas, desventajas y uso recomendado de cada técnica.}
+  \label{tab:resumen-parte2}
+\end{table}
+
 % ===========================================================================
 \section{Limitaciones y trabajo futuro}
 % ===========================================================================
 
 \begin{itemize}
   \item \textbf{Eliminación en el B+.} Hoy reconstruye el árbol en $O(N)$. Implementar redistribución y fusión de nodos debería bajar el costo de altas y bajas a $O(\log N)$.
-  \item \textbf{Rango en el B+ agrupado.} Fue más lento de lo esperado; hay que revisar cómo se leen las filas que siguen en el auxiliar del archivo secuencial.
   \item \textbf{Índices en memoria.} Los índices se reconstruyen al abrir la tabla. Persistirlos en disco reduciría el tiempo de arranque.
   \item \textbf{Granularidad de los bloqueos.} El aislamiento entre transacciones se hace por tabla: dos transacciones que escriben filas distintas de la misma tabla se ejecutan una después de otra. Bloqueos de intención (IS/IX) permitirían bloquear solo filas.
   \item \textbf{Tipos numéricos.} El almacenamiento no tiene tipo decimal; las coordenadas se guardan como texto en las columnas \texttt{POINT}.
@@ -748,10 +783,10 @@ Los puntos se generan uniformemente en una caja de Lima (latitud $-12.10$ a $-11
 
 \begin{itemize}
   \item No hay una organización de archivo ni un índice óptimo para todo. El \emph{heap file} favorece la inserción y el archivo secuencial favorece la búsqueda por clave y el espacio; los experimentos cuantifican ese compromiso (7.7 veces en inserción contra 760 veces en búsqueda).
-  \item Entre los índices, el hashing extensible domina en igualdad y en actualizaciones, el B+ no agrupado en rangos, y el B+ agrupado en recorridos ordenados y espacio en disco.
+  \item Entre los índices, el hashing extensible domina en igualdad y en actualizaciones, y el B+ agrupado en rangos, recorridos ordenados y espacio en disco; el B+ no agrupado es la opción para rangos sobre columnas que no son la clave primaria.
   \item El R-Tree con división estilo R* y búsqueda \emph{best-first} resuelve $k$-NN en tiempo casi independiente del tamaño de los datos, y supera a la referencia de PostgreSQL en este escenario.
   \item Con sesiones, 2PL estricto y detección de \emph{deadlocks}, varias transacciones pueden trabajar a la vez sin perder actualizaciones ni leer datos sin confirmar; la demostración con hilos muestra la diferencia frente a no usar transacciones.
-  \item Los experimentos también mostraron puntos débiles concretos de la implementación (eliminación en el B+ y rango en el B+ agrupado), que orientan el trabajo de las siguientes partes.
+  \item Los experimentos también mostraron puntos débiles concretos de la implementación: el rango del B+ agrupado recorría el archivo entero (ya corregido, unas 120 veces más rápido) y la eliminación en el B+ sigue siendo $O(N)$.
 \end{itemize}
 
 % ===========================================================================

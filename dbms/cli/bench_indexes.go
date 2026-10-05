@@ -612,6 +612,15 @@ func (s *seqStorage) Update(key, t storage.Tuple) error { return s.f.Update(key,
 func (s *seqStorage) Delete(key storage.Tuple) error    { return s.f.Delete(key) }
 func (s *seqStorage) Open() error                       { return s.f.Open() }
 func (s *seqStorage) Close() error                      { return s.f.Close() }
+func (s *seqStorage) RangeScan(lo, hi storage.Tuple, fn func(storage.Tuple) bool) error {
+	it := s.f.Range(lo, hi)
+	for it.Next() {
+		if !fn(it.Tuple()) {
+			break
+		}
+	}
+	return it.Err()
+}
 func (s *seqStorage) Scan(fn func(storage.Tuple) bool) error {
 	it := s.f.Scan()
 	for it.Next() {
