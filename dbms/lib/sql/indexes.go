@@ -218,12 +218,48 @@ func (idx *clusteredIndex) SearchRange(low, high any) ([]storage.Tuple, error) {
 	return out, nil
 }
 
+// DeleteRID borra la fila por su clave primaria. Se usa tree (y no seq) porque
+// el B+ agrupado es el dueño del par (árbol, secuencial): si se borrara solo del
+// secuencial, el árbol se quedaría con una clave fantasma y la siguiente
+// inserción de esa clave fallaría como duplicada.
 func (idx *clusteredIndex) DeleteRID(_ storage.RID, t storage.Tuple) error {
-	return idx.seq.Delete(idx.table.Schema.KeyOf(t))
+	return idx.tree.Delete(idx.table.Schema.KeyOf(t))
 }
 
+// UpdateRID reordena la fila en el secuencial. Si la clave primaria no cambia
+// basta con reescribir la fila en su sitio; si cambia, hay que mover la entrada
+// del B+ de una clave a otra.
 func (idx *clusteredIndex) UpdateRID(_ storage.RID, prev, next storage.Tuple) error {
-	return idx.seq.Update(idx.table.Schema.KeyOf(prev), next)
+	oldKey := idx.table.Schema.KeyOf(prev)
+	newKey := idx.table.Schema.KeyOf(next)
+	if sameKeyValues(oldKey, newKey) {
+		return idx.seq.Update(oldKey, next)
+	}
+	if err := idx.tree.Delete(oldKey); err != nil {
+		return err
+	}
+	if err := idx.tree.Insert(next); err != nil {
+		// Se deja el árbol como estaba: la fila anterior sigue viva.
+		if err2 := idx.tree.Insert(prev); err2 != nil {
+			return fmt.Errorf("sql: update de %s movió la clave y no se pudo revertir: %v / %w",
+				idx.name, err, err2)
+		}
+		return err
+	}
+	return nil
+}
+
+// sameKeyValues compara dos claves primarias por valor.
+func sameKeyValues(a, b storage.Tuple) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if compareAny(a[i], b[i]) != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func (idx *clusteredIndex) Rebuild() error { return idx.tree.Rebuild() }

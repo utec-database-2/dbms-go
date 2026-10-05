@@ -64,6 +64,7 @@ const (
 	TokenHaving
 	TokenOrder
 	TokenBy
+	TokenTo
 	TokenLimit
 	TokenOffset
 	TokenInsert
@@ -179,6 +180,7 @@ var tokenSymbols = map[TokenType]string{
 	TokenHaving:   "having",
 	TokenOrder:    "order",
 	TokenBy:       "by",
+	TokenTo:       "to",
 	TokenLimit:    "limit",
 	TokenOffset:   "offset",
 

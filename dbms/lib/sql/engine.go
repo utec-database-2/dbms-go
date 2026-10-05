@@ -11,12 +11,17 @@ package sql
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/dbms-go/v2/dbms/lib/dsl/ast"
 	"github.com/dbms-go/v2/dbms/lib/dsl/lexer"
 	"github.com/dbms-go/v2/dbms/lib/dsl/parser"
+	"github.com/dbms-go/v2/dbms/lib/lockmanager"
 	"github.com/dbms-go/v2/dbms/lib/storage"
+	"github.com/dbms-go/v2/dbms/lib/transaction"
 )
 
 // StepKind clasifica un paso del plan de ejecución.
@@ -35,6 +40,9 @@ const (
 	StepInsert       StepKind = "insert"
 	StepUpdate       StepKind = "update"
 	StepDelete       StepKind = "delete"
+	StepBegin        StepKind = "begin"
+	StepCommit       StepKind = "commit"
+	StepRollback     StepKind = "rollback"
 )
 
 // Step es un nodo del plan de ejecución.
@@ -80,6 +88,10 @@ type Options struct {
 	// SortBufferSlots son los slots que caben en memoria durante un
 	// external sort; al superarlos se generan runs y se hace k-way merge.
 	SortBufferSlots int
+	// DisableSpill obliga al external sort a mantener los runs en memoria. Por
+	// defecto el sort vuelca a disco los runs que no caben en el buffer, que es
+	// lo que acota la memoria al tamaño del buffer.
+	DisableSpill bool
 	// Newline es el separador de líneas que el lexer usa para contar posiciones.
 	Newline string
 }
@@ -88,9 +100,40 @@ type Options struct {
 type Engine struct {
 	cat *catalog
 	opt Options
+	// catalogMu serializa las escrituras del catálogo en disco para que dos
+	// sentencias DDL simultáneas no se pisen el archivo temporal.
+	catalogMu sync.Mutex
+
+	// Control de concurrencia y de fallos.
+	txs      *transaction.Manager
+	lockTxs  *lockmanager.TransactionManager
+	active   *transaction.Tx
+	activeLk *lockmanager.Transaction
+	// walFound describe lo que había en el WAL al abrir la base.
+	walFound transaction.Stats
+	// recovery cuenta los cambios que se deshacieron al montar el motor.
+	recovery RecoveryInfo
+	// initErr guarda un fallo al preparar el WAL para reportarlo en la primera
+	// sentencia (New no puede devolver error).
+	initErr error
 }
 
-// New crea el motor. No toca el disco: las tablas se crean con CREATE TABLE.
+// RecoveryInfo resume lo que hizo la recuperación del WAL al abrir la base.
+type RecoveryInfo struct {
+	// Undone son los cambios revertidos de transacciones sin confirmar.
+	Undone int
+	// Committed y Aborted son las transacciones que el WAL ya daba por
+	// terminadas antes de este arranque.
+	Committed int
+	Aborted   int
+	// Skipped son registros que no se pudieron deshacer (por ejemplo, de una
+	// tabla que ya no existe).
+	Skipped int
+}
+
+// New crea un motor cuyo catálogo arranca vacío, sin leer el directorio. Úsalo
+// para bases nuevas o en memoria; para abrir una base ya existente (y que las
+// tablas sobrevivan al reinicio) usa Open.
 func New(dir string, opt Options) *Engine {
 	if opt.PageSize == 0 {
 		opt.PageSize = storage.DefaultPageSize
@@ -110,11 +153,71 @@ func New(dir string, opt Options) *Engine {
 	if opt.Newline == "" {
 		opt.Newline = "\n"
 	}
-	return &Engine{cat: newCatalog(dir), opt: opt}
+	e := &Engine{cat: newCatalog(dir), opt: opt}
+	// El directorio de datos se crea aquí: así CREATE TABLE funciona sobre una
+	// ruta que aún no existe. El error se reporta al abrir el motor con Open.
+	_ = os.MkdirAll(e.dbDir(), 0o755)
+	e.lockTxs = lockmanager.NewTransactionManager(lockmanager.NewLockManager())
+
+	// El WAL se abre aquí, pero no se trunca: si el proceso anterior se cortó,
+	// sus registros son los que permiten deshacer lo que quedó a medias.
+	mgr, found, err := transaction.NewManager(e.walPath())
+	if err != nil {
+		e.initErr = err
+		return e
+	}
+	e.txs = mgr
+	e.walFound = found
+	e.recovery.Committed = found.Committed
+	e.recovery.Aborted = found.Aborted
+	return e
 }
 
-// Close cierra todos los archivos abiertos de las tablas.
+// walPath es la ruta del write-ahead log de la base.
+func (e *Engine) walPath() string {
+	return filepath.Join(e.dbDir(), "wal.log")
+}
+
+// Open abre una base de datos existente en el directorio opt.Dir: lee el
+// catálogo persistido y reabre cada tabla con su almacenamiento e índices. Si
+// el directorio todavía no tiene catálogo, devuelve un motor vacío, listo para
+// CREATE TABLE. A diferencia de New, este es el constructor que hace que los
+// datos sobrevivan al reinicio.
+//
+//	eng, err := sql.Open("miapp", sql.Options{Dir: "./data"})
+func Open(name string, opt Options) (*Engine, error) {
+	e := New(name, opt)
+	if err := os.MkdirAll(e.dbDir(), 0o755); err != nil {
+		return nil, fmt.Errorf("sql: no se pudo crear el directorio de datos %s: %w", e.dbDir(), err)
+	}
+	if e.initErr != nil {
+		return nil, e.initErr
+	}
+	if err := e.loadCatalog(); err != nil {
+		e.Close()
+		return nil, err
+	}
+	// Con las tablas ya abiertas se puede deshacer lo que quedó a medias. Solo
+	// después de una recuperación limpia se hace checkpoint del log.
+	if err := e.recover(); err != nil {
+		e.Close()
+		return nil, err
+	}
+	return e, nil
+}
+
+// Close cierra los archivos de las tablas. Si queda una transacción abierta se
+// deshace (como haría un cliente al desconectarse) y después se hace checkpoint
+// del WAL, que ya no tiene nada que recuperar.
 func (e *Engine) Close() {
+	if e.active != nil {
+		_, _ = e.execRollback(&ast.Rollback{})
+	}
+	if e.txs != nil {
+		if err := e.txs.Checkpoint(); err == nil {
+			_ = e.txs.Close()
+		}
+	}
 	for _, t := range e.cat.all() {
 		for _, idx := range t.indexes {
 			_ = idx.Close()
@@ -138,6 +241,9 @@ func (e *Engine) Exec(sql string) (*Result, error) {
 	if err := p.Err(); err != nil {
 		return nil, fmt.Errorf("sql: error de sintaxis: %w", err)
 	}
+	if e.initErr != nil {
+		return nil, e.initErr
+	}
 	switch node := p.Parent().(type) {
 	case *ast.Select:
 		return e.execSelect(node)
@@ -147,23 +253,48 @@ func (e *Engine) Exec(sql string) (*Result, error) {
 		return e.execUpdate(node)
 	case *ast.Delete:
 		return e.execDelete(node)
+	case *ast.BeginTransaction:
+		return e.execBegin(node)
+	case *ast.Commit:
+		return e.execCommit(node)
+	case *ast.Rollback:
+		return e.execRollback(node)
+	case *ast.Savepoint:
+		return e.execSavepoint(node)
+	case *ast.Release:
+		return e.execRelease(node)
 	case *ast.CreateTable:
+		if err := e.rejectDDLInTx("CREATE TABLE"); err != nil {
+			return nil, err
+		}
 		return e.execCreateTable(node)
 	case *ast.CreateIndex:
+		if err := e.rejectDDLInTx("CREATE INDEX"); err != nil {
+			return nil, err
+		}
 		return e.execCreateIndex(node)
 	case *ast.DropTable:
+		if err := e.rejectDDLInTx("DROP TABLE"); err != nil {
+			return nil, err
+		}
 		return e.execDropTable(node)
 	case *ast.TruncateTable:
+		if err := e.rejectDDLInTx("TRUNCATE"); err != nil {
+			return nil, err
+		}
 		return e.execTruncate(node)
-	case *ast.BeginTransaction:
-		return &Result{Message: "transacción iniciada"}, nil
-	case *ast.Commit:
-		return &Result{Message: "transacción confirmada"}, nil
-	case *ast.Rollback:
-		return &Result{Message: "transacción revertida"}, nil
 	default:
 		return nil, fmt.Errorf("sql: sentencia no soportada %T", p.Parent())
 	}
+}
+
+// rejectDDLInTx impide el DDL dentro de una transacción: el cambio de esquema
+// se persiste en el catálogo, no en el WAL, así que no se podría deshacer.
+func (e *Engine) rejectDDLInTx(what string) error {
+	if e.active != nil {
+		return fmt.Errorf("sql: %s no está permitido dentro de una transacción; haz COMMIT o ROLLBACK primero", what)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -190,33 +321,48 @@ func (e *Engine) execCreateTable(n *ast.CreateTable) (*Result, error) {
 	schema.Name = n.Name
 
 	tbl := &Table{Schema: schema, indexes: make(map[string]Index)}
-	path := e.tablePath(n.Name)
-
-	// Clustered requiere clave: si no hay PRIMARY KEY se usa la primera columna.
 	clustered := n.Clustered
-	if clustered {
-		seq, err := newSeqAdapter(path, schema, sequentialOptions())
-		if err != nil {
-			return nil, err
+
+	// Índices declarados en la definición de la tabla: PRIMARY KEY sobre tablas
+	// no agrupadas (para hacer cumplible la unicidad) e INDEX/UNIQUE por columna.
+	// Las columnas ya cubiertas por el índice agrupado se omiten.
+	declared := make([]indexDisk, 0, len(n.Columns))
+	for _, col := range n.Columns {
+		name := col.Name.Name
+		if _, ok := tbl.ColumnIndex(name); !ok {
+			continue
 		}
-		if err := seq.Open(); err != nil {
-			return nil, fmt.Errorf("sql: no se pudo crear el secuencial de %s: %w", n.Name, err)
+		if !(col.PrimaryKey || col.Unique || col.Indexed) {
+			continue
 		}
-		tbl.seq = seq
-		tbl.Clustered = true
-	} else {
-		hp, err := newHeapAdapter(path, schema, heapOptions(e.opt))
-		if err != nil {
-			return nil, err
+		if clustered && tbl.IsPrimaryKeyIndexColumn(name) {
+			continue
 		}
-		if err := hp.Open(); err != nil {
-			return nil, fmt.Errorf("sql: no se pudo crear el heap de %s: %w", n.Name, err)
+		idxName := "idx_" + strings.ToLower(name)
+		if col.PrimaryKey {
+			idxName = "pk_" + strings.ToLower(n.Name)
 		}
-		tbl.heap = hp
+		declared = append(declared, indexDisk{
+			Name:   idxName,
+			Column: name,
+			Unique: col.Unique || col.PrimaryKey,
+		})
 	}
 
+	if err := e.openStorage(tbl, schema, clustered, declared); err != nil {
+		_ = tbl.Close()
+		return nil, err
+	}
 	if err := e.cat.put(tbl); err != nil {
 		_ = tbl.Close()
+		return nil, err
+	}
+	if err := e.saveCatalog(); err != nil {
+		// El esquema no queda registrado: se deshace la creación para no dejar
+		// una tabla en disco que al reiniciar sería invisible.
+		e.cat.drop(n.Name)
+		_ = tbl.Close()
+		_ = dropFiles(e.dbDir(), n.Name)
 		return nil, err
 	}
 
@@ -225,53 +371,12 @@ func (e *Engine) execCreateTable(n *ast.CreateTable) (*Result, error) {
 		Detail: fmt.Sprintf("create table %s sobre %s", n.Name, storageLabel(tbl)),
 		Rows:   len(schema.Columns),
 	}}
-
-	// Índice agrupado: se crea siempre que la tabla sea agrupada.
-	if tbl.Clustered {
-		idx, err := newClusteredIndex("pk_"+strings.ToLower(n.Name), tbl, e.opt.BPlusOrder)
-		if err != nil {
-			return nil, fmt.Errorf("sql: no se pudo crear el índice agrupado: %w", err)
-		}
-		tbl.addIndex(idx)
+	for _, name := range tbl.IndexNames() {
+		idx := tbl.indexes[name]
 		plan = append(plan, Step{
 			Kind:   StepIndexScan,
-			Detail: "índice agrupado pk_" + strings.ToLower(n.Name) + " (clustered-bplus) sobre el archivo secuencial",
-		})
-	}
-
-	// Índices declarados en la definición de la tabla: PRIMARY KEY sobre
-	// tablas no agrupadas (para hacer cumplible la unicidad) e INDEX/UNIQUE por
-	// columna. Las columnas ya cubiertas por el índice agrupado se omiten.
-	for _, col := range n.Columns {
-		name := col.Name.Name
-		pos, ok := tbl.ColumnIndex(name)
-		if !ok {
-			continue
-		}
-		wanted := col.PrimaryKey || col.Unique || col.Indexed
-		if !wanted || tbl.IndexOnColumnNamed(name) {
-			continue
-		}
-		// La clave primaria de una tabla agrupada ya la cubre el B+ agrupado.
-		if tbl.Clustered && tbl.IsPrimaryKeyIndexColumn(name) {
-			continue
-		}
-		idxName := "idx_" + strings.ToLower(name)
-		kindPrefix := ""
-		if col.PrimaryKey {
-			idxName = "pk_" + strings.ToLower(tbl.Name())
-		}
-		if col.Unique && !col.PrimaryKey {
-			kindPrefix = "unique "
-		}
-		idx, err := e.createIndex(tbl, idxName, name, col.Unique || col.PrimaryKey)
-		if err != nil {
-			return nil, err
-		}
-		_ = pos
-		plan = append(plan, Step{
-			Kind:   StepIndexScan,
-			Detail: fmt.Sprintf("índice %s sobre %s (%s%s)", idx.Name(), name, kindPrefix, idx.Kind()),
+			Detail: fmt.Sprintf("índice %s sobre %s (%s) con %d entrada(s)", idx.Name(), idx.Column(), idx.Kind(), idx.Entries()),
+			Rows:   idx.Entries(),
 		})
 	}
 
@@ -308,6 +413,10 @@ func (e *Engine) execCreateIndex(n *ast.CreateIndex) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := e.saveCatalog(); err != nil {
+		tbl.dropIndex(idx.Name())
+		return nil, err
+	}
 	return &Result{
 		Message: fmt.Sprintf("índice %s creado sobre %s (%s)", idx.Name(), tbl.Name(), idx.Kind()),
 		Plan: []Step{{
@@ -327,6 +436,12 @@ func (e *Engine) execDropTable(n *ast.DropTable) (*Result, error) {
 		return nil, fmt.Errorf("sql: la tabla %s no existe", n.Name)
 	}
 	if err := tbl.Close(); err != nil {
+		return nil, err
+	}
+	if err := dropFiles(e.dbDir(), n.Name); err != nil {
+		return nil, err
+	}
+	if err := e.saveCatalog(); err != nil {
 		return nil, err
 	}
 	return &Result{

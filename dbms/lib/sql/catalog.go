@@ -148,6 +148,24 @@ func (t *Table) IndexNames() []string {
 	return append([]string(nil), t.order...)
 }
 
+// dropIndex quita un índice del catálogo. Se usa para deshacer un CREATE INDEX
+// que no llegó a registrarse en el catálogo persistido.
+func (t *Table) dropIndex(name string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	key := strings.ToLower(name)
+	if _, ok := t.indexes[key]; !ok {
+		return
+	}
+	delete(t.indexes, key)
+	for i, n := range t.order {
+		if n == key {
+			t.order = append(t.order[:i], t.order[i+1:]...)
+			break
+		}
+	}
+}
+
 func (t *Table) addIndex(idx Index) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

@@ -1,7 +1,10 @@
 package sql
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -50,6 +53,22 @@ func newTestEngine(t *testing.T, opt Options) *Engine {
 	e := New("test", opt)
 	t.Cleanup(e.Close)
 	return e
+}
+
+// seedRows llena users (agrupada) y events (no agrupada con índice secundario).
+func seedRows(t *testing.T, e *Engine) {
+	t.Helper()
+	for _, q := range []string{
+		"INSERT INTO users (id, name, age) VALUES (1, 'ana', 30)",
+		"INSERT INTO users (id, name, age) VALUES (2, 'bob', 25)",
+		"INSERT INTO users (id, name, age) VALUES (3, 'cid', 41)",
+		"INSERT INTO events (id, user_id, kind) VALUES (1, 1, 'login')",
+		"INSERT INTO events (id, user_id, kind) VALUES (2, 2, 'login')",
+		"INSERT INTO events (id, user_id, kind) VALUES (3, 1, 'logout')",
+	} {
+		run(t, e, q)
+	}
+	run(t, e, "CREATE INDEX idx_events_kind ON events(kind)")
 }
 
 func seedUsers(t *testing.T, e *Engine) {
@@ -415,4 +434,237 @@ func TestGroupByAgregados(t *testing.T) {
 	if len(res.Rows) != 1 || res.Rows[0][0] != int64(4) {
 		t.Fatalf("COUNT(*): %#v", res.Rows)
 	}
+}
+
+// TestPersistenciaCatalogo reinicia el motor y comprueba que las tablas, sus
+// esquemas, sus filas y sus índices siguen ahí, sin repetir el CREATE TABLE.
+func TestPersistenciaCatalogo(t *testing.T) {
+	dir := t.TempDir()
+
+	e, err := Open("app", Options{Dir: dir})
+	if err != nil {
+		t.Fatalf("apertura: %v", err)
+	}
+	run(t, e, "CREATE TABLE users CLUSTERED BY (id) (id INT PRIMARY KEY, name VARCHAR(32), age INT)")
+	run(t, e, "CREATE TABLE events (id INT PRIMARY KEY, user_id INT, kind VARCHAR(16))")
+	seedRows(t, e)
+
+	e.Close()
+
+	// Segunda instancia sobre el mismo directorio.
+	e2, err := Open("app", Options{Dir: dir})
+	if err != nil {
+		t.Fatalf("reapertura: %v", err)
+	}
+	defer e2.Close()
+
+	names := e2.TableNames()
+	if len(names) != 2 || names[0] != "events" || names[1] != "users" {
+		t.Fatalf("tablas recuperadas: %#v", names)
+	}
+
+	res := run(t, e2, "SELECT id, name FROM users WHERE id = 3")
+	if len(res.Rows) != 1 || res.Rows[0][1] != "cid" {
+		t.Fatalf("fila no recuperada: %#v", res.Rows)
+	}
+
+	// El índice secundario se reconstruyó y sigue usándose en el plan.
+	res = run(t, e2, "SELECT id FROM events WHERE kind = 'login'")
+	if len(res.Rows) != 2 {
+		t.Fatalf("índice secundario: %#v", res.Rows)
+	}
+	if !hasKind(res, StepIndexSeek) || !strings.Contains(planText(res), "idx_events_kind") {
+		t.Fatalf("no usó el índice reconstruido:\n%s", planText(res))
+	}
+
+	// La clave primaria agrupada se reconstruyó y sigue rechazando duplicados.
+	if _, err := e2.Exec("INSERT INTO users (id, name, age) VALUES (3, 'dup', 0)"); err == nil {
+		t.Fatal("aceptó una clave primaria duplicada")
+	}
+
+	// Y se puede seguir escribiendo.
+	run(t, e2, "INSERT INTO users (id, name, age) VALUES (5, 'eve', 19)")
+	e2.Close()
+
+	e3, err := Open("app", Options{Dir: dir})
+	if err != nil {
+		t.Fatalf("tercera apertura: %v", err)
+	}
+	defer e3.Close()
+	// seedRows deja 3 usuarios; la fila insertada tras el primer reinicio suma 1.
+	res = run(t, e3, "SELECT COUNT(*) FROM users")
+	if len(res.Rows) != 1 || res.Rows[0][0] != int64(4) {
+		t.Fatalf("conteo tras reinicio: %#v", res.Rows)
+	}
+}
+
+// TestCatalogoJSONVálido comprueba el formato en disco: debe ser legible y
+// describir suficiente información como para reabrir los archivos (que validan
+// el hash de su esquema).
+func TestCatalogoJSONVálido(t *testing.T) {
+	dir := t.TempDir()
+	e := newTestEngine(t, Options{Dir: dir})
+	run(t, e, "CREATE TABLE t (id INT PRIMARY KEY, name VARCHAR(32), UNIQUE(name))")
+	run(t, e, "CREATE TABLE c CLUSTERED BY (id) (id INT PRIMARY KEY, tag VARCHAR(8))")
+	run(t, e, "CREATE TABLE h (id INT PRIMARY KEY, mail VARCHAR(64))")
+	run(t, e, "CREATE INDEX hash_mail ON h(mail)")
+
+	buf, err := os.ReadFile(filepath.Join(dir, catalogFile))
+	if err != nil {
+		t.Fatalf("catálogo: %v", err)
+	}
+	var disk catalogDisk
+	if err := json.Unmarshal(buf, &disk); err != nil {
+		t.Fatalf("json inválido: %v\n%s", err, buf)
+	}
+	if disk.Version != catalogFormatVersion || len(disk.Tables) != 3 {
+		t.Fatalf("catálogo inesperado: %+v", disk)
+	}
+	for _, spec := range disk.Tables {
+		schema, err := schemaFromDisk(spec)
+		if err != nil {
+			t.Fatalf("esquema de %s: %v", spec.Name, err)
+		}
+		if len(schema.Columns) != len(schema.Types) {
+			t.Fatalf("columnas/tipos desalineados en %s: %+v", spec.Name, schema)
+		}
+		if err := schema.Validate(); err != nil {
+			t.Fatalf("el esquema persistido de %s no valida: %v", spec.Name, err)
+		}
+		switch spec.Name {
+		case "t":
+			if len(spec.Indexes) != 2 {
+				t.Fatalf("índices de t: %#v", spec.Indexes)
+			}
+		case "c":
+			if !spec.Clustered || len(spec.Indexes) != 0 {
+				t.Fatalf("c: clustered=%v índices=%#v", spec.Clustered, spec.Indexes)
+			}
+		case "h":
+			// pk_h (B+ no agrupado) + hash_mail (hash dinámico).
+			if len(spec.Indexes) != 2 || spec.Indexes[1].Name != "hash_mail" || spec.Indexes[1].Column != "mail" {
+				t.Fatalf("índices de h: %#v", spec.Indexes)
+			}
+		}
+	}
+}
+
+// TestDropTableBorraArchivos verifica que DROP TABLE elimina los datos en disco
+// y que el catálogo deja de listar la tabla.
+func TestDropTableBorraArchivos(t *testing.T) {
+	dir := t.TempDir()
+	e := newTestEngine(t, Options{Dir: dir})
+	run(t, e, "CREATE TABLE t (id INT PRIMARY KEY, name VARCHAR(16))")
+	run(t, e, "CREATE TABLE k CLUSTERED BY (id) (id INT PRIMARY KEY, tag VARCHAR(8))")
+	run(t, e, "INSERT INTO t (id, name) VALUES (1, 'x')")
+	run(t, e, "INSERT INTO k (id, tag) VALUES (1, 'y')")
+
+	// t_data.dat (heap) + k_seq.dat + k_aux.dat (secuencial agrupado).
+	before := dataFiles(t, dir)
+	if len(before) != 3 {
+		t.Fatalf("archivos de datos inesperados: %#v", before)
+	}
+
+	run(t, e, "DROP TABLE t")
+	run(t, e, "DROP TABLE k")
+
+	after := dataFiles(t, dir)
+	for _, f := range after {
+		t.Fatalf("quedó el archivo %s", f)
+	}
+
+	e2, err := Open("app", Options{Dir: dir})
+	if err != nil {
+		t.Fatalf("reapertura: %v", err)
+	}
+	defer e2.Close()
+	if names := e2.TableNames(); len(names) != 0 {
+		t.Fatalf("el catálogo todavía lista %#v", names)
+	}
+	if _, err := e2.Exec("SELECT * FROM t"); err == nil {
+		t.Fatal("la tabla eliminada sigue accesible")
+	}
+}
+
+// TestAbrirCatalogoVacio comprueba que un directorio sin catálogo abre vacío.
+func TestAbrirCatalogoVacio(t *testing.T) {
+	e, err := Open("nuevo", Options{Dir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("apertura: %v", err)
+	}
+	defer e.Close()
+	if names := e.TableNames(); len(names) != 0 {
+		t.Fatalf("catálogo no vacío: %#v", names)
+	}
+	if _, err := e.Exec("CREATE TABLE t (id INT PRIMARY KEY)"); err != nil {
+		t.Fatalf("create en base nueva: %v", err)
+	}
+}
+
+func dataFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("directorio: %v", err)
+	}
+	var out []string
+	for _, f := range ents {
+		if strings.HasSuffix(f.Name(), ".dat") {
+			out = append(out, f.Name())
+		}
+	}
+	return out
+}
+
+// TestClusteredDeleteLiberaClave es una regresión: el B+ agrupado es el dueño
+// del par (árbol, secuencial), así que un DELETE tiene que quitar la clave del
+// árbol y no solo del secuencial. Si no, la clave queda fantasma y la siguiente
+// inserción de esa PK falla como duplicada.
+func TestClusteredDeleteLiberaClave(t *testing.T) {
+	e := newTestEngine(t, Options{})
+	run(t, e, "CREATE TABLE c CLUSTERED BY (id) (id INT PRIMARY KEY, val INT)")
+
+	run(t, e, "INSERT INTO c (id, val) VALUES (1, 10)")
+	run(t, e, "DELETE FROM c WHERE id = 1")
+	// La clave se puede reutilizar.
+	run(t, e, "INSERT INTO c (id, val) VALUES (1, 99)")
+	got := run(t, e, "SELECT val FROM c WHERE id = 1")
+	if len(got.Rows) != 1 || got.Rows[0][0] != int32(99) {
+		t.Fatalf("tras reutilizar la clave: %#v", got.Rows)
+	}
+
+	// Cambiar la clave primaria mueve la entrada del B+ de una clave a otra.
+	run(t, e, "UPDATE c SET id = 7 WHERE id = 1")
+	if rows := run(t, e, "SELECT id FROM c WHERE id = 1"); len(rows.Rows) != 0 {
+		t.Fatalf("la clave vieja sigue viva: %#v", rows.Rows)
+	}
+	got = run(t, e, "SELECT val FROM c WHERE id = 7")
+	if len(got.Rows) != 1 || got.Rows[0][0] != int32(99) {
+		t.Fatalf("tras mover la clave: %#v", got.Rows)
+	}
+	// Y la clave nueva queda ocupada.
+	if _, err := e.Exec("INSERT INTO c (id, val) VALUES (7, 1)"); err == nil {
+		t.Fatal("aceptó una clave primaria duplicada")
+	}
+	// El índice agrupado refleja exactamente las filas vivas.
+	res := run(t, e, "CREATE INDEX idx_val ON c(val)")
+	if res == nil {
+		t.Fatal("no se pudo crear el índice")
+	}
+	if entries := indexEntries(t, e, "c", "pk_c"); entries != 1 {
+		t.Fatalf("el B+ agrupado tiene %d entradas, esperaba 1", entries)
+	}
+}
+
+func indexEntries(t *testing.T, e *Engine, table, index string) int {
+	t.Helper()
+	tbl, ok := e.cat.get(table)
+	if !ok {
+		t.Fatalf("no está la tabla %s", table)
+	}
+	idx, ok := tbl.Index(index)
+	if !ok {
+		t.Fatalf("no está el índice %s", index)
+	}
+	return idx.Entries()
 }

@@ -665,45 +665,65 @@ func (parser *ParserContext) ParseCreate() *ast.CreateTable {
 		}
 	}
 
+	// Dentro del paréntesis se admiten columnas y restricciones de tabla
+	// entremezcladas: PRIMARY KEY (a, b), UNIQUE (a), CONSTRAINT ... .
 	if parser.Match(token.TokenLparent) {
-		for parser.Check(token.TokenId) {
-			col := parser.ParseColumnExpr()
-			if col == nil {
-				break
-			}
-			node.Columns = append(node.Columns, *col)
-			if !parser.Match(token.TokenComma) {
-				break
-			}
-		}
-		parser.Required(token.TokenRparent)
-	}
-
-	// Restricciones de tabla: PRIMARY KEY (a, b), UNIQUE (a), CONSTRAINT ...,
-	// que se aplican sobre las columnas ya declaradas.
-	for {
-		switch {
-		case parser.Check(token.TokenPrimary):
-			parser.idx++
-			parser.Match(token.TokenKey)
-			for _, name := range parser.parseKeyColumns(node) {
-				markPrimaryKey(node, name)
-			}
-		case parser.Check(token.TokenUnique):
-			parser.idx++
-			for _, name := range parser.parseKeyColumns(node) {
-				markUnique(node, name)
-			}
-		case parser.Check(token.TokenConstraint):
-			parser.idx++
-			if _, err := parser.Required(token.TokenId); err != nil {
+		for {
+			switch {
+			case parser.Check(token.TokenId):
+				col := parser.ParseColumnExpr()
+				if col == nil {
+					return node
+				}
+				node.Columns = append(node.Columns, *col)
+			case parser.parseTableConstraint(node):
+				// restricción ya aplicada a las columnas declaradas
+			default:
+				parser.Required(token.TokenRparent)
 				return node
 			}
-			continue
-		default:
-			return node
+			if !parser.Match(token.TokenComma) {
+				parser.Required(token.TokenRparent)
+				return node
+			}
 		}
 	}
+
+	// Las restricciones también pueden ir fuera del paréntesis, como en
+	// CREATE TABLE t (a INT) PRIMARY KEY (a).
+	for parser.parseTableConstraint(node) {
+	}
+	return node
+}
+
+// parseTableConstraint aplica una restricción de tabla (PRIMARY KEY, UNIQUE o
+// CONSTRAINT nombre ...) sobre las columnas ya declaradas. Devuelve false si el
+// token actual no inicia una restricción.
+func (parser *ParserContext) parseTableConstraint(node *ast.CreateTable) bool {
+	switch {
+	case parser.Check(token.TokenPrimary):
+		parser.idx++
+		parser.Match(token.TokenKey)
+		for _, name := range parser.parseKeyColumns(node) {
+			markPrimaryKey(node, name)
+		}
+		return true
+	case parser.Check(token.TokenUnique):
+		parser.idx++
+		for _, name := range parser.parseKeyColumns(node) {
+			markUnique(node, name)
+		}
+		return true
+	case parser.Check(token.TokenConstraint):
+		parser.idx++
+		parser.Match(token.TokenPrimary)
+		parser.Match(token.TokenKey)
+		for _, name := range parser.parseKeyColumns(node) {
+			markPrimaryKey(node, name)
+		}
+		return true
+	}
+	return false
 }
 
 // parseCreateIndex lee CREATE [UNIQUE] INDEX nombre ON tabla (columna[, ...]).
@@ -922,11 +942,18 @@ func (parser *ParserContext) ParseCommit() *ast.Commit {
 	return &ast.Commit{}
 }
 
+// ParseRollback lee ROLLBACK y ROLLBACK TO [SAVEPOINT] nombre. El savepoint es
+// opcional: sin él la sentencia deshace la transacción completa.
 func (parser *ParserContext) ParseRollback() *ast.Rollback {
 	parser.Match(token.TokenRollback)
 	node := &ast.Rollback{}
-	if parser.Check(token.TokenId) || parser.Check(token.TokenSavepoint) {
-		// skip savepoint name if present
+	if !parser.Check(token.TokenTo) && !parser.Check(token.TokenId) &&
+		!parser.Check(token.TokenSavepoint) {
+		return node
+	}
+	parser.Match(token.TokenTo)
+	parser.Match(token.TokenSavepoint)
+	if parser.Check(token.TokenId) {
 		sp := parser.CurrStr()
 		node.Savepoint = &sp
 		parser.idx++

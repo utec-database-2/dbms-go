@@ -1,12 +1,14 @@
 package sql
 
 import (
+	"encoding/binary"
 	"fmt"
 	"strings"
 
 	"github.com/dbms-go/v2/dbms/lib/dsl/ast"
 	"github.com/dbms-go/v2/dbms/lib/external/sorting"
 	"github.com/dbms-go/v2/dbms/lib/storage"
+	"github.com/dbms-go/v2/dbms/lib/transaction"
 )
 
 // ---------------------------------------------------------------------------
@@ -57,8 +59,25 @@ func (e *Engine) execInsert(n *ast.Insert) (*Result, error) {
 			return nil, err
 		}
 
+		// 2PL estricto: el bloqueo se toma antes de tocar la fila.
+		if err := e.lockRowExclusive(tbl, values); err != nil {
+			return nil, err
+		}
+		// Write-ahead: el cambio va al log antes de tocar los datos, para que
+		// un corte entre medias siempre encuentre el registro con el que
+		// deshacerlo. Como el RID todavía no existe, la recuperación localiza la
+		// fila por su valor.
+		if err := e.logChange(transaction.Record{
+			Op:    transaction.OpInsert,
+			Table: tbl.Name(),
+			Row:   append(storage.Tuple(nil), values...),
+		}); err != nil {
+			return nil, err
+		}
 		rid, usedIdx, err := tbl.insertRow(values)
 		if err != nil {
+			// El registro queda en el log, pero la fila nunca llegó a existir:
+			// el undo lo detecta y no hace nada.
 			return nil, err
 		}
 		affected++
@@ -191,6 +210,9 @@ func (e *Engine) execUpdate(n *ast.Update) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := e.lockRowsShared(tbl, matches); err != nil {
+		return nil, err
+	}
 
 	affected := 0
 	for _, row := range matches {
@@ -207,7 +229,25 @@ func (e *Engine) execUpdate(n *ast.Update) (*Result, error) {
 		if err := tbl.validateTuple(next); err != nil {
 			return nil, err
 		}
+		if err := e.lockRowExclusive(tbl, row); err != nil {
+			return nil, err
+		}
+		if err := e.lockRowExclusive(tbl, next); err != nil {
+			return nil, err
+		}
+		// Write-ahead: primero el registro, luego el cambio en los datos.
+		if err := e.logChange(transaction.Record{
+			Op:      transaction.OpUpdate,
+			Table:   tbl.Name(),
+			Row:     append(storage.Tuple(nil), next...),
+			Prev:    append(storage.Tuple(nil), row...),
+			HasPrev: true,
+		}); err != nil {
+			return nil, err
+		}
 		if err := tbl.updateRow(row, next); err != nil {
+			// La fila sigue con el valor anterior; el undo lo detecta porque el
+			// valor nuevo no está en la tabla.
 			return nil, err
 		}
 		affected++
@@ -239,7 +279,19 @@ func (e *Engine) execDelete(n *ast.Delete) (*Result, error) {
 		return nil, err
 	}
 	for _, row := range matches {
+		if err := e.lockRowExclusive(tbl, row); err != nil {
+			return nil, err
+		}
+		// Write-ahead: primero el registro, luego el borrado.
+		if err := e.logChange(transaction.Record{
+			Op:    transaction.OpDelete,
+			Table: tbl.Name(),
+			Row:   append(storage.Tuple(nil), row...),
+		}); err != nil {
+			return nil, err
+		}
 		if err := tbl.deleteRow(row); err != nil {
+			// La fila sigue viva; el undo lo ve y no la reinserta.
 			return nil, err
 		}
 	}
@@ -273,6 +325,9 @@ func (e *Engine) execSelect(n *ast.Select) (*Result, error) {
 	// 1. Acceso: el planner decide si puede usar un índice para el WHERE.
 	matches, access, err := tbl.fetch(n.Closure)
 	if err != nil {
+		return nil, err
+	}
+	if err := e.lockRowsShared(tbl, matches); err != nil {
 		return nil, err
 	}
 	plan := access
@@ -551,28 +606,93 @@ func rowKey(r []any) string {
 	return b.String()
 }
 
-// orderBy ordena los grupos con external sorting (runs + k-way merge).
+// orderBy ordena los grupos con external sorting (runs + k-way merge). Por
+// defecto los runs que no caben en el buffer se vuelcan a archivos temporales en
+// el directorio de la base de datos; con DisableSpill se quedan en memoria.
 func (e *Engine) orderBy(tbl *Table, groups []rowGroup, o *ast.OrderBy) ([]rowGroup, Step, error) {
 	ec := &evalContext{table: tbl}
 	keyOf := func(g rowGroup) (any, error) {
 		return ec.evalGroup(o.Expr, g)
 	}
 
-	sorted, runs, err := sorting.ExternalSort(groups, keyOf, o.Descendent, e.opt.SortBufferSlots)
+	res, err := sorting.ExternalSortSpilling(groups, keyOf, encodeRowGroup, decodeRowGroup,
+		sorting.SpillOptions{
+			BufferSlots: e.opt.SortBufferSlots,
+			Desc:        o.Descendent,
+			Dir:         e.dbDir(),
+			Prefix:      "sort",
+			NoSpill:     e.opt.DisableSpill,
+		})
 	if err != nil {
 		return nil, Step{}, err
 	}
-	detail := fmt.Sprintf("external sort por la clave de ORDER BY (buffer=%d slots)", e.opt.SortBufferSlots)
-	if runs > 1 {
-		detail = fmt.Sprintf("external sort: %d runs y k-way merge (buffer=%d slots)", runs, e.opt.SortBufferSlots)
-	} else {
-		detail = fmt.Sprintf("external sort en memoria: 1 run cabe en el buffer de %d slots", e.opt.SortBufferSlots)
+
+	var detail string
+	switch {
+	case res.Spilled && res.Runs > 1:
+		detail = fmt.Sprintf("external sort: %d runs volcados a disco y k-way merge (buffer=%d slots, %d B escritos y %d B leídos)",
+			res.Runs, e.opt.SortBufferSlots, res.BytesWritten, res.BytesRead)
+	case res.Spilled:
+		detail = fmt.Sprintf("external sort: 1 run volcado a disco (buffer=%d slots, %d B escritos)",
+			e.opt.SortBufferSlots, res.BytesWritten)
+	case res.Runs > 1:
+		detail = fmt.Sprintf("external sort en memoria: %d runs y k-way merge (buffer=%d slots)",
+			res.Runs, e.opt.SortBufferSlots)
+	default:
+		detail = fmt.Sprintf("external sort en memoria: 1 run cabe en el buffer de %d slots",
+			e.opt.SortBufferSlots)
 	}
-	return sorted, Step{
+	return res.Rows, Step{
 		Kind:   StepExternalSort,
 		Detail: detail,
-		Rows:   len(sorted),
+		Rows:   len(res.Rows),
 	}, nil
+}
+
+// encodeRowGroup serializa un grupo para escribirlo en un run temporal: cada
+// fila del grupo va como una fila codificada por storage, precedida por su
+// número de columnas para poder distinguishirlas de los valores.
+func encodeRowGroup(g rowGroup) ([]byte, error) {
+	var buf []byte
+	head := make([]byte, 4)
+	for _, r := range g.rows {
+		row, err := storage.EncodeRow(r)
+		if err != nil {
+			return nil, fmt.Errorf("no se pudo codificar una fila del grupo: %w", err)
+		}
+		binary.LittleEndian.PutUint32(head, uint32(len(row)))
+		buf = append(buf, head...)
+		buf = append(buf, row...)
+	}
+	binary.LittleEndian.PutUint32(head, uint32(len(g.rows)))
+	return append(head, buf...), nil
+}
+
+// decodeRowGroup deshace encodeRowGroup.
+func decodeRowGroup(buf []byte) (rowGroup, error) {
+	if len(buf) < 4 {
+		return rowGroup{}, fmt.Errorf("grupo truncado: %d bytes", len(buf))
+	}
+	total := int(binary.LittleEndian.Uint32(buf[:4]))
+	pos := 4
+	g := rowGroup{rows: make([]storage.Tuple, 0, total)}
+	for i := 0; i < total; i++ {
+		if pos+4 > len(buf) {
+			return rowGroup{}, fmt.Errorf("grupo truncado en la fila %d de %d", i+1, total)
+		}
+		n := int(binary.LittleEndian.Uint32(buf[pos : pos+4]))
+		pos += 4
+		if pos+n > len(buf) {
+			return rowGroup{}, fmt.Errorf("grupo truncado en la fila %d de %d", i+1, total)
+		}
+		row, err := storage.DecodeRowBytes(buf[pos : pos+n])
+		if err != nil {
+			return rowGroup{}, fmt.Errorf("fila %d ilegible: %w", i+1, err)
+		}
+		pos += n
+		g.rows = append(g.rows, row)
+	}
+	return g, nil
 }
 
 // applyLimit recorta el resultado según LIMIT y OFFSET.

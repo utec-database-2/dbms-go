@@ -11,13 +11,17 @@ import (
 	"github.com/dbms-go/v2/dbms/lib/storage/sequential"
 )
 
+// dbDir devuelve el directorio donde viven los archivos de datos.
+func (e *Engine) dbDir() string {
+	if e.opt.Dir == "" {
+		return "."
+	}
+	return e.opt.Dir
+}
+
 // tablePath devuelve la ruta base de los archivos de una tabla.
 func (e *Engine) tablePath(name string) string {
-	dir := e.opt.Dir
-	if dir == "" {
-		dir = "."
-	}
-	return filepath.Join(dir, strings.ToLower(name))
+	return filepath.Join(e.dbDir(), strings.ToLower(name))
 }
 
 // heapOptions traduce las opciones del motor a las del heap file.
@@ -79,6 +83,50 @@ func (e *Engine) createIndex(tbl *Table, name, col string, unique bool) (Index, 
 	}
 	tbl.addIndex(idx)
 	return idx, nil
+}
+
+// openStorage abre (o crea) el almacenamiento físico de una tabla y reconstruye
+// sus índices. La comparten CREATE TABLE y la reapertura del catálogo, de modo
+// que una tabla recuperada queda exactamente igual que una recién creada.
+func (e *Engine) openStorage(tbl *Table, schema storage.Table, clustered bool, indexes []indexDisk) error {
+	path := e.tablePath(schema.Name)
+
+	if clustered {
+		if err := schema.Validate(); err != nil {
+			return fmt.Errorf("sql: %s necesita una clave primaria para ser agrupada: %w", schema.Name, err)
+		}
+		adapter, err := newSeqAdapter(path, schema, sequentialOptions())
+		if err != nil {
+			return err
+		}
+		if err := adapter.Open(); err != nil {
+			return fmt.Errorf("sql: no se pudo abrir el secuencial de %s: %w", schema.Name, err)
+		}
+		tbl.seq = adapter
+		tbl.Clustered = true
+		// El B+ agrupado se puebla con un barrido del secuencial.
+		pk, err := newClusteredIndex("pk_"+strings.ToLower(schema.Name), tbl, e.opt.BPlusOrder)
+		if err != nil {
+			return fmt.Errorf("sql: no se pudo crear el índice agrupado: %w", err)
+		}
+		tbl.addIndex(pk)
+	} else {
+		adapter, err := newHeapAdapter(path, schema, heapOptions(e.opt))
+		if err != nil {
+			return err
+		}
+		if err := adapter.Open(); err != nil {
+			return fmt.Errorf("sql: no se pudo abrir el heap de %s: %w", schema.Name, err)
+		}
+		tbl.heap = adapter
+	}
+
+	for _, idx := range indexes {
+		if _, err := e.createIndex(tbl, idx.Name, idx.Column, idx.Unique); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // columnIsIndexed indica si el tipo declarado de una columna pide un índice
