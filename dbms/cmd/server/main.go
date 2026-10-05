@@ -43,6 +43,7 @@ func main() {
 	mux.HandleFunc("POST /api/tables/{name}/import", handleImportCSV(db,spatialStore))
 	mux.HandleFunc("POST /api/spatial/range",handleSpatialRange(spatialStore),)
 	mux.HandleFunc("POST /api/spatial/knn", handleSpatialKNN(spatialStore))
+	mux.HandleFunc("POST /api/spatial/polygon", handleSpatialPolygon(spatialStore))
 
 	log.Printf("MinigestorBD escuchando en %s (datos en %s)", *addr, *dir)
 	log.Fatal(http.ListenAndServe(*addr, withCORS(mux)))
@@ -274,6 +275,12 @@ func rowToSQLTuple(info *sql.TableInfo, record []string) (string, error) {
 			default:
 				return "", fmt.Errorf("columna %q: %q no es un booleano", col.Name, raw)
 			}
+		case "POINT":
+			lit, err := pointLiteralFromCell(raw)
+			if err != nil {
+				return "", fmt.Errorf("columna %q: %v", col.Name, err)
+			}
+			vals[i] = lit
 		default: // STRING
 			// El lexer del proyecto no soporta comillas escapadas dentro de
 			// un literal, así que se quitan para no romper el parseo.
