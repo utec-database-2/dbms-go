@@ -171,3 +171,196 @@ func TestParseTrailingTokensFail(t *testing.T) {
 		t.Fatalf("expected error for trailing tokens")
 	}
 }
+func TestParseLimit(t *testing.T) {
+	ctx := parse(t, "SELECT * FROM users ORDER BY id LIMIT 10;")
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	sel := ctx.Parent().(*ast.Select)
+	if sel.Limit == nil || *sel.Limit != 10 {
+		t.Fatalf("Limit = %v, want 10", sel.Limit)
+	}
+	if sel.OrderBy == nil {
+		t.Fatal("OrderBy = nil")
+	}
+
+	ctx = parse(t, "SELECT * FROM users LIMIT 3")
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("Parse sin ORDER BY: %v", err)
+	}
+	if l := ctx.Parent().(*ast.Select).Limit; l == nil || *l != 3 {
+		t.Fatalf("Limit sin ORDER BY = %v, want 3", l)
+	}
+
+	ctx = parse(t, "SELECT * FROM users;")
+	if ctx.Parent().(*ast.Select).Limit != nil {
+		t.Fatal("sin LIMIT, Limit debe ser nil")
+	}
+}
+
+func TestParseLimitRequiresPositiveInteger(t *testing.T) {
+	for _, src := range []string{
+		"SELECT * FROM t LIMIT;",
+		"SELECT * FROM t LIMIT -1;",
+		"SELECT * FROM t LIMIT 2.5;",
+		"SELECT * FROM t LIMIT abc;",
+	} {
+		ctx := parse(t, src)
+		if err := ctx.Err(); err == nil {
+			t.Errorf("%q debería fallar", src)
+		}
+	}
+}
+
+func TestParsePointLiteralKeepsFullPrecision(t *testing.T) {
+	ctx := parse(t, "INSERT INTO t VALUES (1, POINT(-12.0464321987, -77.0428123456));")
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	ins := ctx.Parent().(*ast.Insert)
+	pt, ok := ins.Rows[0][1].(*ast.PointExpr)
+	if !ok {
+		t.Fatalf("valor = %T, want *ast.PointExpr", ins.Rows[0][1])
+	}
+	if pt.Lat != -12.0464321987 || pt.Lon != -77.0428123456 {
+		t.Fatalf("POINT = (%v, %v), perdió precisión", pt.Lat, pt.Lon)
+	}
+}
+
+func TestParsePointAcceptsIntegersAndIsCaseInsensitive(t *testing.T) {
+	ctx := parse(t, "INSERT INTO t VALUES (1, point(0, -5));")
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	pt := ctx.Parent().(*ast.Insert).Rows[0][1].(*ast.PointExpr)
+	if pt.Lat != 0 || pt.Lon != -5 {
+		t.Fatalf("POINT = (%v, %v), want (0, -5)", pt.Lat, pt.Lon)
+	}
+}
+
+func TestParseMalformedPointFails(t *testing.T) {
+	for _, src := range []string{
+		"INSERT INTO t VALUES (1, POINT(1));",
+		"INSERT INTO t VALUES (1, POINT(1, 2, 3));",
+		"INSERT INTO t VALUES (1, POINT(a, b));",
+		"INSERT INTO t VALUES (1, POINT(1, 2);",
+		"INSERT INTO t VALUES (1, POINT());",
+	} {
+		ctx := parse(t, src)
+		if err := ctx.Err(); err == nil {
+			t.Errorf("%q debería fallar", src)
+		}
+	}
+}
+
+func TestParseDistanceInWhere(t *testing.T) {
+	ctx := parse(t, "SELECT * FROM tiendas WHERE distancia(ubicacion, POINT(-12.0464, -77.0428)) < 5000;")
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	sel := ctx.Parent().(*ast.Select)
+	bin := sel.Closure.(*ast.WhereExpr).Content
+
+	call, ok := bin.Left.(*ast.CallExpr)
+	if !ok {
+		t.Fatalf("Left = %T, want *ast.CallExpr", bin.Left)
+	}
+	if call.Name != "distancia" || len(call.Args) != 2 {
+		t.Fatalf("call = %s con %d argumentos, want distancia con 2", call.Name, len(call.Args))
+	}
+	if id, ok := call.Args[0].(*ast.IdExpr); !ok || id.Name != "ubicacion" {
+		t.Fatalf("arg 0 = %#v, want columna ubicacion", call.Args[0])
+	}
+	if _, ok := call.Args[1].(*ast.PointExpr); !ok {
+		t.Fatalf("arg 1 = %T, want *ast.PointExpr", call.Args[1])
+	}
+	if bin.Op != ast.OpLt {
+		t.Fatalf("Op = %v, want OpLt", bin.Op)
+	}
+	if right, ok := bin.Right.(*ast.IntExpr); !ok || right.Value != 5000 {
+		t.Fatalf("Right = %#v, want 5000", bin.Right)
+	}
+}
+
+func TestParseOrderByDistanceWithLimit(t *testing.T) {
+	ctx := parse(t, "SELECT * FROM restaurantes ORDER BY distancia(ubicacion, mi_ubicacion) LIMIT 10;")
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	sel := ctx.Parent().(*ast.Select)
+
+	call, ok := sel.OrderBy.Expr.(*ast.CallExpr)
+	if !ok {
+		t.Fatalf("OrderBy.Expr = %T, want *ast.CallExpr", sel.OrderBy.Expr)
+	}
+	if id, ok := call.Args[1].(*ast.IdExpr); !ok || id.Name != "mi_ubicacion" {
+		t.Fatalf("arg 1 = %#v, want columna mi_ubicacion", call.Args[1])
+	}
+	if sel.OrderBy.Descendent {
+		t.Fatal("sin DESC, el orden debe ser ascendente")
+	}
+	if sel.Limit == nil || *sel.Limit != 10 {
+		t.Fatalf("Limit = %v, want 10", sel.Limit)
+	}
+
+	desc := parse(t, "SELECT * FROM r ORDER BY distancia(u, POINT(1, 2)) DESC LIMIT 5;")
+	if err := desc.Err(); err != nil {
+		t.Fatalf("Parse DESC: %v", err)
+	}
+	if !desc.Parent().(*ast.Select).OrderBy.Descendent {
+		t.Fatal("DESC no se reconoció tras la llamada a función")
+	}
+}
+
+func TestParseFunctionWithOptionalMetricArgument(t *testing.T) {
+	ctx := parse(t, "SELECT * FROM t WHERE distancia(u, POINT(0, 0), 'euclidean') <= 2.5;")
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	call := ctx.Parent().(*ast.Select).Closure.(*ast.WhereExpr).Content.Left.(*ast.CallExpr)
+	if len(call.Args) != 3 {
+		t.Fatalf("args = %d, want 3", len(call.Args))
+	}
+	if _, ok := call.Args[2].(*ast.StringExpr); !ok {
+		t.Fatalf("arg 2 = %T, want *ast.StringExpr", call.Args[2])
+	}
+}
+
+func TestParseMalformedCallsFail(t *testing.T) {
+	for _, src := range []string{
+		"SELECT * FROM t WHERE distancia(u, POINT(1, 2) < 5;",
+		"SELECT * FROM t ORDER BY distancia(;",
+		"SELECT * FROM t WHERE distancia(, ) < 5;",
+		"SELECT * FROM t ORDER BY 5;",
+	} {
+		ctx := parse(t, src)
+		if err := ctx.Err(); err == nil {
+			t.Errorf("%q debería fallar", src)
+		}
+	}
+}
+
+func TestParseDecimalKeepsDoublePrecision(t *testing.T) {
+	ctx := parse(t, "INSERT INTO t VALUES (1, -12.0464321987);")
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	f := ctx.Parent().(*ast.Insert).Rows[0][1].(*ast.FloatExpr)
+	if f.Value != -12.0464321987 {
+		t.Fatalf("decimal = %v, perdió precisión", f.Value)
+	}
+}
+
+func TestParseIncompleteStatementsFail(t *testing.T) {
+	for _, src := range []string{
+		"INSERT INTO t VALUES (1, 2;",
+		"INSERT INTO t (id, name VALUES (1, 'a');",
+		"INSERT INTO t VALUES 1, 2;",
+		"CREATE TABLE t (id INT, name STRING;",
+	} {
+		ctx := parse(t, src)
+		if err := ctx.Err(); err == nil {
+			t.Errorf("%q debería fallar", src)
+		}
+	}
+}

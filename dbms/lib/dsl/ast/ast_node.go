@@ -48,6 +48,7 @@ type Select struct {
 	From     TableExpr
 	Closure  ASTNode
 	OrderBy  *OrderBy
+	Limit    *int
 	All      bool
 }
 
@@ -143,7 +144,23 @@ type IntExpr struct {
 type FloatExpr struct {
 	BaseNode
 
-	Value float32
+	Value float64
+}
+
+// CallExpr es una llamada a función: nombre(arg1, arg2, ...).
+type CallExpr struct {
+	BaseNode
+
+	Name string
+	Args []ASTNode
+}
+
+// PointExpr es el literal POINT(lat, lon).
+type PointExpr struct {
+	BaseNode
+
+	Lat float64
+	Lon float64
 }
 
 type StringExpr struct {
