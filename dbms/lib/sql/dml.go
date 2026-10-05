@@ -317,6 +317,13 @@ func (e *Engine) execSelect(n *ast.Select) (*Result, error) {
 	if n.From.Name == "" {
 		return nil, fmt.Errorf("sql: SELECT sin FROM (no se soporta SELECT de constantes)")
 	}
+	if len(n.Join) > 0 {
+		vt, rows, plan, err := e.execJoin(n)
+		if err != nil {
+			return nil, err
+		}
+		return e.finishSelect(vt, rows, plan, n)
+	}
 	tbl, err := e.requireTable(n.From.Name)
 	if err != nil {
 		return nil, err
@@ -353,7 +360,13 @@ func (e *Engine) execSelect(n *ast.Select) (*Result, error) {
 	if err := e.lockRowsShared(tbl, matches); err != nil {
 		return nil, err
 	}
-	plan := access
+	return e.finishSelect(tbl, matches, access, n)
+}
+
+// finishSelect aplica GROUP BY, HAVING, ORDER BY, LIMIT y la proyección sobre
+// las filas ya obtenidas (de una tabla o de un join).
+func (e *Engine) finishSelect(tbl *Table, matches []storage.Tuple, plan []Step, n *ast.Select) (*Result, error) {
+	var err error
 
 	// 2. Cada fila es un grupo de una fila; con GROUP BY se fusionan las que
 	// comparten los valores de sus claves.
@@ -363,7 +376,7 @@ func (e *Engine) execSelect(n *ast.Select) (*Result, error) {
 	}
 	if len(n.GroupBy) > 0 {
 		var step []Step
-		groups, step, err = groupRows(tbl, matches, n.GroupBy)
+		groups, step, err = e.groupRows(tbl, matches, n.GroupBy)
 		if err != nil {
 			return nil, err
 		}

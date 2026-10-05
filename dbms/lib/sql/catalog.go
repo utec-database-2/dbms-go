@@ -90,6 +90,10 @@ type Table struct {
 	// order conserva el orden de creación para que el plan sea estable.
 	order []string
 
+	// joinCols solo existe en la tabla virtual de un JOIN: el origen de cada
+	// columna, para resolver nombres calificados (alias.columna).
+	joinCols []joinCol
+
 	mu sync.RWMutex
 }
 

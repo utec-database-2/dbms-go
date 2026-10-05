@@ -2,6 +2,8 @@ package sql
 
 import (
 	"fmt"
+	"github.com/dbms-go/v2/dbms/lib/external/hashing"
+	"sort"
 	"strings"
 
 	"github.com/dbms-go/v2/dbms/lib/dsl/ast"
@@ -145,6 +147,13 @@ type evalContext struct {
 func (ec *evalContext) resolve(name string, qualifier *string) (string, int, error) {
 	if ec.table == nil {
 		return "", 0, fmt.Errorf("sql: no hay tabla para resolver la columna %s", name)
+	}
+	if ec.table.joinCols != nil {
+		pos, err := ec.table.resolveJoined(name, qualifier)
+		if err != nil {
+			return "", 0, err
+		}
+		return ec.table.Schema.Columns[pos], pos, nil
 	}
 	if qualifier != nil && !strings.EqualFold(*qualifier, ec.table.Name()) {
 		return "", 0, fmt.Errorf("sql: %s no pertenece a %s", name, *qualifier)
@@ -509,15 +518,20 @@ func sumValues(values []any) (any, error) {
 	return total, nil
 }
 
-// groupRows agrupa las filas por los valores de las expresiones de GROUP BY,
-// conservando el orden en que aparece cada grupo.
-func groupRows(tbl *Table, rows []storage.Tuple, exprs []ast.ASTNode) ([]rowGroup, []Step, error) {
+// groupRows agrupa las filas por los valores de las expresiones de GROUP BY con
+// external hashing: las filas se reparten en particiones por el hash de su
+// clave de grupo (volcándolas a disco si no caben en el buffer) y cada
+// partición se agrupa con una tabla hash en memoria. Los grupos salen en el
+// orden en que aparece su primera fila.
+func (e *Engine) groupRows(tbl *Table, rows []storage.Tuple, exprs []ast.ASTNode) ([]rowGroup, []Step, error) {
 	ec := &evalContext{table: tbl}
-	var (
-		order []string
-		byKey = make(map[string][]storage.Tuple)
-	)
-	for _, r := range rows {
+	type keyed struct {
+		key string
+		pos int
+		row storage.Tuple
+	}
+	items := make([]keyed, 0, len(rows))
+	for i, r := range rows {
 		ec.row = r
 		var b strings.Builder
 		for _, x := range exprs {
@@ -527,21 +541,87 @@ func groupRows(tbl *Table, rows []storage.Tuple, exprs []ast.ASTNode) ([]rowGrou
 			}
 			fmt.Fprintf(&b, "%v\x00", v)
 		}
-		k := b.String()
-		if _, ok := byKey[k]; !ok {
-			order = append(order, k)
+		items = append(items, keyed{key: b.String(), pos: i, row: r})
+	}
+
+	parts, err := hashing.Partition(items,
+		func(k keyed) ([]byte, error) { return []byte(k.key), nil },
+		func(k keyed) ([]byte, error) {
+			return storage.EncodeRow(append(storage.Tuple{k.key, int64(k.pos)}, k.row...))
+		},
+		func(buf []byte) (keyed, error) {
+			t, err := storage.DecodeRowBytes(buf)
+			if err != nil || len(t) < 2 {
+				return keyed{}, fmt.Errorf("sql: fila de partición ilegible: %v", err)
+			}
+			key, _ := t[0].(string)
+			pos, _ := asInt64(t[1])
+			return keyed{key: key, pos: int(pos), row: t[2:]}, nil
+		},
+		hashing.Options{
+			Partitions:  e.hashPartitions(len(rows)),
+			BufferSlots: e.opt.SortBufferSlots,
+			Dir:         e.dbDir(),
+			Prefix:      "group",
+			NoSpill:     e.opt.DisableSpill,
+		})
+	if err != nil {
+		return nil, nil, err
+	}
+	defer parts.Close()
+
+	type group struct {
+		first int
+		rows  []storage.Tuple
+	}
+	var groups []group
+	for i := 0; i < parts.Len(); i++ {
+		part, err := parts.Read(i)
+		if err != nil {
+			return nil, nil, err
 		}
-		byKey[k] = append(byKey[k], r)
+		byKey := make(map[string]int)
+		for _, it := range part {
+			gi, ok := byKey[it.key]
+			if !ok {
+				gi = len(groups)
+				byKey[it.key] = gi
+				groups = append(groups, group{first: it.pos})
+			}
+			groups[gi].rows = append(groups[gi].rows, it.row)
+		}
 	}
-	groups := make([]rowGroup, 0, len(order))
-	for _, k := range order {
-		groups = append(groups, rowGroup{rows: byKey[k]})
+	sort.SliceStable(groups, func(i, j int) bool { return groups[i].first < groups[j].first })
+
+	out := make([]rowGroup, 0, len(groups))
+	for _, g := range groups {
+		out = append(out, rowGroup{rows: g.rows})
 	}
-	return groups, []Step{{
-		Kind:   StepGroupBy,
-		Detail: fmt.Sprintf("group by sobre %d columna(s): %d grupo(s)", len(exprs), len(groups)),
-		Rows:   len(groups),
+	where := "en memoria"
+	if parts.Spilled {
+		where = fmt.Sprintf("volcadas a disco (%d B escritos, %d B leídos)", parts.BytesWritten, parts.BytesRead)
+	}
+	return out, []Step{{
+		Kind: StepGroupBy,
+		Detail: fmt.Sprintf("group by con external hashing sobre %d columna(s): %d particiones %s, %d grupo(s)",
+			len(exprs), parts.Len(), where, len(out)),
+		Rows: len(out),
 	}}, nil
+}
+
+// hashPartitions elige cuántas particiones usar: las justas para que cada una
+// quepa en el buffer, con un mínimo de 4 para que el reparto se vea en el plan.
+func (e *Engine) hashPartitions(rows int) int {
+	n := 4
+	if e.opt.SortBufferSlots > 0 {
+		if need := rows/e.opt.SortBufferSlots + 1; need > n {
+			n = need
+		}
+	}
+	if n > 256 {
+		n = 256
+	}
+	return n
 }
 
 // keepGroups aplica el HAVING sobre los grupos.

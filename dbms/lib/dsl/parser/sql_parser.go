@@ -148,14 +148,14 @@ func (parser *ParserContext) ParseNameIndex() *ast.NameExpr {
 	expr.Name = id1.GetContent()
 	if parser.Match(token.TokenDot) {
 		if parser.Check(token.TokenId) || parser.Check(token.TokenAsterisk) {
+			table := expr.Name
+			expr.Table = &table
 			if parser.Check(token.TokenAsterisk) {
-				expr.Table = &expr.Name
 				expr.Name = "*"
 				parser.idx++
 			} else {
 				tok := parser.CurrToken()
 				parser.idx++
-				expr.Table = &expr.Name
 				expr.Name = tok.GetContent()
 			}
 		}
@@ -173,6 +173,12 @@ func (parser *ParserContext) ParseNameIndex() *ast.NameExpr {
 
 func (parser *ParserContext) ParseTableExpr() *ast.TableExpr {
 	n := parser.ParseNameIndex()
+	// Alias sin AS: FROM alumno a.
+	if n.Alias == nil && parser.Check(token.TokenId) {
+		alias := parser.CurrStr()
+		parser.idx++
+		n.Alias = &alias
+	}
 	t := &ast.TableExpr{}
 	t.Alias = n.Alias
 	t.Name = n.Name
@@ -190,7 +196,10 @@ func (parser *ParserContext) ParseId() *ast.IdExpr {
 		if parser.Check(token.TokenId) {
 			tok := parser.CurrToken()
 			parser.idx++
-			expr.Table = &expr.Name
+			// El prefijo es la tabla: se copia antes de pisar Name (antes
+			// Table apuntaba al propio Name y quedaba "col.col").
+			table := expr.Name
+			expr.Table = &table
 			expr.Name = tok.GetContent()
 		}
 	}
