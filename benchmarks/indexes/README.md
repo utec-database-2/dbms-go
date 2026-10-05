@@ -1,44 +1,34 @@
 # Benchmark: B+ agrupado vs B+ no agrupado vs Hash Dinámico
 
-Este benchmark implementa la comparación experimental solicitada en la Parte 1 del proyecto.
+## Pasos para ejecutar las pruebas
 
-## Qué mide
+### 1. Ubicar el benchmark
 
-1. `construction.csv`: tiempo de construcción del índice. La creación/población de HeapFile y SequentialFile ocurre antes del cronómetro.
-2. `equality.csv`: búsqueda por igualdad exacta. En los tres casos se resuelve el RID hasta el payload.
-3. `range.csv`: B+ usa `RangeSearch`; Hash Dinámico usa `HeapFile.Scan` como fallback porque `SupportsRange()==false`.
-4. `ordering.csv`: B+ usa `OrderedScan`; Hash Dinámico usa `HeapFile.Scan + sort` porque no conserva orden.
-5. `storage.csv`: tamaño únicamente del archivo `.idx`, es decir, espacio adicional del índice.
-6. `updates.csv`: costo promedio de inserciones y eliminaciones frecuentes, incluyendo la actualización del almacenamiento base y del índice.
-
-## Ubicación
-
-Copiar esta carpeta como:
+Copiar la carpeta en:
 
 ```text
 D:\dbms-go\benchmarks\indexes\
 ```
 
-El benchmark usa estos paquetes del proyecto:
+### 2. Ejecutar una prueba rápida
 
-```text
-github.com/dbms-go/v2/indexes/bplus
-github.com/dbms-go/v2/dbms/lib/index/extendible
-github.com/dbms-go/v2/dbms/lib/storage/heap
-github.com/dbms-go/v2/dbms/lib/concurrency/sequential
+Desde:
+
+```powershell
+cd D:\dbms-go
 ```
 
-## Primera prueba recomendada (rápida)
-
-Desde `D:\dbms-go`:
+Ejecutar:
 
 ```powershell
 go run ./benchmarks/indexes -sizes 1000 -repeats 1 -queries 100 -range-queries 10 -updates 100
 ```
 
-Esto sirve para comprobar que todas las APIs están integradas correctamente antes de una corrida larga.
+Esta prueba permite verificar que B+ agrupado, B+ no agrupado y Hash Dinámico funcionan correctamente dentro del benchmark.
 
-## Corrida para el informe
+### 3. Ejecutar la prueba completa
+
+Para obtener los resultados que se usarán en el informe:
 
 ```powershell
 go run ./benchmarks/indexes `
@@ -50,45 +40,39 @@ go run ./benchmarks/indexes `
   -updates 1000
 ```
 
-**Nota:** el Hash Dinámico persistente escribe buckets/directorio en disco y 100 000 registros puede tomar bastante más que los B+. No interrumpir la corrida final solo porque esa etapa sea lenta.
+Los resultados se guardarán en:
 
-## Generar gráficas
+```text
+benchmarks\indexes\results\
+```
 
-Instalar matplotlib si fuera necesario:
+### 4. Generar las gráficas
+
+Instalar `matplotlib` si fuera necesario:
 
 ```powershell
 py -m pip install matplotlib
 ```
 
-Luego:
+Luego ejecutar:
 
 ```powershell
 py .\benchmarks\indexes\plot_results.py .\benchmarks\indexes\results
 ```
 
-Se generan:
+Las gráficas se guardarán en:
 
 ```text
-results\plots\01_construction.png
-results\plots\02_equality.png
-results\plots\03_range.png
-results\plots\04_ordering.png
-results\plots\05_storage.png
-results\plots\06_updates.png
+benchmarks\indexes\results\plots\
 ```
 
-## Metodología y decisiones
+---
 
-- Dataset determinista: claves `1..N` y payload de tamaño fijo.
-- El SequentialFile se carga en orden porque ese orden físico forma parte del B+ agrupado.
-- El HeapFile recibe las mismas claves en orden pseudoaleatorio determinista.
-- Dataset por defecto: `1 000`, `10 000`, `100 000` registros.
-- B+ order por defecto: `64`.
-- Hash bucket size por defecto: `64`.
-- Payload por defecto: `64 bytes`.
-- Las estructuras se miden en orden rotativo entre repeticiones para reducir sesgo por caché.
-- Igualdad: las mismas claves se usan para las tres estructuras.
-- Rango: selectividad por defecto `1%`.
-- Hash no implementa RangeSearch ni recorrido ordenado: se registra explícitamente el fallback usado.
-- Espacio adicional: solo `.idx`; HeapFile/SequentialFile quedan fuera de esa cifra.
-- Para updates se insertan claves nuevas y luego se eliminan exactamente esas entradas, manteniendo el dataset base estable entre repeticiones.
+## Decisiones metodológicas
+
+- Se utilizan datasets de **1 000, 10 000 y 100 000 registros**.
+- Las claves utilizadas son deterministas: `1..N`.
+- El payload tiene un tamaño fijo de **64 bytes**.
+- El B+ utiliza un `order` de **64**.
+- El Hash Dinámico utiliza un `bucketSize` de **64**.
+- El `SequentialFile` se carga ordenado por clave, ya que representa el almacenamiento físico utilizado por 
