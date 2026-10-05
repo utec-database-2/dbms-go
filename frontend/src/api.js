@@ -55,3 +55,16 @@ export async function searchSpatialRange(data) {
 
   return parseJSON(res);
 }
+
+// k vecinos más cercanos: { latitude, longitude, k, metric }
+export async function searchSpatialKNN(data) {
+  const res = await fetch(`${BASE_URL}/api/spatial/knn`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(data),
+  });
+
+  return parseJSON(res);
+}

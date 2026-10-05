@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import {
   MapContainer,
@@ -11,21 +12,34 @@ import {
 } from "react-leaflet";
 import { Map as MapIcon, Search } from "lucide-react";
 
-import { searchSpatialRange } from "../api";
+import { searchSpatialKNN, searchSpatialRange } from "../api";
 
 const DEFAULT_CENTER = [-12.0432, -77.0282];
 
-function MapUpdater({ center }) {
+// Encuadra el mapa en cada búsqueda nueva (resetKey cambia en cada una). Si la
+// consulta tiene un alcance (extentMeters > 0, el radio o la distancia al
+// vecino más lejano) se ajusta el zoom para que todo el círculo quede a la
+// vista; si no, se centra en el punto con zoom fijo.
+function MapUpdater({ center, extentMeters, resetKey }) {
   const map = useMap();
+  const [lat, lon] = center;
 
   useEffect(() => {
-    map.setView(center, 13);
+    if (extentMeters > 0) {
+      // toBounds recibe el lado del cuadrado en metros (el diámetro del círculo).
+      const bounds = L.latLng(lat, lon).toBounds(extentMeters * 2);
+      map.fitBounds(bounds, { padding: [24, 24], maxZoom: 15 });
+    } else {
+      map.setView([lat, lon], 13);
+    }
 
     // Recalcular el tamaño real del contenedor
-    setTimeout(() => {
+    const timer = setTimeout(() => {
       map.invalidateSize();
     }, 100);
-  }, [map, center]);
+
+    return () => clearTimeout(timer);
+  }, [map, lat, lon, extentMeters, resetKey]);
 
   useEffect(() => {
     const resizeObserver = new ResizeObserver(() => {
@@ -47,6 +61,13 @@ function MapPanel() {
   const [longitude, setLongitude] = useState("-77.0282");
   const [radius, setRadius] = useState("5");
   const [metric, setMetric] = useState("haversine");
+
+  // "range": todos los puntos dentro de un radio. "knn": los k más cercanos.
+  const [mode, setMode] = useState("range");
+  const [k, setK] = useState("10");
+
+  // Se incrementa con cada búsqueda exitosa para que el mapa se vuelva a encuadrar.
+  const [searchCount, setSearchCount] = useState(0);
 
   const [spatialResult, setSpatialResult] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -72,28 +93,43 @@ function MapPanel() {
     const lat = Number(latitude);
     const lon = Number(longitude);
     const radiusValue = Number(radius);
+    const kValue = Number(k);
 
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
       setError("La latitud y longitud deben ser números válidos.");
       return;
     }
 
-    if (!Number.isFinite(radiusValue) || radiusValue < 0) {
+    if (mode === "range" && (!Number.isFinite(radiusValue) || radiusValue < 0)) {
       setError("El radio debe ser un número mayor o igual a 0.");
+      return;
+    }
+
+    if (mode === "knn" && (!Number.isInteger(kValue) || kValue < 1)) {
+      setError("k debe ser un entero mayor o igual a 1.");
       return;
     }
 
     setLoading(true);
 
     try {
-      const data = await searchSpatialRange({
-        latitude: lat,
-        longitude: lon,
-        radius: radiusValue,
-        metric,
-      });
+      const data =
+        mode === "knn"
+          ? await searchSpatialKNN({
+              latitude: lat,
+              longitude: lon,
+              k: kValue,
+              metric,
+            })
+          : await searchSpatialRange({
+              latitude: lat,
+              longitude: lon,
+              radius: radiusValue,
+              metric,
+            });
 
       setSpatialResult(data);
+      setSearchCount((n) => n + 1);
     } catch (err) {
       setError(err.message);
       setSpatialResult(null);
@@ -117,9 +153,18 @@ function MapPanel() {
    * Euclidiana:
    *   radius está en grados de coordenadas.
    *   Usamos una conversión aproximada para visualizarlo.
+   *
+   * Se calcula con lo que devolvió el servidor (métrica y distancia del
+   * resultado), no con los campos del formulario, que el usuario puede haber
+   * cambiado después de buscar. En k-NN el círculo es el que alcanza al
+   * vecino más lejano.
    */
+  const resultMetric = spatialResult?.metric ?? metric;
+  const resultExtent = spatialResult
+    ? (spatialResult.maxDistance ?? spatialResult.radius ?? 0)
+    : 0;
   const circleRadiusMeters =
-    metric === "haversine" ? Number(radius) * 1000 : Number(radius) * 111195;
+    resultMetric === "haversine" ? resultExtent * 1000 : resultExtent * 111195;
 
   return (
     <section className="map-panel">
@@ -129,7 +174,11 @@ function MapPanel() {
 
           <div>
             <h2>Consulta espacial</h2>
-            <p>Consulta por rango sobre el R-Tree</p>
+            <p>
+              {mode === "knn"
+                ? "k vecinos más cercanos sobre el R-Tree"
+                : "Consulta por rango sobre el R-Tree"}
+            </p>
           </div>
         </div>
 
@@ -139,6 +188,15 @@ function MapPanel() {
       </div>
 
       <div className="spatial-controls">
+        <div className="spatial-field">
+          <label>Consulta</label>
+
+          <select value={mode} onChange={(e) => setMode(e.target.value)}>
+            <option value="range">Por radio</option>
+            <option value="knn">k vecinos (k-NN)</option>
+          </select>
+        </div>
+
         <div className="spatial-field">
           <label>Latitud</label>
           <input
@@ -159,17 +217,31 @@ function MapPanel() {
           />
         </div>
 
-        <div className="spatial-field">
-          <label>Radio {metric === "haversine" ? "(km)" : "(grados)"}</label>
+        {mode === "range" ? (
+          <div className="spatial-field">
+            <label>Radio {metric === "haversine" ? "(km)" : "(grados)"}</label>
 
-          <input
-            type="number"
-            min="0"
-            step="any"
-            value={radius}
-            onChange={(e) => setRadius(e.target.value)}
-          />
-        </div>
+            <input
+              type="number"
+              min="0"
+              step="any"
+              value={radius}
+              onChange={(e) => setRadius(e.target.value)}
+            />
+          </div>
+        ) : (
+          <div className="spatial-field">
+            <label>k (vecinos)</label>
+
+            <input
+              type="number"
+              min="1"
+              step="1"
+              value={k}
+              onChange={(e) => setK(e.target.value)}
+            />
+          </div>
+        )}
 
         <div className="spatial-field">
           <label>Métrica</label>
@@ -199,7 +271,11 @@ function MapPanel() {
           scrollWheelZoom={true}
           className="spatial-map"
         >
-          <MapUpdater center={mapCenter} />
+          <MapUpdater
+            center={mapCenter}
+            extentMeters={circleRadiusMeters}
+            resetKey={searchCount}
+          />
 
           <TileLayer
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
@@ -251,14 +327,17 @@ function MapPanel() {
               }}
             >
               <Popup>
-                <strong>{point.name}</strong>
+                <strong>
+                  {point.rank ? `#${point.rank} · ` : ""}
+                  {point.name}
+                </strong>
                 <br />
                 Latitud: {point.lat.toFixed(6)}
                 <br />
                 Longitud: {point.lon.toFixed(6)}
                 <br />
                 Distancia:{" "}
-                {metric === "haversine"
+                {resultMetric === "haversine"
                   ? `${point.distance.toFixed(2)} km`
                   : point.distance.toFixed(6)}
               </Popup>
