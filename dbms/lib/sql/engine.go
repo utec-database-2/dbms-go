@@ -332,6 +332,10 @@ func (e *Engine) execCreateTable(n *ast.CreateTable) (*Result, error) {
 		if _, ok := tbl.ColumnIndex(name); !ok {
 			continue
 		}
+		if isPointType(col) {
+			declared = append(declared, indexDisk{Name: rtreePrefix + "_" + strings.ToLower(name), Column: name})
+			continue
+		}
 		if !(col.PrimaryKey || col.Unique || col.Indexed) {
 			continue
 		}
@@ -536,6 +540,9 @@ func sqlType(col ast.ColumnExpr) (storage.Type, int, error) {
 		return storage.TypeBool, 0, nil
 	case "TEXT", "STRING":
 		return storage.TypeString, 255, nil
+	case pointTypeName:
+		// Se guarda como texto canónico "POINT(lat lon)" y lleva un R-Tree.
+		return storage.TypeString, pointMaxLen, nil
 	}
 	// VARCHAR(n) / VARBINARY(n): el tamaño viene en col.Length.
 	up := strings.ToUpper(strings.TrimSpace(name))

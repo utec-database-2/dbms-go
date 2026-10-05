@@ -27,6 +27,18 @@ func (t *Table) planAccess(where ast.ASTNode) (*fetchPlan, error) {
 		return nil, err
 	}
 
+	// Intento 0: condiciones espaciales resueltas con el R-Tree.
+	if rows, step, ok, err := t.matchSpatial(cond); err != nil {
+		return nil, err
+	} else if ok {
+		return &fetchPlan{rows: rows, access: "index", step: step}, nil
+	}
+	if rows, step, ok, err := t.matchWithin(where); err != nil {
+		return nil, err
+	} else if ok {
+		return &fetchPlan{rows: rows, access: "index", step: step}, nil
+	}
+
 	// Intento 1: usar un índice para acotar el conjunto de filas.
 	if len(cond) > 0 {
 		if idx, kind, bounds, ok := t.matchIndex(cond); ok {
@@ -485,6 +497,8 @@ func (t *Table) reindexAfterUpdate(idx Index, rid storage.RID, prev, next storag
 	case *hashIndex:
 		return v.UpdateRID(rid, prev, next)
 	case *clusteredIndex:
+		return v.UpdateRID(rid, prev, next)
+	case *rtreeIndex:
 		return v.UpdateRID(rid, prev, next)
 	}
 	return fmt.Errorf("sql: no se puede reindexar %s", idx.Name())

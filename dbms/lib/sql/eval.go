@@ -28,20 +28,29 @@ func compareAny(a, b any) int {
 		if y, ok := asInt64(b); ok {
 			return cmpInt64(int64(x), y)
 		}
+		if y, ok := asFloat64(b); ok {
+			return cmpFloat(float64(x), y)
+		}
 	case int64:
 		if y, ok := asInt64(b); ok {
 			return cmpInt64(x, y)
+		}
+		if y, ok := asFloat64(b); ok {
+			return cmpFloat(float64(x), y)
 		}
 	case int:
 		if y, ok := asInt64(b); ok {
 			return cmpInt64(int64(x), y)
 		}
-	case float32:
 		if y, ok := asFloat64(b); ok {
 			return cmpFloat(float64(x), y)
 		}
+	case float32:
+		if y, ok := toFloat64(b); ok {
+			return cmpFloat(float64(x), y)
+		}
 	case float64:
-		if y, ok := asFloat64(b); ok {
+		if y, ok := toFloat64(b); ok {
 			return cmpFloat(x, y)
 		}
 	case bool:
@@ -97,6 +106,18 @@ func asInt64(v any) (int64, bool) {
 		return x, true
 	case int:
 		return int64(x), true
+	}
+	return 0, false
+}
+
+// toFloat64 convierte cualquier número (entero o flotante) a float64. Se usa
+// cuando se mezclan tipos: 400.3 < 3000 tiene que compararse como números.
+func toFloat64(v any) (float64, bool) {
+	if f, ok := asFloat64(v); ok {
+		return f, true
+	}
+	if i, ok := asInt64(v); ok {
+		return float64(i), true
 	}
 	return 0, false
 }
@@ -172,6 +193,9 @@ func (ec *evalContext) eval(node ast.ASTNode) (any, error) {
 		return ec.eval(&n.Content)
 
 	case *ast.FuncCallExpr:
+		if v, ok, err := ec.evalSpatialFunc(n); ok {
+			return v, err
+		}
 		return nil, fmt.Errorf("sql: la función %s todavía no está implementada", n.Name)
 
 	default:
@@ -261,17 +285,17 @@ func applyOp(op ast.Operator, l, r any) (any, error) {
 }
 
 func arith(l, r any, ff func(a, b float64) float64, fi func(a, b int64) int64) (any, error) {
-	if a, ok := asFloat64(l); ok {
-		if b, ok := asFloat64(r); ok {
-			return ff(a, b), nil
+	if a, ok1 := asInt64(l); ok1 {
+		if b, ok2 := asInt64(r); ok2 {
+			return fi(a, b), nil
 		}
 	}
-	a, ok1 := asInt64(l)
-	b, ok2 := asInt64(r)
+	a, ok1 := toFloat64(l)
+	b, ok2 := toFloat64(r)
 	if !ok1 || !ok2 {
 		return nil, fmt.Errorf("sql: no se pueden operar %T y %T", l, r)
 	}
-	return fi(a, b), nil
+	return ff(a, b), nil
 }
 
 func truthy(v any) bool {
@@ -345,7 +369,10 @@ func (ec *evalContext) evalGroup(node ast.ASTNode, g rowGroup) (any, error) {
 	switch n := node.(type) {
 	case *ast.FuncCallExpr:
 		if !isAggregate(n.Name) {
-			return nil, fmt.Errorf("sql: la función %s todavía no está implementada", n.Name)
+			// Función escalar (distancia, POINT, ...): se evalúa sobre la
+			// fila representativa del grupo.
+			ec.row = g.representative()
+			return ec.eval(n)
 		}
 		return ec.aggregate(n, g)
 
@@ -473,7 +500,7 @@ func sumValues(values []any) (any, error) {
 	}
 	var total float64
 	for _, v := range values {
-		f, ok := asFloat64(v)
+		f, ok := toFloat64(v)
 		if !ok {
 			return nil, fmt.Errorf("sql: no se puede sumar %T", v)
 		}

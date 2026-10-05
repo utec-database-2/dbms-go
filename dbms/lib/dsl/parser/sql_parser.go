@@ -114,6 +114,16 @@ func Parse(lexer lexer.LexerContext) ParserContext {
 		ctx.parent = ctx.ParseRelease()
 	case token.TokenEnd:
 		ctx.err = errors.New("empty input")
+	case token.TokenId:
+		// END [TRANSACTION] es sinónimo de COMMIT. "end" no es palabra
+		// reservada en el lexer, así que llega como identificador.
+		if strings.EqualFold(ctx.CurrStr(), "end") {
+			ctx.idx++
+			ctx.Match(token.TokenTransaction)
+			ctx.parent = &ast.Commit{}
+		} else {
+			ctx.err = fmt.Errorf("unexpected token %q", ctx.CurrStr())
+		}
 	default:
 		ctx.err = fmt.Errorf("unexpected token %q", ctx.CurrStr())
 	}
@@ -211,8 +221,9 @@ func (parser *ParserContext) ParseFloat() *ast.FloatExpr {
 	if err != nil {
 		return &ast.FloatExpr{}
 	}
-	v, _ := strconv.ParseFloat(t.GetContent(), 32)
-	return &ast.FloatExpr{Value: float32(v)}
+	// float64: con float32 una coordenada como -12.0464 pierde precisión.
+	v, _ := strconv.ParseFloat(t.GetContent(), 64)
+	return &ast.FloatExpr{Value: v}
 }
 
 func (parser *ParserContext) ParseString() *ast.StringExpr {
@@ -300,12 +311,25 @@ func (parser *ParserContext) parseOperand() (ast.ASTNode, error) {
 		parser.idx++
 		return parser.ParseFuncCall(name), nil
 	case token.TokenMinus, token.TokenPlus:
+		negative := parser.CurrToken().GetType() == token.TokenMinus
 		parser.idx++
-		v, err := parser.ParseValue()
+		// El signo solo afecta al operando que le sigue: -5 + 3 es (-5) + 3.
+		v, err := parser.parseOperand()
 		if err != nil {
 			return nil, err
 		}
-		return v, nil
+		if !negative {
+			return v, nil
+		}
+		switch lit := v.(type) {
+		case *ast.IntExpr:
+			lit.Value = -lit.Value
+			return lit, nil
+		case *ast.FloatExpr:
+			lit.Value = -lit.Value
+			return lit, nil
+		}
+		return &ast.BinaryExpr{Left: &ast.IntExpr{Value: 0}, Op: ast.OpSub, Right: v}, nil
 	case token.TokenLparent:
 		parser.idx++
 		v, err := parser.ParseValue()

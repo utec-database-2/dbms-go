@@ -175,7 +175,7 @@ type IntExpr struct {
 type FloatExpr struct {
 	BaseNode
 
-	Value float32
+	Value float64
 }
 
 type StringExpr struct {

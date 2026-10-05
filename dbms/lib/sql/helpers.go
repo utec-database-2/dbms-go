@@ -67,6 +67,8 @@ func (e *Engine) createIndex(tbl *Table, name, col string, unique bool) (Index, 
 	pkCol, hasPK := tbl.ColumnIndex(col)
 	isPK := hasPK && hasPKCol && pkCol == onPK
 	switch {
+	case strings.HasPrefix(strings.ToLower(name), rtreePrefix):
+		idx, err = newRTreeIndex(name, col, tbl)
 	case tbl.Clustered && isPK:
 		idx, err = newClusteredIndex(name, tbl, e.opt.BPlusOrder)
 	case tbl.Clustered:
@@ -218,7 +220,11 @@ func (t *Table) FileInfo() TableFileInfo {
 		}
 		info.IndexKinds = append(info.IndexKinds, kind)
 	}
-	for _, ty := range t.Schema.Types {
+	for i, ty := range t.Schema.Types {
+		if _, ok := t.rtreeOn(i); ok {
+			info.Types = append(info.Types, "point")
+			continue
+		}
 		info.Types = append(info.Types, ty.String())
 	}
 	switch {

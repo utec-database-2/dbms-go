@@ -322,6 +322,29 @@ func (e *Engine) execSelect(n *ast.Select) (*Result, error) {
 		return nil, err
 	}
 
+	// 0. ORDER BY distancia(...) LIMIT k: k-NN directo sobre el R-Tree.
+	if rows, steps, ok, err := e.planKNN(tbl, n); err != nil {
+		return nil, err
+	} else if ok {
+		if err := e.lockRowsShared(tbl, rows); err != nil {
+			return nil, err
+		}
+		groups := make([]rowGroup, 0, len(rows))
+		for _, r := range rows {
+			groups = append(groups, rowGroup{rows: []storage.Tuple{r}})
+		}
+		cols, projected, step, err := e.project(tbl, groups, n)
+		if err != nil {
+			return nil, err
+		}
+		return &Result{
+			Columns: cols,
+			Rows:    projected,
+			Message: fmt.Sprintf("%d fila(s)", len(projected)),
+			Plan:    append(steps, step),
+		}, nil
+	}
+
 	// 1. Acceso: el planner decide si puede usar un índice para el WHERE.
 	matches, access, err := tbl.fetch(n.Closure)
 	if err != nil {

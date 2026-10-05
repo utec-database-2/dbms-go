@@ -22,6 +22,8 @@ const (
 	UnclusteredIndexKind
 	// HashIndexKind: hash dinámico (extendible hashing) sobre un HeapFile.
 	HashIndexKind
+	// RTreeIndexKind: R-Tree sobre una columna POINT (consultas espaciales).
+	RTreeIndexKind
 )
 
 func (k IndexKind) String() string {
@@ -32,6 +34,8 @@ func (k IndexKind) String() string {
 		return "unclustered-bplus"
 	case HashIndexKind:
 		return "extendible-hash"
+	case RTreeIndexKind:
+		return "r-tree"
 	}
 	return "unknown"
 }
