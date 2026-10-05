@@ -42,6 +42,7 @@ func main() {
 	mux.HandleFunc("POST /api/query", handleQuery(db,spatialStore))
 	mux.HandleFunc("POST /api/tables/{name}/import", handleImportCSV(db,spatialStore))
 	mux.HandleFunc("POST /api/spatial/range",handleSpatialRange(spatialStore),)
+	mux.HandleFunc("POST /api/spatial/knn", handleSpatialKNN(spatialStore))
 
 	log.Printf("MinigestorBD escuchando en %s (datos en %s)", *addr, *dir)
 	log.Fatal(http.ListenAndServe(*addr, withCORS(mux)))
