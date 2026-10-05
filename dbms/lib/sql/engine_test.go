@@ -117,6 +117,9 @@ func TestUnclusteredHeapBPlus(t *testing.T) {
 	if len(res.Rows) != 2 {
 		t.Fatalf("rango devolvió %d filas:\n%s", len(res.Rows), planText(res))
 	}
+	if !hasKind(res, StepIndexSeek) {
+		t.Fatalf("se esperaba que el rango use el B+:\n%s", planText(res))
+	}
 
 	// Sin condición indexable: recorrido secuencial.
 	res = run(t, e, "SELECT * FROM users WHERE name = 'bob'")

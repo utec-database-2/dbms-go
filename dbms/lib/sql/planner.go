@@ -2,6 +2,7 @@ package sql
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/dbms-go/v2/dbms/lib/dsl/ast"
@@ -304,6 +305,10 @@ func minOfColumn(t *Table, col int) any {
 		return []byte{}
 	case storage.TypeBool:
 		return false
+	case storage.TypeInt32:
+		// Un int64 fuera de rango se trunca al convertirlo a int32: el límite
+		// tiene que ser el del propio tipo.
+		return int32(math.MinInt32)
 	default:
 		return coerceToColumn(int64(-1)<<62, t.Schema.Types[col])
 	}
@@ -317,6 +322,8 @@ func maxOfColumn(t *Table, col int) any {
 		return bytesMax(t.Schema.MaxLen[col])
 	case storage.TypeBool:
 		return true
+	case storage.TypeInt32:
+		return int32(math.MaxInt32)
 	default:
 		return coerceToColumn(int64(1)<<62-1, t.Schema.Types[col])
 	}
