@@ -60,6 +60,14 @@ func (parser *ParserContext) Check(t token.TokenType) bool {
 	return parser.CurrToken().GetType() == t
 }
 
+// Peek devuelve el tipo del token n posiciones adelante sin avanzar.
+func (parser *ParserContext) Peek(n int) token.TokenType {
+	if parser.idx+n >= len(parser.tokens) {
+		return token.TokenEnd
+	}
+	return parser.tokens[parser.idx+n].GetType()
+}
+
 func (parser *ParserContext) Required(t token.TokenType) (token.Token, error) {
 	if parser.Check(t) {
 		tok := parser.CurrToken()
@@ -81,9 +89,29 @@ func Parse(lexer lexer.LexerContext) ParserContext {
 	case token.TokenDelete:
 		ctx.parent = ctx.ParseDelete()
 	case token.TokenCreate:
-		ctx.parent = ctx.ParseCreate()
+		if ctx.Peek(1) == token.TokenIndex || ctx.Peek(1) == token.TokenUnique {
+			ctx.parent = ctx.parseCreateIndex()
+		} else {
+			ctx.parent = ctx.ParseCreate()
+		}
 	case token.TokenUpdate:
 		ctx.parent = ctx.ParseUpdate()
+	case token.TokenDrop:
+		ctx.parent = ctx.ParseDrop()
+	case token.TokenTruncate:
+		ctx.parent = ctx.ParseTruncate()
+	case token.TokenAlter:
+		ctx.parent = ctx.ParseAlter()
+	case token.TokenBegin:
+		ctx.parent = ctx.ParseBegin()
+	case token.TokenCommit:
+		ctx.parent = ctx.ParseCommit()
+	case token.TokenRollback:
+		ctx.parent = ctx.ParseRollback()
+	case token.TokenSavepoint:
+		ctx.parent = ctx.ParseSavepoint()
+	case token.TokenRelease:
+		ctx.parent = ctx.ParseRelease()
 	case token.TokenEnd:
 		ctx.err = errors.New("empty input")
 	default:
@@ -102,14 +130,30 @@ func Parse(lexer lexer.LexerContext) ParserContext {
 
 func (parser *ParserContext) ParseNameIndex() *ast.NameExpr {
 	expr := &ast.NameExpr{}
-	t, err := parser.Required(token.TokenId)
-	if err != nil {
+	if !parser.Check(token.TokenId) {
 		return expr
 	}
-	expr.Name = t.GetContent()
+	id1 := parser.CurrToken()
+	parser.idx++
+	expr.Name = id1.GetContent()
+	if parser.Match(token.TokenDot) {
+		if parser.Check(token.TokenId) || parser.Check(token.TokenAsterisk) {
+			if parser.Check(token.TokenAsterisk) {
+				expr.Table = &expr.Name
+				expr.Name = "*"
+				parser.idx++
+			} else {
+				tok := parser.CurrToken()
+				parser.idx++
+				expr.Table = &expr.Name
+				expr.Name = tok.GetContent()
+			}
+		}
+	}
 	if parser.Match(token.TokenAs) {
-		alias, err := parser.Required(token.TokenId)
-		if err == nil {
+		if parser.Check(token.TokenId) {
+			alias := parser.CurrToken()
+			parser.idx++
 			body := alias.GetContent()
 			expr.Alias = &body
 		}
@@ -126,11 +170,21 @@ func (parser *ParserContext) ParseTableExpr() *ast.TableExpr {
 }
 
 func (parser *ParserContext) ParseId() *ast.IdExpr {
-	t, err := parser.Required(token.TokenId)
-	if err != nil {
+	if !parser.Check(token.TokenId) {
 		return &ast.IdExpr{}
 	}
-	return &ast.IdExpr{Name: t.GetContent()}
+	id1 := parser.CurrToken()
+	parser.idx++
+	expr := &ast.IdExpr{Name: id1.GetContent()}
+	if parser.Match(token.TokenDot) {
+		if parser.Check(token.TokenId) {
+			tok := parser.CurrToken()
+			parser.idx++
+			expr.Table = &expr.Name
+			expr.Name = tok.GetContent()
+		}
+	}
+	return expr
 }
 
 func (parser *ParserContext) ParseBool() *ast.BoolExpr {
@@ -169,9 +223,66 @@ func (parser *ParserContext) ParseString() *ast.StringExpr {
 	return &ast.StringExpr{Value: t.GetContent()}
 }
 
+func (parser *ParserContext) ParseFuncCall(name string) *ast.FuncCallExpr {
+	fn := &ast.FuncCallExpr{Name: name}
+	parser.Match(token.TokenLparent)
+	for !parser.Check(token.TokenRparent) && !parser.IsEnd() {
+		v, err := parser.ParseValue()
+		if err != nil {
+			break
+		}
+		fn.Args = append(fn.Args, v)
+		if !parser.Match(token.TokenComma) {
+			break
+		}
+	}
+	parser.Match(token.TokenRparent)
+	return fn
+}
+
+// ParseValue parsea un valor o una expresión aritmética: un operando seguido de
+// operadores + - * / se convierte en un árbol de BinaryExpr.
 func (parser *ParserContext) ParseValue() (ast.ASTNode, error) {
+	left, err := parser.parseOperand()
+	if err != nil {
+		return nil, err
+	}
+	for {
+		var op ast.Operator
+		switch parser.CurrToken().GetType() {
+		case token.TokenPlus:
+			op = ast.OpPlus
+		case token.TokenMinus:
+			op = ast.OpSub
+		case token.TokenAsterisk:
+			op = ast.OpMul
+		case token.TokenDiv:
+			op = ast.OpDiv
+		default:
+			return left, nil
+		}
+		parser.idx++
+		right, err := parser.parseOperand()
+		if err != nil {
+			return left, nil
+		}
+		left = &ast.BinaryExpr{Left: left, Op: op, Right: right}
+	}
+}
+
+func (parser *ParserContext) parseOperand() (ast.ASTNode, error) {
 	switch parser.CurrToken().GetType() {
+	case token.TokenAsterisk:
+		parser.idx++
+		return &ast.StarExpr{}, nil
 	case token.TokenId:
+		// Un identificador seguido de '(' es una llamada a función genérica
+		// (COUNT, SUM, UPPER, ...), no una columna.
+		if parser.Peek(1) == token.TokenLparent {
+			name := strings.ToLower(parser.CurrStr())
+			parser.idx++
+			return parser.ParseFuncCall(name), nil
+		}
 		return parser.ParseId(), nil
 	case token.TokenTrue, token.TokenFalse:
 		return parser.ParseBool(), nil
@@ -181,6 +292,29 @@ func (parser *ParserContext) ParseValue() (ast.ASTNode, error) {
 		return parser.ParseFloat(), nil
 	case token.TokenString:
 		return parser.ParseString(), nil
+	case token.TokenNull:
+		parser.idx++
+		return &ast.NilExpr{}, nil
+	case token.TokenSTArea, token.TokenSTLength, token.TokenSTDistance, token.TokenSTIntersects, token.TokenSTContains, token.TokenSTWithin, token.TokenSTAsText, token.TokenSTGeomFromText:
+		name := strings.ToLower(parser.CurrStr())
+		parser.idx++
+		return parser.ParseFuncCall(name), nil
+	case token.TokenMinus, token.TokenPlus:
+		parser.idx++
+		v, err := parser.ParseValue()
+		if err != nil {
+			return nil, err
+		}
+		return v, nil
+	case token.TokenLparent:
+		parser.idx++
+		v, err := parser.ParseValue()
+		if err != nil {
+			parser.Match(token.TokenRparent)
+			return nil, err
+		}
+		parser.Match(token.TokenRparent)
+		return v, nil
 	}
 	return nil, fmt.Errorf("expected value, got %q", parser.CurrStr())
 }
@@ -288,39 +422,94 @@ func (parser *ParserContext) ParseSelect() *ast.Select {
 	parser.Match(token.TokenSelect)
 	node := &ast.Select{}
 
+	node.Distinct = parser.Match(token.TokenDistinct)
+
 	if parser.Match(token.TokenAsterisk) {
 		node.All = true
 	} else {
-		for parser.Check(token.TokenId) {
-			node.Selected = append(node.Selected, *parser.ParseNameIndex())
+		for !parser.Check(token.TokenFrom) && !parser.Check(token.TokenWhere) && !parser.IsEnd() && parser.CurrToken().GetType() != token.TokenSemicolon {
+			if parser.Match(token.TokenComma) {
+				continue
+			}
+			v, err := parser.ParseValue()
+			if err != nil {
+				break
+			}
+			item := ast.ASTNode(v)
+			if parser.Match(token.TokenAs) {
+				if alias, err := parser.Required(token.TokenId); err == nil {
+					name := alias.GetContent()
+					item = &ast.AliasedExpr{Expr: v, Alias: &name}
+				}
+			}
+			node.Selected = append(node.Selected, item)
 			if !parser.Match(token.TokenComma) {
 				break
 			}
 		}
 	}
 
-	parser.Match(token.TokenFrom)
-	node.From = *parser.ParseTableExpr()
+	if parser.Match(token.TokenFrom) {
+		node.From = *parser.ParseTableExpr()
+	}
+
+	for {
+		switch parser.CurrToken().GetType() {
+		case token.TokenJoin, token.TokenInner, token.TokenLeft, token.TokenRight, token.TokenFull, token.TokenCross:
+			j := parser.parseJoin()
+			if j != nil {
+				node.Join = append(node.Join, *j)
+			}
+			continue
+		}
+		break
+	}
 
 	if parser.Check(token.TokenWhere) {
 		node.Closure = parser.ParseWhereExpr()
 	}
 
+	if parser.Match(token.TokenGroup) {
+		parser.Match(token.TokenBy)
+		for !parser.Check(token.TokenHaving) && !parser.Check(token.TokenOrder) && !parser.Check(token.TokenLimit) && !parser.IsEnd() && parser.CurrToken().GetType() != token.TokenSemicolon {
+			if parser.Match(token.TokenComma) {
+				continue
+			}
+			v, err := parser.ParseValue()
+			if err != nil {
+				break
+			}
+			node.GroupBy = append(node.GroupBy, v)
+			if !parser.Match(token.TokenComma) {
+				break
+			}
+		}
+	}
+
+	if parser.Match(token.TokenHaving) {
+		cond, err := parser.ParseCondition()
+		if err == nil {
+			node.Having = cond
+		}
+	}
+
 	if parser.Match(token.TokenOrder) {
 		parser.Match(token.TokenBy)
-		id, err := parser.Required(token.TokenId)
+		v, err := parser.ParseValue()
 		if err == nil {
-			order := &ast.OrderBy{Expr: &ast.IdExpr{Name: id.GetContent()}}
+			order := &ast.OrderBy{Expr: v}
 			if parser.Check(token.TokenId) {
-				direction := strings.ToLower(parser.CurrStr())
-				if direction == "asc" || direction == "desc" {
-					order.Descendent = direction == "desc"
+				dir := strings.ToLower(parser.CurrStr())
+				if dir == "asc" || dir == "desc" {
+					order.Descendent = dir == "desc"
 					parser.idx++
 				}
 			}
 			node.OrderBy = order
 		}
 	}
+
+	node.Limit = parser.parseLimit()
 
 	return node
 }
@@ -390,7 +579,7 @@ func (parser *ParserContext) ParseColumnExpr() *ast.ColumnExpr {
 		return nil
 	}
 
-	col := &ast.ColumnExpr{Name: ast.IdExpr{Name: id.GetContent()}}
+	col := &ast.ColumnExpr{Name: ast.IdExpr{Name: id.GetContent()}, Nullable: true}
 
 	switch parser.CurrToken().GetType() {
 	case token.TokenId, token.TokenInt, token.TokenDecimal, token.TokenString:
@@ -399,18 +588,82 @@ func (parser *ParserContext) ParseColumnExpr() *ast.ColumnExpr {
 		col.Type = ast.IdExpr{Name: ttype.GetContent()}
 	}
 
-	return col
+	// Tamaño declarado: VARCHAR(64), CHAR(8), DECIMAL(10,2).
+	if parser.Match(token.TokenLparent) {
+		if n, err := parser.Required(token.TokenInt); err == nil {
+			col.Length, _ = strconv.Atoi(n.GetContent())
+		}
+		for parser.Match(token.TokenComma) {
+			if _, err := parser.Required(token.TokenInt); err != nil {
+				break
+			}
+		}
+		parser.Match(token.TokenRparent)
+	}
+
+	// Restricciones de columna, en cualquier orden y repetibles.
+	for {
+		switch {
+		case parser.Check(token.TokenPrimary):
+			parser.idx++
+			parser.Match(token.TokenKey)
+			col.PrimaryKey = true
+			col.Nullable = false
+		case parser.Check(token.TokenUnique):
+			parser.idx++
+			col.Unique = true
+		case parser.Check(token.TokenNot) && parser.Peek(1) == token.TokenNull:
+			parser.idx += 2
+			col.Nullable = false
+		case parser.Check(token.TokenNull):
+			parser.idx++
+			col.Nullable = true
+		case parser.Check(token.TokenIndex) || parser.Check(token.TokenKey):
+			parser.idx++
+			col.Indexed = true
+		default:
+			return col
+		}
+	}
 }
 
 func (parser *ParserContext) ParseCreate() *ast.CreateTable {
+	pendingClustered := false
 	parser.Match(token.TokenCreate)
+
+	// CREATE CLUSTERED TABLE y CREATE TABLE ... CLUSTERED BY (a) se aceptan:
+	// el primero decide antes del nombre, el segundo después.
+	if parser.Check(token.TokenClustered) {
+		parser.idx++
+		pendingClustered = true
+	}
 	parser.Match(token.TokenTable)
 
 	name, err := parser.Required(token.TokenId)
 	if err != nil {
 		return nil
 	}
-	node := &ast.CreateTable{Name: name.GetContent()}
+	node := &ast.CreateTable{Name: name.GetContent(), Clustered: pendingClustered}
+
+	// CLUSTERED BY (a, b) fuerza almacenamiento agrupado por esas columnas.
+	// CLUSTERED a secas agrupa por la clave primaria.
+	if parser.Check(token.TokenClustered) {
+		parser.idx++
+		node.Clustered = true
+		if parser.Match(token.TokenBy) && parser.Match(token.TokenLparent) {
+			for parser.Check(token.TokenId) {
+				n, err := parser.Required(token.TokenId)
+				if err != nil {
+					break
+				}
+				node.ClusterKeys = append(node.ClusterKeys, ast.NameExpr{Name: n.GetContent()})
+				if !parser.Match(token.TokenComma) {
+					break
+				}
+			}
+			parser.Match(token.TokenRparent)
+		}
+	}
 
 	if parser.Match(token.TokenLparent) {
 		for parser.Check(token.TokenId) {
@@ -426,12 +679,278 @@ func (parser *ParserContext) ParseCreate() *ast.CreateTable {
 		parser.Required(token.TokenRparent)
 	}
 
+	// Restricciones de tabla: PRIMARY KEY (a, b), UNIQUE (a), CONSTRAINT ...,
+	// que se aplican sobre las columnas ya declaradas.
+	for {
+		switch {
+		case parser.Check(token.TokenPrimary):
+			parser.idx++
+			parser.Match(token.TokenKey)
+			for _, name := range parser.parseKeyColumns(node) {
+				markPrimaryKey(node, name)
+			}
+		case parser.Check(token.TokenUnique):
+			parser.idx++
+			for _, name := range parser.parseKeyColumns(node) {
+				markUnique(node, name)
+			}
+		case parser.Check(token.TokenConstraint):
+			parser.idx++
+			if _, err := parser.Required(token.TokenId); err != nil {
+				return node
+			}
+			continue
+		default:
+			return node
+		}
+	}
+}
+
+// parseCreateIndex lee CREATE [UNIQUE] INDEX nombre ON tabla (columna[, ...]).
+func (parser *ParserContext) parseCreateIndex() *ast.CreateIndex {
+	parser.Match(token.TokenCreate)
+	node := &ast.CreateIndex{}
+	if parser.Match(token.TokenUnique) {
+		node.Unique = true
+	}
+	parser.Match(token.TokenIndex)
+	if parser.Check(token.TokenIf) && parser.Peek(1) == token.TokenNot {
+		parser.idx += 3 // IF NOT EXISTS
+		node.IfNotExists = true
+	}
+	name, err := parser.Required(token.TokenId)
+	if err != nil {
+		return node
+	}
+	node.Name = name.GetContent()
+
+	if !parser.Match(token.TokenOn) {
+		return node
+	}
+	tbl, err := parser.Required(token.TokenId)
+	if err != nil {
+		return node
+	}
+	node.Table = tbl.GetContent()
+
+	if parser.Match(token.TokenLparent) {
+		for parser.Check(token.TokenId) {
+			col, err := parser.Required(token.TokenId)
+			if err != nil {
+				break
+			}
+			node.Columns = append(node.Columns, ast.NameExpr{Name: col.GetContent()})
+			if !parser.Match(token.TokenComma) {
+				break
+			}
+		}
+		parser.Match(token.TokenRparent)
+	}
 	return node
+}
+
+// parseKeyColumns lee la lista de columnas de una restricción de tabla.
+func (parser *ParserContext) parseKeyColumns(node *ast.CreateTable) []string {
+	var names []string
+	if !parser.Match(token.TokenLparent) {
+		return names
+	}
+	for parser.Check(token.TokenId) {
+		n, err := parser.Required(token.TokenId)
+		if err != nil {
+			break
+		}
+		names = append(names, n.GetContent())
+		if !parser.Match(token.TokenComma) {
+			break
+		}
+	}
+	parser.Match(token.TokenRparent)
+	return names
+}
+
+func markPrimaryKey(node *ast.CreateTable, name string) {
+	for i := range node.Columns {
+		if strings.EqualFold(node.Columns[i].Name.Name, name) {
+			node.Columns[i].PrimaryKey = true
+			node.Columns[i].Nullable = false
+		}
+	}
+}
+
+func markUnique(node *ast.CreateTable, name string) {
+	for i := range node.Columns {
+		if strings.EqualFold(node.Columns[i].Name.Name, name) {
+			node.Columns[i].Unique = true
+		}
+	}
 }
 
 func (parser *ParserContext) ParseUpdate() *ast.Update {
 	node := &ast.Update{}
-	parser.Match(token.TokenFrom)
-	node.From = *parser.ParseNameIndex()
+	parser.Match(token.TokenUpdate)
+	tbl := parser.ParseTableExpr()
+	node.Table = *tbl
+	if parser.Match(token.TokenSet) {
+		for {
+			n := parser.ParseNameIndex()
+			if n == nil || n.Name == "" {
+				break
+			}
+			parser.Match(token.TokenAssign)
+			v, err := parser.ParseValue()
+			if err != nil {
+				break
+			}
+			node.Assignments = append(node.Assignments, ast.Assignment{Col: *n, Value: v})
+			if !parser.Match(token.TokenComma) {
+				break
+			}
+		}
+	}
+	if parser.Check(token.TokenWhere) {
+		node.Closure = parser.ParseWhereExpr()
+	}
+	return node
+}
+func (parser *ParserContext) parseJoin() *ast.JoinExpr {
+	join := &ast.JoinExpr{}
+	switch parser.CurrToken().GetType() {
+	case token.TokenInner:
+		join.Type = "INNER"
+		parser.idx++
+		parser.Match(token.TokenJoin)
+	case token.TokenLeft:
+		join.Type = "LEFT"
+		parser.idx++
+		parser.Match(token.TokenJoin)
+	case token.TokenRight:
+		join.Type = "RIGHT"
+		parser.idx++
+		parser.Match(token.TokenJoin)
+	case token.TokenFull:
+		join.Type = "FULL"
+		parser.idx++
+		parser.Match(token.TokenJoin)
+	case token.TokenCross:
+		join.Type = "CROSS"
+		parser.idx++
+		parser.Match(token.TokenJoin)
+	case token.TokenJoin:
+		join.Type = "INNER"
+		parser.idx++
+	default:
+		return nil
+	}
+	join.Table = *parser.ParseTableExpr()
+	if parser.Match(token.TokenOn) {
+		if cond, err := parser.ParseCondition(); err == nil {
+			join.On = cond
+		}
+	} else if parser.Match(token.TokenUsing) {
+		parser.Match(token.TokenLparent)
+		for !parser.Check(token.TokenRparent) && !parser.IsEnd() {
+			n := parser.ParseId()
+			join.Using = append(join.Using, ast.NameExpr{Name: n.Name})
+			if !parser.Match(token.TokenComma) {
+				break
+			}
+		}
+		parser.Match(token.TokenRparent)
+	}
+	return join
+}
+
+func (parser *ParserContext) parseLimit() *ast.Limit {
+	if !parser.Match(token.TokenLimit) {
+		return nil
+	}
+	l := &ast.Limit{}
+	v, err := parser.ParseValue()
+	if err == nil {
+		l.Count = v
+	}
+	if parser.Match(token.TokenOffset) {
+		if ov, err := parser.ParseValue(); err == nil {
+			l.Offset = ov
+		}
+	}
+	return l
+}
+func (parser *ParserContext) ParseDrop() *ast.DropTable {
+	parser.Match(token.TokenDrop)
+	parser.Match(token.TokenTable)
+	node := &ast.DropTable{}
+	node.IfExists = parser.Match(token.TokenIf) && parser.Match(token.TokenExists)
+	name, err := parser.Required(token.TokenId)
+	if err == nil {
+		node.Name = name.GetContent()
+	}
+	return node
+}
+
+func (parser *ParserContext) ParseTruncate() *ast.TruncateTable {
+	parser.Match(token.TokenTruncate)
+	parser.Match(token.TokenTable)
+	node := &ast.TruncateTable{}
+	name, err := parser.Required(token.TokenId)
+	if err == nil {
+		node.Name = name.GetContent()
+	}
+	return node
+}
+
+func (parser *ParserContext) ParseAlter() *ast.AlterTable {
+	parser.Match(token.TokenAlter)
+	parser.Match(token.TokenTable)
+	node := &ast.AlterTable{}
+	name, err := parser.Required(token.TokenId)
+	if err == nil {
+		node.Name = name.GetContent()
+	}
+	return node
+}
+
+func (parser *ParserContext) ParseBegin() *ast.BeginTransaction {
+	parser.Match(token.TokenBegin)
+	parser.Match(token.TokenTransaction)
+	return &ast.BeginTransaction{}
+}
+
+func (parser *ParserContext) ParseCommit() *ast.Commit {
+	parser.Match(token.TokenCommit)
+	return &ast.Commit{}
+}
+
+func (parser *ParserContext) ParseRollback() *ast.Rollback {
+	parser.Match(token.TokenRollback)
+	node := &ast.Rollback{}
+	if parser.Check(token.TokenId) || parser.Check(token.TokenSavepoint) {
+		// skip savepoint name if present
+		sp := parser.CurrStr()
+		node.Savepoint = &sp
+		parser.idx++
+	}
+	return node
+}
+
+func (parser *ParserContext) ParseSavepoint() *ast.Savepoint {
+	parser.Match(token.TokenSavepoint)
+	node := &ast.Savepoint{}
+	name, err := parser.Required(token.TokenId)
+	if err == nil {
+		node.Name = name.GetContent()
+	}
+	return node
+}
+
+func (parser *ParserContext) ParseRelease() *ast.Release {
+	parser.Match(token.TokenRelease)
+	parser.Match(token.TokenSavepoint)
+	node := &ast.Release{}
+	name, err := parser.Required(token.TokenId)
+	if err == nil {
+		node.Name = name.GetContent()
+	}
 	return node
 }

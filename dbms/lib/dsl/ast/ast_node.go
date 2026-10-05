@@ -44,11 +44,19 @@ func (b *BaseNode) GetPosition() utils.Position {
 type Select struct {
 	BaseNode
 
-	Selected []NameExpr
-	From     TableExpr
-	Closure  ASTNode
-	OrderBy  *OrderBy
+	Distinct bool
+	// Selected son las expresiones de la lista de proyección: una columna simple,
+	// un literal, una llamada a función o una expresión aritmética, cada una con
+	// su alias opcional.
+	Selected []ASTNode
 	All      bool
+	From     TableExpr
+	Join     []JoinExpr
+	Closure  ASTNode // WHERE
+	GroupBy  []ASTNode
+	Having   ASTNode
+	OrderBy  *OrderBy
+	Limit    *Limit
 }
 
 type CreateTable struct {
@@ -56,6 +64,11 @@ type CreateTable struct {
 
 	Name    string
 	Columns []ColumnExpr
+
+	// Clustered indica que el almacenamiento físico se ordena por ClusterKeys
+	// (archivo secuencial + B+ agrupado). Si es false la tabla usa heap file.
+	Clustered   bool
+	ClusterKeys []NameExpr
 }
 
 type Delete struct {
@@ -76,15 +89,16 @@ type Insert struct {
 type Update struct {
 	BaseNode
 
-	Setted  []string
-	From    NameExpr
-	Closure ASTNode
+	Table       TableExpr
+	Assignments []Assignment
+	Closure     ASTNode
 }
 
 type NameExpr struct {
 	BaseNode
 
 	Name  string
+	Table *string
 	Alias *string // Nullable
 }
 
@@ -92,6 +106,15 @@ type TableExpr struct {
 	NameExpr
 
 	// FIXME: Join things here
+}
+
+// AliasedExpr es un elemento de la lista de proyección con alias opcional
+// (SELECT age AS años, age + 1).
+type AliasedExpr struct {
+	BaseNode
+
+	Expr  ASTNode
+	Alias *string
 }
 
 type OrderBy struct {
@@ -118,7 +141,8 @@ type BinaryExpr struct {
 type IdExpr struct {
 	BaseNode
 
-	Name string
+	Name  string
+	Table *string
 }
 
 type ColumnExpr struct {
@@ -126,6 +150,14 @@ type ColumnExpr struct {
 
 	Name IdExpr
 	Type IdExpr
+
+	// Length es el tamaño declarado entre paréntesis: VARCHAR(64), CHAR(8).
+	Length int
+	// Restricciones de columna recognized por el parser.
+	PrimaryKey bool
+	Unique     bool
+	Indexed    bool
+	Nullable   bool
 }
 
 type BoolExpr struct {
@@ -154,4 +186,102 @@ type StringExpr struct {
 
 type NilExpr struct {
 	BaseNode
+}
+type Assignment struct {
+	BaseNode
+	Col   NameExpr
+	Value ASTNode
+}
+
+type JoinExpr struct {
+	BaseNode
+	Type  string // INNER, LEFT, RIGHT, FULL, CROSS
+	Table TableExpr
+	On    ASTNode
+	Using []NameExpr
+}
+
+type Limit struct {
+	BaseNode
+	Count  ASTNode
+	Offset ASTNode
+}
+
+type GroupBy struct {
+	BaseNode
+	Exprs []ASTNode
+}
+
+type Having struct {
+	BaseNode
+	Expr ASTNode
+}
+
+// CreateIndex crea un índice sobre una tabla: CREATE [UNIQUE] INDEX nombre ON
+// tabla (columna).
+type CreateIndex struct {
+	BaseNode
+
+	Name        string
+	Table       string
+	Columns     []NameExpr
+	Unique      bool
+	IfNotExists bool
+}
+
+type DropTable struct {
+	BaseNode
+	Name     string
+	IfExists bool
+}
+
+type DropIndex struct {
+	BaseNode
+	Name     string
+	IfExists bool
+}
+
+type TruncateTable struct {
+	BaseNode
+	Name string
+}
+
+type AlterTable struct {
+	BaseNode
+	Name    string
+	Actions []ASTNode
+}
+
+type BeginTransaction struct {
+	BaseNode
+}
+
+type Commit struct {
+	BaseNode
+}
+
+type Rollback struct {
+	BaseNode
+	Savepoint *string
+}
+
+type Savepoint struct {
+	BaseNode
+	Name string
+}
+
+type Release struct {
+	BaseNode
+	Name string
+}
+
+// StarExpr es el asterisco de COUNT(*).
+type StarExpr struct {
+	BaseNode
+}
+
+type FuncCallExpr struct {
+	BaseNode
+	Name string
+	Args []ASTNode
 }
