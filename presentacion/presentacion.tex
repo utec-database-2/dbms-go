@@ -1,0 +1,764 @@
+% Presentación del trabajo de Ashly Veliz en dbms-go (Parte 1 y Parte 2).
+% Compilar con pdflatex (por ejemplo en Overleaf):  pdflatex presentacion.tex
+\documentclass[aspectratio=169,10pt]{beamer}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish,es-noshorthands]{babel}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,shapes.geometric,calc,decorations.pathreplacing}
+\usepackage{listings}
+\usepackage{xcolor}
+
+% ---------------------------------------------------------------------------
+% Estilo
+% ---------------------------------------------------------------------------
+\definecolor{primario}{HTML}{1F3A5F}
+\definecolor{acento}{HTML}{D9822B}
+\definecolor{suave}{HTML}{EEF2F7}
+\definecolor{verde}{HTML}{2E7D4F}
+\definecolor{rojo}{HTML}{B03A2E}
+\definecolor{gris}{HTML}{6B7280}
+
+\usetheme{default}
+\setbeamercolor{frametitle}{fg=white,bg=primario}
+\setbeamercolor{title}{fg=primario}
+\setbeamercolor{subtitle}{fg=acento}
+\setbeamercolor{structure}{fg=primario}
+\setbeamercolor{alerted text}{fg=acento}
+\setbeamercolor{block title}{fg=white,bg=primario}
+\setbeamercolor{block body}{bg=suave}
+\setbeamercolor{block title example}{fg=white,bg=verde}
+\setbeamercolor{block body example}{bg=suave}
+\setbeamercolor{section in toc}{fg=primario}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{itemize items}[circle]
+\setbeamertemplate{blocks}[rounded][shadow=false]
+\setbeamertemplate{frametitle}{%
+  \nointerlineskip
+  \begin{beamercolorbox}[wd=\paperwidth,ht=2.4ex,dp=1.2ex,leftskip=1em]{frametitle}%
+    \usebeamerfont{frametitle}\insertframetitle
+  \end{beamercolorbox}%
+}
+\setbeamertemplate{footline}{%
+  \hfill{\color{gris}\scriptsize Ashly Veliz \;|\; dbms-go \;|\; \insertframenumber/\inserttotalframenumber}\hspace{1em}\vspace{0.6em}%
+}
+
+% Sección: diapositiva separadora automática
+\AtBeginSection[]{%
+  \begin{frame}[plain,noframenumbering]
+    \centering\vfill
+    {\color{acento}\large\insertsectionnumber}\\[0.4em]
+    {\color{primario}\Huge\bfseries\insertsectionhead}\\[0.8em]
+    {\color{gris}\insertsubsectionhead}
+    \vfill
+  \end{frame}
+}
+
+% Go no viene en listings: definición mínima
+\lstdefinelanguage{Go}{
+  morekeywords={func,return,if,else,for,range,type,struct,var,const,package,import,
+    switch,case,default,break,continue,nil,true,false,map,go,defer,interface},
+  sensitive=true,
+  morecomment=[l]{//},
+  morestring=[b]",
+}
+\lstset{
+  language=Go,
+  basicstyle=\ttfamily\scriptsize,
+  keywordstyle=\color{primario}\bfseries,
+  commentstyle=\color{gris}\itshape,
+  stringstyle=\color{verde},
+  backgroundcolor=\color{suave},
+  frame=single,
+  rulecolor=\color{suave},
+  framesep=4pt,
+  showstringspaces=false,
+  columns=fullflexible,
+  keepspaces=true,
+  literate={á}{{\'a}}1 {é}{{\'e}}1 {í}{{\'i}}1 {ó}{{\'o}}1 {ú}{{\'u}}1 {ñ}{{\~n}}1,
+}
+
+% ---------------------------------------------------------------------------
+\title{Mi trabajo en \texttt{dbms-go}}
+\subtitle{Parte 1: Heap File y Archivo Secuencial \;\textbullet\; Parte 2: R-Tree, k-NN y polígonos}
+\author{Ashly Veliz}
+\institute{Base de Datos 2 \;--\; UTEC}
+\date{2026-2}
+
+\begin{document}
+
+% ---------------------------------------------------------------------------
+\begin{frame}[plain,noframenumbering]
+  \titlepage
+\end{frame}
+
+\begin{frame}{Agenda}
+  \begin{columns}[T]
+    \begin{column}{0.48\textwidth}
+      \begin{block}{Parte 1 \;--\; Almacenamiento}
+        \begin{itemize}
+          \item Heap File con páginas \emph{slotted}
+          \item Archivo Secuencial paginado con overflow
+          \item Reorganización y RID lógico estable
+          \item Comparación y pruebas
+        \end{itemize}
+      \end{block}
+    \end{column}
+    \begin{column}{0.48\textwidth}
+      \begin{block}{Parte 2 \;--\; Índice espacial}
+        \begin{itemize}
+          \item R-Tree con MBR por nodo y split estilo R*
+          \item k vecinos más cercanos (best-first)
+          \item Consulta por polígono
+          \item API REST y mapa en el frontend
+        \end{itemize}
+      \end{block}
+    \end{column}
+  \end{columns}
+  \vspace{0.6em}
+  \begin{block}{Integración en el motor}
+    \small SQL espacial con el R-Tree \;\textbullet\; JOIN y GROUP BY con \emph{external hashing} \;\textbullet\; transacciones concurrentes con 2PL y detección de \emph{deadlocks}
+  \end{block}
+  \centering
+  {\small\color{gris}Todo implementado en Go dentro del motor \texttt{dbms-go}, con frontend en React + Leaflet.}
+\end{frame}
+
+\begin{frame}{Contexto: dónde encaja mi trabajo}
+  \centering
+  \begin{tikzpicture}[
+      capa/.style={draw=primario,fill=suave,rounded corners=3pt,minimum width=9.5cm,minimum height=0.75cm,font=\small},
+      mia/.style={capa,fill=acento!25,draw=acento,very thick},
+      flecha/.style={-{Stealth},thick,primario}]
+    \node[capa] (front) {Frontend (React + Leaflet): panel SQL y \textbf{panel de mapa}};
+    \node[capa,below=0.25cm of front] (api) {Servidor HTTP: \texttt{/api/query}, \textbf{\texttt{/api/spatial/*}}};
+    \node[capa,below=0.25cm of api] (sql) {Motor SQL (lexer, parser, ejecutor)};
+    \node[mia,below=0.25cm of sql] (idx) {Índices: B+, Hash extensible, \textbf{R-Tree}};
+    \node[mia,below=0.25cm of idx] (sto) {Almacenamiento: \textbf{Heap File} y \textbf{Archivo Secuencial}};
+    \node[right=0.3cm of idx,font=\scriptsize,text=acento,align=left] {Parte 2};
+    \node[right=0.3cm of sto,font=\scriptsize,text=acento,align=left] {Parte 1};
+  \end{tikzpicture}
+
+  \vspace{0.6em}
+  {\small Lo resaltado en naranja es mi aporte principal; además conecté el R-Tree con la API y el mapa.}
+\end{frame}
+
+% ===========================================================================
+\section{Parte 1}
+\subsection{Heap File y Archivo Secuencial}
+% ===========================================================================
+
+\begin{frame}{Heap File: estructura de página \emph{slotted}}
+  \begin{columns}[c]
+    \begin{column}{0.55\textwidth}
+      \centering
+      \begin{tikzpicture}[x=1cm,y=1cm]
+        \draw[thick,primario] (0,0) rectangle (7,1);
+        \fill[primario!25] (0,0) rectangle (0.8,1);
+        \node[font=\tiny,align=center] at (0.4,0.5) {header\\4 B};
+        \fill[acento!35] (0.8,0) rectangle (2.4,1);
+        \node[font=\tiny,align=center] at (1.6,0.5) {directorio\\de slots};
+        \node[font=\tiny,align=center,text=gris] at (3.7,0.5) {espacio libre};
+        \fill[verde!30] (5,0) rectangle (7,1);
+        \node[font=\tiny,align=center] at (6,0.5) {registros\\(crecen hacia $\leftarrow$)};
+        \draw[-{Stealth},thick,acento] (2.4,1.25) -- (3.0,1.25) node[right,font=\tiny,text=acento] {slots};
+        \draw[-{Stealth},thick,verde] (5,-0.25) -- (4.4,-0.25) node[left,font=\tiny,text=verde] {datos};
+        \draw[decorate,decoration={brace,amplitude=4pt,mirror},gris] (0,-0.55) -- (7,-0.55)
+          node[midway,below=4pt,font=\tiny,text=gris] {página de 4096 bytes};
+      \end{tikzpicture}
+    \end{column}
+    \begin{column}{0.43\textwidth}
+      \begin{itemize}\small
+        \item \textbf{Header}: \texttt{SlotCount} y \texttt{FreeSpacePtr} (uint16).
+        \item \textbf{Slot}: \texttt{(offset, length)}, 4 bytes.
+        \item Registros de \alert{largo variable} en orden de llegada.
+        \item \textbf{RID físico} = \texttt{(PageID, SlotID)}.
+        \item En memoria: mapa \texttt{pageID $\to$ bytes libres} para elegir página sin leer el archivo entero.
+      \end{itemize}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Heap File: operaciones}
+  \begin{columns}[T]
+    \begin{column}{0.5\textwidth}
+      \begin{block}{Insert \;--\; first-fit}
+        \small
+        \begin{enumerate}
+          \item Recorre el mapa de espacio libre.
+          \item Si la página parece tener espacio, intenta insertar.
+          \item Si falla por fragmentación: \texttt{Compact()} y reintenta.
+          \item Si ninguna sirve: crea una página nueva al final.
+        \end{enumerate}
+      \end{block}
+      \begin{block}{Delete}
+        \small Marca el slot como \emph{tombstone}; el slot se reutiliza en el próximo insert.
+      \end{block}
+    \end{column}
+    \begin{column}{0.48\textwidth}
+      \begin{block}{Update}
+        \small
+        \begin{itemize}
+          \item Si cabe en el slot original: \emph{in place}.
+          \item Si no: se reubica y devuelve un RID nuevo.
+          \item Reubicación \alert{write-ahead}: primero se persiste la copia nueva y recién después se borra la vieja.
+          \item El tamaño se valida \emph{antes} de tocar el registro original.
+        \end{itemize}
+      \end{block}
+      \begin{block}{Scan}
+        \small Recorre los registros vivos en orden físico \texttt{(página, slot)}.
+      \end{block}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Archivo Secuencial paginado: estructura}
+  \centering
+  \begin{tikzpicture}[
+      pag/.style={draw=primario,fill=suave,minimum width=2.3cm,minimum height=0.9cm,font=\scriptsize,align=center},
+      ovf/.style={draw=acento,fill=acento!15,minimum width=1.5cm,minimum height=0.6cm,font=\tiny,align=center},
+      flecha/.style={-{Stealth},thick}]
+    \node[draw=gris,fill=gris!10,minimum width=1.6cm,minimum height=0.9cm,font=\scriptsize,align=center] (meta) {metadata\\``SEQ1''};
+    \node[pag,right=0.35cm of meta] (p0) {Página 0\\claves 1..40};
+    \node[pag,right=0.35cm of p0] (p1) {Página 1\\claves 41..80};
+    \node[pag,right=0.35cm of p1] (p2) {Página 2\\claves 81..120};
+    \node[font=\small,right=0.2cm of p2] {$\cdots$};
+    \node[ovf,below=0.6cm of p1] (o1) {37 \;(overflow)};
+    \node[ovf,right=0.4cm of o1] (o2) {58};
+    \draw[flecha,acento] (p1) -- (o1);
+    \draw[flecha,acento] (o1) -- (o2);
+    \node[font=\tiny,text=gris,left=0.3cm of o1,align=right] {cadena ordenada\\por página};
+    \node[font=\tiny,text=primario,above=0.1cm of p1] {archivo \texttt{.seq}};
+    \node[font=\tiny,text=acento,below=0.05cm of o2,xshift=0.6cm] {archivo \texttt{.ovf}};
+  \end{tikzpicture}
+
+  \vspace{0.8em}
+  \begin{columns}[T]
+    \begin{column}{0.48\textwidth}\small
+      \begin{itemize}
+        \item Registros ordenados por clave \texttt{int64}.
+        \item Páginas principales de capacidad fija.
+        \item Cada página tiene su \alert{cadena de overflow}.
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.5\textwidth}\small
+      \begin{itemize}
+        \item Slot principal: tombstone + clave + RID + largo (19 B).
+        \item Slot overflow: lo mismo + puntero \texttt{next} (27 B).
+        \item Al reabrir se reconstruyen los índices en memoria.
+      \end{itemize}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Archivo Secuencial: búsqueda, inserción y borrado}
+  \begin{columns}[T]
+    \begin{column}{0.5\textwidth}
+      \begin{block}{Búsqueda}
+        \small
+        \begin{enumerate}
+          \item \textbf{Búsqueda binaria} sobre \texttt{pageMinKey} para elegir la página.
+          \item Se revisan sus slots y su cadena de overflow.
+        \end{enumerate}
+        Costo: $O(\log P + |\text{overflow}|)$ lecturas.
+      \end{block}
+      \begin{block}{Range scan}
+        \small Fusiona slots principales y overflow en orden \texttt{(clave, RID)}.
+      \end{block}
+    \end{column}
+    \begin{column}{0.48\textwidth}
+      \begin{block}{Inserción}
+        \small
+        \begin{itemize}
+          \item Si hay espacio: se inserta en orden dentro de la página.
+          \item Si está llena: va a la cadena de overflow, manteniendo el orden.
+          \item \texttt{Insert} rechaza duplicados; \texttt{InsertRecord} los permite (para índices no únicos).
+        \end{itemize}
+      \end{block}
+      \begin{block}{Borrado \emph{lazy}}
+        \small Solo marca el tombstone; el espacio se recupera en la reorganización.
+      \end{block}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Reorganización y RID lógico estable}
+  \begin{columns}[T]
+    \begin{column}{0.5\textwidth}
+      \begin{block}{¿Cuándo se reorganiza?}
+        \small
+        \begin{itemize}
+          \item Tras un delete, si los eliminados superan el \alert{30\%}.
+          \item Tras un insert, si más del \alert{25\%} de los vivos está en overflow.
+        \end{itemize}
+        Se juntan los registros vivos en orden y se reescriben en páginas nuevas, vaciando el overflow.
+      \end{block}
+    \end{column}
+    \begin{column}{0.48\textwidth}
+      \begin{block}{RID lógico, no físico}
+        \small
+        \begin{itemize}
+          \item Se asigna una vez al insertar y \alert{nunca cambia}.
+          \item No codifica página ni slot: el registro se puede mover libremente.
+          \item Va embebido en cada slot, así sobrevive a la reorganización.
+          \item Permite que un \textbf{B+ agrupado} guarde RIDs sin que se invaliden.
+        \end{itemize}
+      \end{block}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Heap File vs. Archivo Secuencial}
+  \centering
+  \renewcommand{\arraystretch}{1.25}
+  \begin{tabular}{@{}lll@{}}
+    \toprule
+    & \textbf{Heap File} & \textbf{Archivo Secuencial} \\
+    \midrule
+    Orden de los registros & Llegada & Por clave \\
+    Tamaño de registro & Variable & Fijo (\texttt{payloadSize}) \\
+    Insert & First-fit, $O(1)$ amortizado & Ordenado + overflow \\
+    Búsqueda por clave & Scan completo $O(N)$ & Binaria $O(\log P)$ + overflow \\
+    Range scan & Scan + filtro & Lectura contigua \\
+    Delete & Tombstone + reuso del slot & Lazy + reorganización \\
+    RID & Físico \texttt{(página, slot)} & Lógico y estable \\
+    Uso en el motor & Tabla con B+ no agrupado & Tabla con B+ agrupado \\
+    \bottomrule
+  \end{tabular}
+\end{frame}
+
+\begin{frame}{Parte 1: pruebas y correcciones}
+  \begin{columns}[T]
+    \begin{column}{0.48\textwidth}
+      \begin{exampleblock}{Pruebas automatizadas}
+        \small
+        \begin{itemize}
+          \item \textbf{14} tests del Heap File.
+          \item \textbf{18} tests del Archivo Secuencial.
+          \item Insert, delete, update, scan, reapertura desde disco, overflow y reorganización.
+          \item Todos pasan (\texttt{go test ./dbms/lib/integration}).
+        \end{itemize}
+      \end{exampleblock}
+    \end{column}
+    \begin{column}{0.5\textwidth}
+      \begin{block}{Correcciones después de integrar con \texttt{main}}
+        \small
+        \begin{itemize}
+          \item Corregí 3 bugs del Heap File y del Archivo Secuencial; entre ellos, un borrado podía \emph{resucitar} un nodo de overflow (ahora se preserva el tombstone).
+          \item Corregí también un fallo en el manejo del overflow.
+        \end{itemize}
+      \end{block}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ===========================================================================
+\section{Parte 2}
+\subsection{R-Tree, k-NN y consultas por polígono}
+% ===========================================================================
+
+\begin{frame}{R-Tree: idea general}
+  \begin{columns}[c]
+    \begin{column}{0.48\textwidth}
+      \centering
+      \begin{tikzpicture}[scale=0.85]
+        \draw[thick,primario,rounded corners=2pt] (0,0) rectangle (3.0,2.4);
+        \node[font=\tiny,text=primario] at (0.35,2.2) {R1};
+        \draw[thick,acento,rounded corners=2pt] (3.4,0.6) rectangle (6.2,3.2);
+        \node[font=\tiny,text=acento] at (3.75,3.0) {R2};
+        \foreach \p in {(0.4,0.4),(1.1,1.8),(2.5,0.9),(1.8,0.3),(2.7,2.0)}
+          \fill[primario] \p circle (2pt);
+        \foreach \p in {(3.7,0.9),(4.6,2.8),(5.8,1.2),(5.1,2.0)}
+          \fill[acento] \p circle (2pt);
+        \draw[dashed,gris] (-0.2,-0.2) rectangle (6.4,3.4);
+        \node[font=\tiny,text=gris] at (5.9,-0.4) {MBR raíz};
+      \end{tikzpicture}
+    \end{column}
+    \begin{column}{0.5\textwidth}
+      \begin{itemize}\small
+        \item Cada nodo guarda su \textbf{MBR} (rectángulo mínimo envolvente) \alert{cacheado}: consultarlo es $O(1)$.
+        \item Hojas: puntos \texttt{(lat, lon)} con su RID en la tabla.
+        \item Inserción: se baja por el hijo cuyo MBR \emph{crece menos}; si empatan, el de menor área.
+        \item Si un nodo se llena, se divide (\emph{split}).
+        \item La base con consulta por rango la hizo Herbert; yo agregué el MBR por nodo, el split R*, k-NN y polígonos.
+      \end{itemize}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Split estilo R*-tree}
+  \begin{columns}[T]
+    \begin{column}{0.52\textwidth}
+      \begin{block}{Algoritmo (\texttt{chooseSplit})}
+        \small
+        \begin{enumerate}
+          \item Para cada eje (lat, lon) se ordenan los elementos y se prueban todos los cortes válidos.
+          \item Se elige el eje con \alert{menor suma de márgenes} (rectángulos más ``cuadrados'').
+          \item En ese eje se elige el corte con:
+            \begin{enumerate}\scriptsize
+              \item menor \textbf{solapamiento} entre los grupos,
+              \item luego menor \textbf{área total},
+              \item luego el más cercano al centro.
+            \end{enumerate}
+          \item Cada grupo tiene al menos $\sim$40\% de las entradas.
+        \end{enumerate}
+      \end{block}
+    \end{column}
+    \begin{column}{0.46\textwidth}
+      \begin{block}{¿Por qué?}
+        \small
+        Antes se cortaba siempre por longitud a la mitad. Eso generaba rectángulos \emph{largos y solapados} en latitud, y el árbol casi no podía descartar ramas.
+      \end{block}
+      \begin{block}{Detalle}
+        \small
+        Con puntos alineados el área es 0, así que el \textbf{margen} (semiperímetro) sirve de desempate.
+      \end{block}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Métricas de distancia}
+  \begin{columns}[T]
+    \begin{column}{0.45\textwidth}
+      \begin{block}{Euclidiana}
+        \small En unidades de coordenadas (grados):
+        \[ d = \sqrt{\Delta\text{lat}^2 + \Delta\text{lon}^2} \]
+      \end{block}
+    \end{column}
+    \begin{column}{0.53\textwidth}
+      \begin{block}{Haversine}
+        \small Distancia sobre la esfera terrestre, en km ($R = 6371$):
+        \[ h = \sin^2\!\tfrac{\Delta\varphi}{2} + \cos\varphi_1\cos\varphi_2\sin^2\!\tfrac{\Delta\lambda}{2} \]
+        \[ d = 2R\,\operatorname{atan2}\!\left(\sqrt{h},\sqrt{1-h}\right) \]
+      \end{block}
+    \end{column}
+  \end{columns}
+  \vspace{0.6em}
+  \small Ambas métricas se usan en las tres consultas: rango, k-NN y polígono (para ordenar por distancia).
+\end{frame}
+
+\begin{frame}{k-NN: búsqueda best-first (Hjaltason \& Samet)}
+  \begin{columns}[T]
+    \begin{column}{0.55\textwidth}
+      \begin{block}{Algoritmo}
+        \small
+        \begin{enumerate}
+          \item Una \textbf{cola de prioridad} mezcla nodos y entradas.
+          \item Prioridad de un nodo: $\text{MINDIST}(q, \text{MBR})$, la distancia mínima posible a cualquier punto de su rectángulo.
+          \item Prioridad de una entrada: su distancia exacta a $q$.
+          \item Se saca siempre lo más cercano:
+            \begin{itemize}\scriptsize
+              \item si es un nodo, se encolan sus hijos;
+              \item si es una entrada, \alert{ya es el siguiente vecino}.
+            \end{itemize}
+          \item Se termina al tener $k$ resultados.
+        \end{enumerate}
+      \end{block}
+    \end{column}
+    \begin{column}{0.43\textwidth}
+      \begin{block}{¿Por qué es correcto?}
+        \small Todo lo que queda en la cola tiene una \textbf{cota inferior} $\ge$ a la entrada que sale. No puede existir un punto más cercano sin visitar.
+      \end{block}
+      \begin{exampleblock}{Ventaja}
+        \small Solo se leen las ramas que pueden contener alguno de los $k$ vecinos. No hace falta fijar un radio.
+      \end{exampleblock}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{MINDIST con Haversine}
+  \begin{columns}[c]
+    \begin{column}{0.5\textwidth}
+      \small
+      Para que k-NN sea correcto, MINDIST debe ser una \alert{cota inferior verdadera} en la misma métrica.
+      \begin{itemize}
+        \item \textbf{Euclidiana}: distancia a la caja, eje por eje.
+        \item \textbf{Haversine}: si el punto está dentro del rectángulo, 0. Si no, la distancia geodésica mínima a los \textbf{bordes del rectángulo}.
+        \item Para los bordes que son meridianos se calcula el \emph{pie de la perpendicular} $\varphi^* = \operatorname{atan}(B/A)$; si cae fuera del segmento, se usa el extremo más cercano.
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.46\textwidth}
+      \centering
+      \begin{tikzpicture}[scale=0.9]
+        \draw[thick,primario,fill=suave] (0,0) rectangle (3,2);
+        \node[font=\tiny,text=primario] at (1.5,1) {MBR del nodo};
+        \fill[acento] (4.6,1.2) circle (2.5pt) node[right,font=\tiny,text=acento] {$q$};
+        \draw[dashed,thick,acento] (4.6,1.2) -- (3,1.2);
+        \node[font=\tiny,text=acento] at (3.8,1.45) {MINDIST};
+        \fill[gris] (3,1.2) circle (1.5pt);
+        \node[font=\tiny,text=gris,align=center] at (1.5,-0.45) {Limitación: no contempla\\rectángulos que crucen $\pm180^\circ$};
+      \end{tikzpicture}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Consulta por polígono}
+  \begin{columns}[T]
+    \begin{column}{0.5\textwidth}
+      \begin{block}{Punto en polígono}
+        \small
+        \begin{itemize}
+          \item Regla \textbf{par-impar}: funciona con polígonos cóncavos y en cualquier orientación.
+          \item Los puntos sobre el borde cuentan como dentro.
+          \item Se valida: $\ge 3$ vértices, sin NaN/Inf; se quita el vértice de cierre repetido.
+        \end{itemize}
+      \end{block}
+    \end{column}
+    \begin{column}{0.48\textwidth}
+      \begin{block}{Poda con el R-Tree (\texttt{relate})}
+        \small Cada MBR se clasifica respecto del polígono:
+        \begin{itemize}
+          \item \textcolor{rojo}{\textbf{Fuera}}: se descarta toda la rama.
+          \item \textcolor{verde}{\textbf{Dentro}}: se devuelve todo lo de abajo \emph{sin probar punto por punto}.
+          \item \textcolor{acento}{\textbf{Parcial}}: se baja y se prueba cada punto.
+        \end{itemize}
+      \end{block}
+    \end{column}
+  \end{columns}
+  \vspace{0.5em}
+  \small Un margen $\varepsilon \approx 0.1$ mm evita errores numéricos: lo muy cercano a una arista se decide punto por punto.
+\end{frame}
+
+\begin{frame}[fragile]{Integración: del R-Tree a la API}
+  \begin{columns}[T]
+    \begin{column}{0.48\textwidth}
+      \small
+      \begin{itemize}
+        \item \texttt{spatial.Store} construye el R-Tree desde la tabla SQL con columnas \texttt{id, nombre, tipo, latitud, longitud}.
+        \item Se reconstruye después de cada consulta SQL y de cada importación de CSV.
+        \item Cada entrada guarda el RID de la fila.
+      \end{itemize}
+      \vspace{0.3em}
+      \begin{tabular}{@{}ll@{}}
+        \toprule
+        \textbf{Endpoint} & \textbf{Consulta} \\
+        \midrule
+        \texttt{POST /api/spatial/range} & Radio \\
+        \texttt{POST /api/spatial/knn} & k vecinos \\
+        \texttt{POST /api/spatial/polygon} & Polígono \\
+        \bottomrule
+      \end{tabular}
+    \end{column}
+    \begin{column}{0.5\textwidth}
+\begin{lstlisting}
+// POST /api/spatial/knn
+{
+  "latitude":  -12.135,
+  "longitude": -77.022,
+  "k": 10,
+  "metric": "haversine"
+}
+
+// POST /api/spatial/polygon
+{
+  "vertices": [
+    {"lat": -12.10, "lon": -77.05},
+    {"lat": -12.10, "lon": -77.00},
+    {"lat": -12.15, "lon": -77.02}
+  ]
+}
+\end{lstlisting}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Frontend: panel de mapa con Leaflet}
+  \begin{columns}[T]
+    \begin{column}{0.33\textwidth}
+      \begin{block}{Rango}
+        \small Clic en el mapa = centro. Se elige el radio (km o grados) y se dibuja el círculo.
+      \end{block}
+    \end{column}
+    \begin{column}{0.33\textwidth}
+      \begin{block}{k-NN}
+        \small Clic = punto de consulta. Se elige $k$ y la métrica; los vecinos salen ordenados por distancia.
+      \end{block}
+    \end{column}
+    \begin{column}{0.33\textwidth}
+      \begin{block}{Polígono}
+        \small Se dibujan los vértices con clics; se muestran los puntos que quedan dentro.
+      \end{block}
+    \end{column}
+  \end{columns}
+  \vspace{0.8em}
+  \begin{itemize}\small
+    \item Mis aportes: los modos \textbf{k-NN} y \textbf{polígono}, validación de entradas ($k \ge 1$, radio $\ge 0$) y corrección de errores del linter de React.
+    \item Cada punto encontrado muestra su distancia (km con Haversine, grados con Euclidiana).
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Parte 2: pruebas}
+  \begin{columns}[T]
+    \begin{column}{0.48\textwidth}
+      \begin{exampleblock}{R-Tree (\texttt{index/rtree})}
+        \small
+        \begin{itemize}
+          \item \textbf{7} tests de estructura y split.
+          \item \textbf{6} tests de k-NN.
+          \item \textbf{9} tests de polígonos.
+        \end{itemize}
+      \end{exampleblock}
+      \begin{exampleblock}{Capa espacial (\texttt{spatial})}
+        \small
+        \begin{itemize}
+          \item \textbf{5} tests de k-NN y \textbf{4} de polígono: orden por distancia, $k$ mayor que los datos, validación de entradas y tabla inexistente.
+        \end{itemize}
+      \end{exampleblock}
+    \end{column}
+    \begin{column}{0.5\textwidth}
+      \begin{block}{Qué se verifica}
+        \small
+        \begin{itemize}
+          \item k-NN contra \textbf{fuerza bruta}: mismos vecinos, mismo orden.
+          \item Rango y polígono contra un \textbf{recorrido lineal}.
+          \item El MBR de cada nodo sigue siendo válido después de cada inserción.
+          \item MINDIST es siempre una cota inferior.
+          \item Polígonos cóncavos, en ``moño'' (autointersectados) e inválidos.
+          \item Todos pasan (\texttt{go test ./dbms/lib/index/rtree ./dbms/lib/spatial}).
+        \end{itemize}
+      \end{block}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ===========================================================================
+\section{Integración}
+\subsection{SQL espacial, JOIN y concurrencia}
+% ===========================================================================
+
+\begin{frame}[fragile]{SQL espacial: el R-Tree desde el planificador}
+  \begin{columns}[T]
+    \begin{column}{0.55\textwidth}
+\begin{lstlisting}[language=SQL]
+CREATE TABLE tiendas (id INT PRIMARY KEY,
+  nombre VARCHAR(40), ubicacion POINT);
+
+-- radio: a menos de 5 km
+SELECT * FROM tiendas WHERE
+  distancia(ubicacion, POINT(-12.04,-77.04)) < 5000;
+
+-- k-NN: las 10 más cercanas
+SELECT * FROM tiendas ORDER BY
+  distancia(ubicacion, POINT(-12.04,-77.04)) LIMIT 10;
+
+-- polígono
+SELECT * FROM tiendas WHERE dentro(ubicacion,
+  POLYGON(POINT(..), POINT(..), POINT(..))) = true;
+\end{lstlisting}
+    \end{column}
+    \begin{column}{0.42\textwidth}
+      \small
+      \begin{itemize}
+        \item Toda columna \texttt{POINT} crea su índice \texttt{rtree\_<col>}, que se mantiene en INSERT, UPDATE y DELETE.
+        \item El planificador traduce cada patrón: radio $\to$ \texttt{SearchRadius}, \texttt{ORDER BY \dots\ LIMIT} $\to$ k-NN \emph{best-first}, \texttt{dentro} $\to$ polígono.
+        \item \texttt{distancia} usa Haversine (metros); con \texttt{'euclidean'}, grados.
+        \item El plan de ejecución muestra qué búsqueda del R-Tree se usó.
+      \end{itemize}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}[fragile]{JOIN y GROUP BY con \emph{external hashing}}
+  \begin{columns}[T]
+    \begin{column}{0.48\textwidth}
+      \begin{block}{Estrategias de JOIN}
+        \small
+        \begin{itemize}
+          \item \textbf{Index nested loop}: la tabla de la derecha tiene índice (B+ o hash) sobre la columna de unión.
+          \item \textbf{Grace hash join}: sin índice, ambos lados se particionan por hash; las particiones se vuelcan a disco si no caben en el \emph{buffer}.
+          \item \textbf{Nested loop}: \texttt{CROSS} o condiciones que no son igualdades.
+        \end{itemize}
+      \end{block}
+    \end{column}
+    \begin{column}{0.5\textwidth}
+\begin{lstlisting}[language=SQL]
+SELECT a.nombre, c.titulo, m.nota
+FROM alumno a
+JOIN matricula m ON a.id = m.alumno_id
+JOIN curso c ON m.curso_id = c.cid
+WHERE a.ciclo = 5;
+\end{lstlisting}
+      \small
+      \begin{itemize}
+        \item \texttt{GROUP BY} particiona por la clave del grupo y agrega cada partición en memoria.
+        \item El \texttt{WHERE} de la primera tabla se empuja a su acceso para usar sus índices.
+      \end{itemize}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Transacciones concurrentes: 2PL estricto y \emph{deadlocks}}
+  \begin{columns}[T]
+    \begin{column}{0.48\textwidth}
+      \small
+      \begin{itemize}
+        \item Una \textbf{sesión} por usuario o hilo, cada una con su transacción y un WAL compartido.
+        \item Antes de cada sentencia se bloquean las tablas: \textbf{S} para leer, \textbf{X} para escribir.
+        \item Dentro de \texttt{BEGIN} \dots\ \texttt{END TRANSACTION} los bloqueos duran hasta el final: \textbf{no hay lecturas sucias} ni actualizaciones perdidas.
+        \item Si esperar cierra un ciclo en el \textbf{grafo de espera}, quien pidió es la víctima: \texttt{ROLLBACK} automático y reintento.
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.5\textwidth}
+      \begin{block}{\texttt{dbms concurrencia} (3 hilos $\times$ 2 depósitos)}
+        \small
+        \begin{tabular}{@{}lr@{}}
+          \toprule
+          \textbf{Escenario} & \textbf{Saldo final} \\
+          \midrule
+          Sin transacciones & {\color{rojo}1020} \\
+          Con transacciones & {\color{verde}1060} \\
+          \texttt{saldo = saldo + 10} & {\color{verde}1060} \\
+          \bottomrule
+        \end{tabular}
+        \vspace{0.3em}
+
+        Esperado: 1060. Sin control se pierden 4 depósitos (\emph{lost update}).
+      \end{block}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ===========================================================================
+\section{Cierre}
+% ===========================================================================
+
+\begin{frame}{Conclusiones}
+  \begin{columns}[T]
+    \begin{column}{0.48\textwidth}
+      \begin{block}{Parte 1}
+        \small
+        \begin{itemize}
+          \item Dos organizaciones de archivo con objetivos distintos: \textbf{inserción rápida} (Heap) vs. \textbf{acceso ordenado} (Secuencial).
+          \item El RID lógico estable permite construir un B+ agrupado encima del archivo secuencial.
+        \end{itemize}
+      \end{block}
+    \end{column}
+    \begin{column}{0.5\textwidth}
+      \begin{block}{Parte 2}
+        \small
+        \begin{itemize}
+          \item El split R* reduce el solapamiento y mejora la poda.
+          \item k-NN best-first es exacto y solo visita las ramas necesarias.
+          \item La poda por polígono acepta ramas enteras sin probar punto por punto.
+        \end{itemize}
+      \end{block}
+    \end{column}
+  \end{columns}
+  \vspace{0.6em}
+  \begin{alertblock}{Trabajo futuro}
+    \small Persistir el R-Tree en disco, soportar el antimeridiano en Haversine y bloquear por fila con bloqueos de intención.
+  \end{alertblock}
+\end{frame}
+
+\begin{frame}[plain,noframenumbering]
+  \centering\vfill
+  {\color{primario}\Huge\bfseries ¡Gracias!}\\[1em]
+  {\large\color{acento}¿Preguntas?}\\[2em]
+  {\small\color{gris}Repositorio: \texttt{github.com/utec-database-2/dbms-go}}
+  \vfill
+\end{frame}
+
+\end{document}

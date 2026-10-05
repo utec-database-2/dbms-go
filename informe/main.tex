@@ -1,0 +1,787 @@
+% Informe del proyecto dbms-go (Parte 1 y Parte 2).
+% Compilar con pdflatex. Las figuras se esperan en la carpeta figuras/.
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish,es-noshorthands,es-tabla]{babel}
+\usepackage{lmodern}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{float}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,calc,decorations.pathreplacing}
+\usepackage{listings}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage[hidelinks]{hyperref}
+
+\definecolor{primario}{HTML}{1F3A5F}
+\definecolor{acento}{HTML}{D9822B}
+\definecolor{suave}{HTML}{EEF2F7}
+\definecolor{gris}{HTML}{6B7280}
+
+\captionsetup{font=small,labelfont=bf}
+\setlist{itemsep=2pt,topsep=4pt}
+\setlength{\parskip}{4pt}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{suave},
+  frame=single,
+  rulecolor=\color{suave},
+  framesep=4pt,
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false,
+  keywordstyle=\color{primario}\bfseries,
+  literate={á}{{\'a}}1 {é}{{\'e}}1 {í}{{\'i}}1 {ó}{{\'o}}1 {ú}{{\'u}}1 {ñ}{{\~n}}1,
+}
+
+% Una gráfica del benchmark ocupando el ancho de su celda.
+\newcommand{\grafica}[1]{\includegraphics[width=\linewidth]{figuras/#1}}
+
+\begin{document}
+
+% ---------------------------------------------------------------------------
+% Portada
+% ---------------------------------------------------------------------------
+\begin{titlepage}
+  \centering
+  \vspace*{1.5cm}
+  {\large Universidad de Ingeniería y Tecnología -- UTEC\par}
+  {\large Base de Datos 2 \;--\; 2026-2\par}
+  \vspace{3cm}
+  {\color{primario}\Huge\bfseries dbms-go\par}
+  \vspace{0.5cm}
+  {\Large Motor de base de datos en Go con índices\\clásicos e índice espacial\par}
+  \vspace{0.8cm}
+  {\large\color{acento} Informe del proyecto: Parte 1 y Parte 2\par}
+  \vfill
+  {\large\bfseries Integrantes\par}
+  \vspace{0.3cm}
+  % Completar con los nombres completos del equipo.
+  \begin{tabular}{c}
+    Ashly Veliz \\
+    {[}Integrante 2{]} \\
+    {[}Integrante 3{]} \\
+    {[}Integrante 4{]} \\
+    {[}Integrante 5{]} \\
+  \end{tabular}
+  \vfill
+  {\large Octubre de 2026\par}
+\end{titlepage}
+
+\begin{abstract}
+\texttt{dbms-go} es un motor de base de datos relacional escrito en Go, con una interfaz web en React. En la Parte 1 se implementaron dos organizaciones de archivo (\emph{heap file} y archivo secuencial paginado), tres estructuras de indexación (B+ agrupado, B+ no agrupado y hashing extensible), un lenguaje SQL con planificador de consultas y \emph{external sorting}. En la Parte 2 se agregó un índice espacial R-Tree con división estilo R*, consultas por radio, por polígono y de $k$ vecinos más cercanos, expuestas por una API REST y un mapa interactivo. Se presentan tres comparaciones experimentales con 1\,000, 10\,000 y 100\,000 registros. El archivo secuencial busca por clave primaria unas 760 veces más rápido que el \emph{heap file}, pero inserta unas 7.7 veces más lento. El hash extensible es la mejor opción para igualdad y para altas y bajas, y el B+ agrupado lo es para recorrer en orden. El R-Tree resuelve $k$-NN unas 580 veces más rápido que la búsqueda secuencial y unas 8 veces más rápido que el GiST de PostgreSQL.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% ===========================================================================
+\section{Introducción}
+% ===========================================================================
+
+El objetivo del proyecto es construir, desde cero, las piezas internas de un sistema gestor de bases de datos y medir experimentalmente el efecto de cada decisión de diseño. En lugar de usar una librería de almacenamiento, el equipo implementó la organización física de los datos en disco, los índices, el procesamiento de consultas y una interfaz para usarlos.
+
+El informe cubre las dos primeras partes del proyecto:
+
+\begin{itemize}
+  \item \textbf{Parte 1 -- Organización de archivos e indexación.} \emph{Heap file}, archivo secuencial paginado, B+ agrupado, B+ no agrupado, hashing extensible, lenguaje SQL y \emph{external sorting}.
+  \item \textbf{Parte 2 -- Índice espacial.} R-Tree con consultas por radio, por polígono y $k$-NN, integrado con una API REST y un mapa en el frontend.
+\end{itemize}
+
+Cada parte termina con una comparación experimental. Los resultados se generaron con el comando de \emph{benchmarks} del propio proyecto (Anexo~\ref{sec:reproducir}).
+
+% ===========================================================================
+\section{Arquitectura del sistema}
+% ===========================================================================
+
+El sistema se organiza en capas (Figura~\ref{fig:arquitectura}). El frontend envía consultas SQL y consultas espaciales a un servidor HTTP escrito en Go. El servidor delega en el motor SQL, que planifica cada consulta sobre los índices y los archivos de datos.
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[
+      capa/.style={draw=primario,fill=suave,rounded corners=3pt,minimum width=12cm,minimum height=0.85cm,font=\small,align=center},
+      flecha/.style={-{Stealth},thick,primario}]
+    \node[capa] (front) {\textbf{Frontend} (React + Vite + Leaflet): panel SQL, plan de ejecución, archivos y mapa};
+    \node[capa,below=0.35cm of front] (api) {\textbf{Servidor HTTP}: \texttt{/api/query}, \texttt{/api/tables}, \texttt{/api/spatial/\{range,knn,polygon\}}};
+    \node[capa,below=0.35cm of api] (sql) {\textbf{Motor SQL}: parser, planificador, sesiones con 2PL y WAL, \emph{external sorting} y \emph{hashing}};
+    \node[capa,below=0.35cm of sql,minimum width=5.8cm,xshift=-3.1cm] (idx) {\textbf{Índices}: B+ agrupado, B+ no\\agrupado, hashing extensible};
+    \node[capa,below=0.35cm of sql,minimum width=5.8cm,xshift=3.1cm] (rt) {\textbf{Índice espacial}: R-Tree\\(rango, $k$-NN, polígono)};
+    \node[capa,below=0.35cm of idx,xshift=3.1cm] (sto) {\textbf{Almacenamiento}: \emph{heap file} y archivo secuencial paginado (páginas de 4\,KB)};
+    \draw[flecha] (front) -- (api);
+    \draw[flecha] (api) -- (sql);
+    \draw[flecha] (sql.south -| idx.north) -- (idx);
+    \draw[flecha] (sql.south -| rt.north) -- (rt);
+    \draw[flecha] (api.east) -- ++(0.5,0) |- (rt.east);
+    \draw[flecha] (idx) -- (idx |- sto.north);
+    \draw[flecha] (rt) -- (rt |- sto.north);
+  \end{tikzpicture}
+  \caption{Arquitectura de \texttt{dbms-go}.}
+  \label{fig:arquitectura}
+\end{figure}
+
+Todo el motor está escrito en Go, sin dependencias de bases de datos externas. El frontend usa React con Vite, y Leaflet para el mapa. PostgreSQL solo se usa como referencia en la comparación espacial (Sección~\ref{sec:exp-espacial}).
+
+% ===========================================================================
+\section{Parte 1: organización de archivos}
+% ===========================================================================
+
+\subsection{Heap file}
+
+El \emph{heap file} guarda las filas en el orden en que llegan, sin ningún orden por clave. Es la organización por defecto de una tabla.
+
+\paragraph{Formato en disco.} El archivo empieza con una cabecera fija de 64 bytes, seguida de páginas de 4\,096 bytes. Cada página tiene una cabecera de 16 bytes (con espacio reservado para LSN y \emph{checksum}) y un arreglo de \emph{slots} de tamaño fijo (128 bytes por defecto):
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[x=1cm,y=1cm]
+    \draw[thick,primario] (0,0) rectangle (13,0.9);
+    \fill[gris!30] (0,0) rectangle (1.4,0.9);
+    \node[font=\scriptsize,align=center] at (0.7,0.45) {Cabecera\\16 B};
+    \foreach \i/\t in {0/slot 0,1/slot 1,2/slot 2,3/slot 3} {
+      \fill[suave] ({1.4+\i*2.1},0) rectangle ({3.5+\i*2.1},0.9);
+      \draw[primario] ({3.5+\i*2.1},0) -- ({3.5+\i*2.1},0.9);
+      \node[font=\scriptsize] at ({2.45+\i*2.1},0.45) {\t};
+    }
+    \node[font=\scriptsize] at (11.75,0.45) {$\cdots$ slot $m-1$};
+    \node[font=\scriptsize,text=primario,align=left,anchor=west] at (1.4,-0.45) {ocupado: \texttt{[len uint32][tupla]}};
+    \node[font=\scriptsize,text=acento,align=left,anchor=west] at (7.2,-0.45) {libre: \texttt{[FreeMarker][siguiente libre]}};
+  \end{tikzpicture}
+  \caption{Página del \emph{heap file}.}
+\end{figure}
+
+Como todos los \emph{slots} tienen el mismo tamaño, la posición de una fila depende solo de \texttt{(página, slot)}. El \textbf{RID} es, por lo tanto, estable: no cambia aunque se borren otras filas.
+
+\paragraph{Operaciones.}
+\begin{itemize}
+  \item \textbf{Inserción}: se busca una página con espacio, guiándose por una pista en la cabecera del archivo (la primera página que podría tener huecos), y se usa un \emph{slot} libre de esa página; si no hay ninguna, se agrega una página nueva. Primero se escribe la página y después la cabecera, para que una falla entre ambas escrituras no pierda datos.
+  \item \textbf{Eliminación}: con la estrategia \emph{FreeList}, el \emph{slot} se encadena a la lista de libres de su página y se reutiliza en la siguiente inserción. Con la estrategia alternativa \emph{MoveTheLast}, la última fila de la página se mueve al hueco para mantenerla compacta; en ese caso el RID de la fila movida cambia y se notifica a los índices.
+  \item \textbf{Búsqueda}: sin índice, la única vía es recorrer el archivo completo, $O(N)$.
+\end{itemize}
+
+\subsection{Archivo secuencial paginado}
+
+El archivo secuencial mantiene las filas \textbf{ordenadas por clave primaria}. Usa dos archivos:
+
+\begin{itemize}
+  \item \textbf{Principal} (\texttt{\_seq.dat}): filas ordenadas, en \emph{slots} de tamaño fijo \texttt{[flag][len][payload]}. El tamaño del \emph{slot} se ajusta al \emph{payload} máximo del esquema.
+  \item \textbf{Auxiliar} (\texttt{\_aux.dat}): recibe las inserciones que romperían el orden del principal. En memoria se mantiene una copia ordenada de sus filas vivas.
+\end{itemize}
+
+Ambos archivos tienen una cabecera con número mágico, versión, tamaño de \emph{slot}, \emph{hash} del esquema, cantidad de \emph{slots}, cantidad de borrados y una \textbf{época}.
+
+\paragraph{Búsqueda.} Búsqueda binaria sobre el archivo principal más búsqueda en el auxiliar ordenado: $O(\log N + \log A)$, donde $A$ es el tamaño del auxiliar.
+
+\paragraph{Inserción.} Si la clave ya existió y su \emph{slot} en el principal está marcado como borrado, se reutiliza ese \emph{slot}, porque mantiene el orden sin reconstruir. En cualquier otro caso la fila va al auxiliar.
+
+\paragraph{Eliminación.} Se marca el \emph{slot} con un \emph{flag} de borrado (\emph{tombstone}), que conserva su clave para no romper la búsqueda binaria.
+
+\paragraph{Reconstrucción.} Cuando el auxiliar o los borrados superan $\max(128,\ \text{slots del principal}/10)$, se reconstruye el archivo: se fusionan en orden las filas vivas del principal y del auxiliar, se escribe un principal nuevo y se vacía el auxiliar. La época se incrementa en cada reconstrucción. Si el sistema se cae a mitad de camino, al abrir se descarta el auxiliar de una época anterior y el temporal incompleto.
+
+\subsection{Comparación de las organizaciones}
+
+\begin{table}[H]
+  \centering
+  \small
+  \begin{tabular}{@{}lll@{}}
+    \toprule
+    & \textbf{Heap file} & \textbf{Archivo secuencial} \\
+    \midrule
+    Orden de las filas & Llegada & Clave primaria \\
+    Inserción & $O(1)$: primer \emph{slot} libre & Auxiliar + reconstrucción periódica \\
+    Búsqueda por PK & $O(N)$ sin índice & $O(\log N)$ \\
+    Recorrido en orden de clave & Requiere ordenar & Lectura secuencial \\
+    Eliminación & \emph{Slot} a la lista de libres & \emph{Tombstone} + reconstrucción \\
+    RID & Físico y estable & Posición en el orden \\
+    Uso en el motor & Tablas no agrupadas & Tablas \texttt{CLUSTERED} \\
+    \bottomrule
+  \end{tabular}
+  \caption{Comparación cualitativa de las dos organizaciones de archivo.}
+\end{table}
+
+% ===========================================================================
+\section{Parte 1: estructuras de indexación}
+% ===========================================================================
+
+Los tres índices viven en memoria y se reconstruyen desde el archivo de datos al abrir la tabla. Las claves se codifican en bytes con un codificador común (\texttt{storage.EncodeKey}), por lo que sirven enteros, booleanos, cadenas y claves compuestas.
+
+\subsection{B+ no agrupado}
+
+Es un índice secundario: asocia \emph{clave} $\to$ \emph{RID} en el \emph{heap file}. Es el índice por defecto de una tabla no agrupada.
+
+\begin{itemize}
+  \item Los nodos internos guardan claves separadoras; las hojas guardan, por clave, un \emph{bucket} con todos los RIDs de esa clave. Así una clave duplicada nunca se reparte entre dos hojas.
+  \item Las hojas forman una \textbf{lista enlazada}, lo que permite resolver rangos bajando una sola vez y avanzando por las hojas.
+  \item Búsqueda, inserción y rango son $O(\log_b N)$, con $b$ el orden del árbol (50 por defecto).
+  \item Leer cada fila del rango requiere un acceso aleatorio al \emph{heap}, porque el orden del índice no coincide con el orden físico.
+\end{itemize}
+
+\subsection{B+ agrupado}
+
+En una tabla agrupada (\texttt{CREATE TABLE \dots\ CLUSTERED BY (pk)}), los datos viven en el archivo secuencial ordenados por la clave primaria, y el B+ agrupado indexa esa clave. El orden del índice coincide con el orden físico, por lo que el recorrido completo en orden de clave es una lectura secuencial. Los índices secundarios de una tabla agrupada apuntan a la clave primaria en lugar de a un RID.
+
+\paragraph{Eliminación.} Por simplicidad, la eliminación en el B+ reconstruye el árbol a partir de las entradas restantes, por lo que cuesta $O(N)$. Inserción, búsqueda y rango mantienen el costo logarítmico. Esta decisión se refleja en los experimentos de altas y bajas (Sección~\ref{sec:exp-indices}).
+
+\subsection{Hashing extensible}
+
+Es un índice dinámico de igualdad: un \textbf{directorio} de $2^{d}$ punteros (profundidad global $d$) a \textbf{cubetas} con profundidad local $d' \le d$.
+
+\begin{itemize}
+  \item \textbf{Inserción}: si la cubeta se llena, se divide en dos ($d'{+}{+}$) y se redistribuyen sus claves. Solo cuando $d' = d$ se duplica el directorio.
+  \item \textbf{Eliminación}: las cubetas ``hermanas'' que quedan casi vacías se fusionan, y el directorio se reduce cuando ya no hace falta su profundidad, de modo que el índice también encoge.
+  \item La profundidad máxima es 24 ($2^{24}$ punteros). Una cubeta puede exceder su capacidad solo si muchas filas comparten la misma clave o todos los bits del \emph{hash}.
+  \item Búsqueda $O(1)$ esperado. \textbf{No soporta rangos ni orden}: esas consultas obligan a recorrer el \emph{heap}.
+\end{itemize}
+
+% ===========================================================================
+\section{Parte 1: procesamiento de consultas}
+% ===========================================================================
+
+\subsection{Lenguaje SQL}
+
+El motor incluye un lexer y un parser propios. El subconjunto soportado incluye:
+
+\begin{lstlisting}[language=SQL]
+CREATE TABLE alumno (id INT PRIMARY KEY, nombre VARCHAR(64), edad INT);
+CREATE TABLE curso CLUSTERED BY (id) (id INT PRIMARY KEY, nombre VARCHAR(64));
+CREATE INDEX hash_nombre ON alumno (nombre);   -- hashing extensible
+CREATE INDEX idx_edad    ON alumno (edad);     -- B+ no agrupado
+INSERT INTO alumno (id, nombre, edad) VALUES (1, 'Ana', 20);
+SELECT nombre, COUNT(*) FROM alumno WHERE edad > 18
+  GROUP BY nombre HAVING COUNT(*) > 1 ORDER BY nombre DESC LIMIT 10;
+UPDATE alumno SET edad = 21 WHERE id = 1;
+DELETE FROM alumno WHERE id = 1;
+SELECT a.nombre, m.curso FROM alumno a
+  JOIN matricula m ON a.id = m.alumno_id;     -- también LEFT, CROSS y USING
+BEGIN TRANSACTION;                            -- END TRANSACTION / COMMIT / ROLLBACK
+\end{lstlisting}
+
+Las consultas espaciales (\texttt{POINT}, \texttt{distancia}, \texttt{dentro}) se describen en la Sección~\ref{sec:sql-espacial}.
+
+El tipo de índice se elige con una convención de nombres: el índice de la clave primaria de una tabla agrupada es el B+ agrupado; los nombres que empiezan con \texttt{hash} crean un hashing extensible, y cualquier otro nombre crea un B+ no agrupado.
+
+\subsection{Planificador}
+
+El planificador descompone el \texttt{WHERE} en condiciones unidas por \texttt{AND} y busca un índice que las resuelva:
+
+\begin{itemize}
+  \item Igualdad sobre una columna indexada: \emph{index seek} en el hash o en el B+.
+  \item Desigualdades o rangos: \emph{index scan} sobre un B+. El hash nunca se usa para rangos.
+  \item Condiciones espaciales sobre una columna \texttt{POINT}: búsqueda por radio, $k$-NN o polígono en el R-Tree (Sección~\ref{sec:sql-espacial}).
+  \item Sin índice aplicable: recorrido secuencial del archivo.
+\end{itemize}
+
+Cuando el índice resuelve solo una parte del \texttt{WHERE}, el resto de la condición se aplica como filtro residual sobre las filas que devolvió el índice.
+
+Cada consulta devuelve su \textbf{plan de ejecución} como una lista de pasos (\emph{seq-scan}, \emph{index-seek}, \emph{group-by}, \emph{sort}, \emph{project}, \dots) con el número de filas de cada uno, que el frontend muestra al usuario.
+
+\subsection{External sorting}
+
+\texttt{ORDER BY} usa un \emph{external sort} clásico: las filas se acumulan en un \emph{buffer} de tamaño fijo; cuando se llena, se ordena y se vuelca como un \emph{run}. Al final, si hubo más de un \emph{run}, se hace un \emph{k-way merge} con una cola de prioridad. Existe un modo que escribe los \emph{runs} en archivos temporales, lo que acota la memoria al tamaño del \emph{buffer}.
+
+\subsection{JOIN y GROUP BY con \emph{external hashing}}
+
+El paquete \texttt{external/hashing} reparte un conjunto de filas en $P$ particiones según el hash (FNV-1a) de una clave, de forma que todas las filas con la misma clave caen en la misma partición. Si las filas no caben en el \emph{buffer}, cada partición se escribe en un archivo temporal y se vuelve a leer cuando le toca; así, la tabla hash en memoria solo tiene que contener una partición a la vez. $P$ se elige para que cada partición quepa en el \emph{buffer}.
+
+\textbf{GROUP BY.} Las filas se particionan por el valor de las expresiones de agrupación y cada partición se agrupa con una tabla hash. Los grupos se devuelven en el orden en que aparece su primera fila.
+
+\textbf{JOIN.} El resultado de un \emph{join} es una tabla virtual cuyas columnas se califican como \texttt{alias.columna}; el resto del \emph{pipeline} del \texttt{SELECT} (\texttt{WHERE}, \texttt{GROUP BY}, \texttt{ORDER BY}, \texttt{LIMIT}) trabaja sobre ella como si fuera una tabla. Para cada \texttt{JOIN} el planificador elige una estrategia:
+
+\begin{itemize}
+  \item \textbf{Index nested loop}: si la tabla de la derecha tiene un índice (B+ o hash) sobre su columna de unión, por cada fila de la izquierda se hace una búsqueda exacta en el índice. Es el uso estratégico de índices que pide el enunciado.
+  \item \textbf{Grace hash join}: si no hay índice, los dos lados se particionan con el mismo $P$ y la misma función de hash, y cada par de particiones se une con una tabla hash construida sobre la derecha (\emph{build}) y recorrida con la izquierda (\emph{probe}).
+  \item \textbf{Nested loop}: para \texttt{CROSS JOIN} o condiciones que no son igualdades entre columnas.
+\end{itemize}
+
+Las condiciones del \texttt{WHERE} que solo usan columnas de la primera tabla se empujan a su acceso (\emph{predicate pushdown}), para que el planificador pueda usar sus índices antes del \emph{join}. Se soportan \texttt{INNER}, \texttt{LEFT}, \texttt{CROSS} y \texttt{USING}; \texttt{LEFT JOIN} completa con \texttt{NULL} las filas sin pareja.
+
+% ===========================================================================
+\section{Parte 1: transacciones y concurrencia}
+\label{sec:concurrencia}
+% ===========================================================================
+
+\subsection{Transacciones y recuperación}
+
+\texttt{BEGIN TRANSACTION} abre una transacción y \texttt{END TRANSACTION} (o \texttt{COMMIT}) la confirma; \texttt{ROLLBACK} la deshace, también hasta un \texttt{SAVEPOINT}. Cada cambio se escribe primero en un \emph{write-ahead log} (WAL) con su valor anterior y después se aplica a los archivos. El \texttt{COMMIT} fuerza su registro a disco; el \texttt{ROLLBACK} recorre los cambios en orden inverso y los revierte. Si el proceso se corta, el siguiente arranque deshace con el WAL todo lo que no tenga \texttt{COMMIT}.
+
+\subsection{Sesiones y bloqueo en dos fases estricto}
+
+Cada usuario (o hilo) trabaja con su propia \textbf{sesión}, que tiene como mucho una transacción abierta; varias sesiones ejecutan sentencias a la vez. El aislamiento se obtiene con \textbf{bloqueo en dos fases estricto} (2PL estricto):
+
+\begin{enumerate}
+  \item Antes de ejecutar una sentencia, la sesión bloquea cada tabla que toca: compartido (S) para leer y exclusivo (X) para escribir o para DDL. Si otra transacción tiene un bloqueo incompatible, la sesión espera sin detener al resto del motor.
+  \item Dentro de una transacción los bloqueos se conservan hasta el \texttt{COMMIT} o el \texttt{ROLLBACK}, así que nadie lee cambios sin confirmar (no hay lecturas sucias) ni los sobrescribe. Fuera de una transacción se liberan al terminar la sentencia.
+  \item Con los bloqueos concedidos, la sentencia se ejecuta de forma atómica frente a las de otras sesiones.
+\end{enumerate}
+
+Además de los bloqueos de tabla, la transacción bloquea la clave primaria de cada fila que lee (S) o modifica (X). El plan de ejecución muestra qué bloqueos tomó cada sentencia y cuánto esperó.
+
+\subsection{Detección de deadlocks}
+
+El gestor de bloqueos mantiene un \textbf{grafo de espera}: una arista $T_1 \rightarrow T_2$ indica que $T_1$ espera un bloqueo que tiene $T_2$, o que $T_2$ pidió antes en la misma cola. Cuando una petición tendría que esperar, se comprueba si cerraría un ciclo; en ese caso la transacción que pidió el bloqueo es la \textbf{víctima}: la petición se rechaza, la transacción se deshace entera (\texttt{ROLLBACK} automático) y sus bloqueos se liberan para que las demás avancen. El cliente recibe un error de \emph{deadlock} y puede reintentar.
+
+\subsection{Demostración con hilos}
+
+El comando \texttt{dbms concurrencia} lanza varios hilos (\emph{goroutines}), cada uno con su sesión, que depositan dinero en la misma cuenta. La Tabla~\ref{tab:concurrencia} resume los escenarios.
+
+\begin{table}[H]
+  \centering
+  \small
+  \begin{tabular}{@{}p{4.6cm}p{10cm}@{}}
+    \toprule
+    \textbf{Escenario} & \textbf{Qué se observa} \\
+    \midrule
+    Sin control (\emph{autocommit}) & Cada hilo lee el saldo y escribe saldo$+10$ en dos sentencias. Las lecturas se entrecruzan y se pierden depósitos (\emph{lost update}): con 3 hilos $\times$ 2 depósitos el saldo queda en 1020 en vez de 1060. \\
+    Transacciones (leer y escribir) & El \texttt{SELECT} toma S y el \texttt{UPDATE} lo sube a X. Dos hilos que leyeron a la vez se esperan mutuamente: el motor detecta el \emph{deadlock}, aborta a uno y ese hilo reintenta. El saldo final es correcto. \\
+    Transacciones con \texttt{saldo = saldo + 10} & El \texttt{UPDATE} pide X de entrada; los hilos se ponen en fila esperando el \texttt{COMMIT} del anterior y no hay \emph{deadlocks}. \\
+    \emph{Deadlock} entre dos tablas & $T_1$ bloquea \texttt{cuentas} y pide \texttt{movimientos}; $T_2$ hace lo contrario. $T_2$ cierra el ciclo, es abortada y $T_1$ termina. \\
+    Lectura sucia & Un lector espera a que el escritor termine; tras su \texttt{ROLLBACK} lee el valor confirmado, nunca el intermedio. \\
+    \bottomrule
+  \end{tabular}
+  \caption{Escenarios de la demostración de concurrencia.}
+  \label{tab:concurrencia}
+\end{table}
+
+Los mismos escenarios están cubiertos por pruebas automatizadas que se ejecutan con el detector de carreras de Go (\texttt{go test -race}).
+
+% ===========================================================================
+\section{Parte 1: resultados experimentales}
+% ===========================================================================
+
+\subsection{Metodología}
+
+\begin{itemize}
+  \item Tamaños: 1\,000, 10\,000 y 100\,000 filas, con semilla fija para que los datos sean reproducibles.
+  \item Las claves se insertan en \textbf{orden aleatorio}: es el caso realista, y obliga al archivo secuencial a usar su auxiliar y a reconstruirse.
+  \item Archivos: 200 búsquedas por clave primaria por medición; para la reorganización se borra el 20\% de las filas.
+  \item Índices: orden del B+ igual a 50, cubetas del hash de 32 entradas, 500 consultas de igualdad y 51 consultas de rango (cada una cubre $\approx$1\% de las claves). Las altas y bajas son un 5\% de inserciones más un 5\% de eliminaciones.
+  \item Varias gráficas usan \textbf{escala logarítmica}. En ellas, la barra del valor mínimo queda a ras del eje; su valor se lee en la etiqueta.
+\end{itemize}
+
+\subsection{Heap file vs.\ archivo secuencial}
+
+\begin{table}[H]
+  \centering
+  \small
+  \begin{tabular}{@{}rlrrrrr@{}}
+    \toprule
+    $n$ & Técnica & Inserción (ms) & Búsqueda PK ($\mu$s) & Disco & Reorg.\ (ms) & Recuperado \\
+    \midrule
+    \multirow{2}{*}{1\,000}   & Heap file  & 5.05    & 144.1    & 106.6 kB & 2.44  & 21.2\% \\
+                              & Secuencial & 7.25    & 5.46     & 26.5 kB  & 0.24  & 6.7\% \\
+    \midrule
+    \multirow{2}{*}{10\,000}  & Heap file  & 35.8    & 1\,130.1 & 1.06 MB  & 27.3  & 19.8\% \\
+                              & Secuencial & 125.2   & 6.83     & 264.1 kB & 2.06  & 1.3\% \\
+    \midrule
+    \multirow{2}{*}{100\,000} & Heap file  & 275.2   & 12\,094.2 & 10.57 MB & 283.2 & 20.0\% \\
+                              & Secuencial & 2\,129.7 & 15.9    & 2.64 MB  & 26.6  & 1.2\% \\
+    \bottomrule
+  \end{tabular}
+  \caption{Resultados de la comparación de organizaciones de archivo (\texttt{archivos.csv}).}
+  \label{tab:archivos}
+\end{table}
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}{0.49\textwidth}\grafica{archivos_insercion.jpg}\caption{Inserción (log).}\end{subfigure}\hfill
+  \begin{subfigure}{0.49\textwidth}\grafica{archivos_busqueda_pk.jpg}\caption{Búsqueda por clave primaria (log).}\end{subfigure}\\[0.4em]
+  \begin{subfigure}{0.49\textwidth}\grafica{archivos_espacio_disco.jpg}\caption{Espacio en disco (lineal).}\end{subfigure}\hfill
+  \begin{subfigure}{0.49\textwidth}\grafica{archivos_reorganizacion.jpg}\caption{Reorganización tras borrar el 20\% (log).}\end{subfigure}
+  \caption{Heap file vs.\ archivo secuencial paginado.}
+  \label{fig:archivos}
+\end{figure}
+
+\paragraph{Análisis.}
+\begin{itemize}
+  \item \textbf{Inserción.} El \emph{heap} inserta unas \textbf{7.7 veces más rápido} con 100\,000 filas (275 ms frente a 2\,130 ms). Su costo crece de forma lineal: unas 7 veces por cada 10 veces más filas. El secuencial crece unas 17 veces por cada 10 veces más filas, porque las claves desordenadas pasan por el auxiliar y disparan reconstrucciones que reescriben el archivo completo.
+  \item \textbf{Búsqueda por clave primaria.} Es la diferencia más grande: con 100\,000 filas, el secuencial responde en 15.9~$\mu$s y el \emph{heap} en 12.1~ms, unas \textbf{760 veces más}. El \emph{heap} crece linealmente (recorre todo el archivo), mientras que el secuencial apenas cambia (búsqueda binaria). Esto justifica que una tabla en \emph{heap} necesite un índice.
+  \item \textbf{Espacio.} El secuencial ocupa unas \textbf{4 veces menos} disco (2.64 MB frente a 10.57 MB), porque ajusta el \emph{slot} al tamaño real de la fila, mientras que el \emph{heap} reserva \emph{slots} fijos y páginas completas.
+  \item \textbf{Reorganización.} Reorganizar el \emph{heap} reescribe todas las filas vivas y recupera el $\approx$20\% borrado. El secuencial es unas 10 veces más rápido y recupera muy poco (1--7\%): como ya se reconstruye solo al superar su umbral de borrados, cuando se pide la reorganización queda poco espacio por recuperar.
+\end{itemize}
+
+\subsection{B+ agrupado vs.\ B+ no agrupado vs.\ hashing extensible}
+\label{sec:exp-indices}
+
+\begin{table}[H]
+  \centering
+  \small
+  \resizebox{\textwidth}{!}{%
+  \begin{tabular}{@{}rlrrrrrr@{}}
+    \toprule
+    $n$ & Técnica & Construcción (ms) & Costo del índice (ms) & Igualdad ($\mu$s) & Rango 1\% ($\mu$s) & Recorrido ordenado (ms) & Alta/baja ($\mu$s) \\
+    \midrule
+    \multirow{3}{*}{1\,000}   & B+ agrupado    & 8.88     & 6.45     & 8.92  & 418.1     & 0.51  & 381.0 \\
+                              & B+ no agrupado & 6.50     & 4.08     & 2.64  & 24.2      & 1.97  & 232.4 \\
+                              & Hash dinámico  & 3.63     & 1.21     & 0.23  & 263.7     & 1.15  & 8.4 \\
+    \midrule
+    \multirow{3}{*}{10\,000}  & B+ agrupado    & 184.6    & 132.2    & 10.54 & 5\,004.9  & 5.25  & 4\,558.7 \\
+                              & B+ no agrupado & 49.4     & $-2.9$   & 4.02  & 435.3     & 32.0  & 3\,016.4 \\
+                              & Hash dinámico  & 43.1     & $-9.3$   & 0.32  & 3\,504.5  & 17.2  & 45.3 \\
+    \midrule
+    \multirow{3}{*}{100\,000} & B+ agrupado    & 2\,453.3 & 2\,088.9 & 12.51 & 51\,780.8 & 69.4  & 53\,704.8 \\
+                              & B+ no agrupado & 686.5    & 322.1    & 3.77  & 3\,718.1  & 316.9 & 31\,764.1 \\
+                              & Hash dinámico  & 418.9    & 54.5     & 1.05  & 29\,513.7 & 215.6 & 361.8 \\
+    \bottomrule
+  \end{tabular}}
+  \caption{Tiempos de la comparación de índices (\texttt{indices.csv}). El costo del índice es la construcción menos la carga de las mismas filas sin índice (2.4, 52.3 y 364.4 ms).}
+  \label{tab:indices-tiempo}
+\end{table}
+
+\begin{table}[H]
+  \centering
+  \small
+  \begin{tabular}{@{}rlrrrr@{}}
+    \toprule
+    $n$ & Técnica & Disco de la tabla & Memoria del índice & Altura & Nodos / cubetas \\
+    \midrule
+    \multirow{3}{*}{1\,000}   & B+ agrupado    & 33.3 kB  & 89.1 kB  & 2 & 40 \\
+                              & B+ no agrupado & 139.3 kB & 72.6 kB  & 2 & 26 \\
+                              & Hash dinámico  & 135.2 kB & 77.8 kB  & -- & 46 \\
+    \midrule
+    \multirow{3}{*}{10\,000}  & B+ agrupado    & 330.2 kB & 765.9 kB & 3 & 415 \\
+                              & B+ no agrupado & 1.39 MB  & 719.8 kB & 3 & 264 \\
+                              & Hash dinámico  & 1.32 MB  & 779.1 kB & -- & 465 \\
+    \midrule
+    \multirow{3}{*}{100\,000} & B+ agrupado    & 3.30 MB  & 7.88 MB  & 4 & 4\,158 \\
+                              & B+ no agrupado & 13.88 MB & 7.35 MB  & 4 & 2\,562 \\
+                              & Hash dinámico  & 13.21 MB & 7.88 MB  & -- & 4\,564 \\
+    \bottomrule
+  \end{tabular}
+  \caption{Espacio de la comparación de índices. El B+ agrupado se apoya en el archivo secuencial; los otros dos, en el \emph{heap file}.}
+  \label{tab:indices-espacio}
+\end{table}
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}{0.49\textwidth}\grafica{indices_construccion.jpg}\caption{Construcción del índice (log).}\end{subfigure}\hfill
+  \begin{subfigure}{0.49\textwidth}\grafica{indices_igualdad.jpg}\caption{Búsqueda por igualdad (log).}\end{subfigure}\\[0.4em]
+  \begin{subfigure}{0.49\textwidth}\grafica{indices_rango.jpg}\caption{Búsqueda por rango, $\approx$1\% de las claves (log).}\end{subfigure}\hfill
+  \begin{subfigure}{0.49\textwidth}\grafica{indices_recorrido_ordenado.jpg}\caption{Recorrido completo en orden de clave (log).}\end{subfigure}
+  \caption{Comparación de índices: tiempos de construcción y de consulta.}
+  \label{fig:indices-consultas}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}{0.49\textwidth}\grafica{indices_altas_bajas.jpg}\caption{Altas y bajas frecuentes, 5\% + 5\% (log).}\end{subfigure}\hfill
+  \begin{subfigure}{0.49\textwidth}\grafica{indices_memoria.jpg}\caption{Memoria del índice (lineal).}\end{subfigure}\\[0.4em]
+  \begin{subfigure}{0.49\textwidth}\grafica{indices_espacio_disco.jpg}\caption{Espacio en disco de la tabla (lineal).}\end{subfigure}
+  \caption{Comparación de índices: actualizaciones y espacio.}
+  \label{fig:indices-espacio}
+\end{figure}
+
+\paragraph{Análisis.}
+\begin{itemize}
+  \item \textbf{Igualdad.} El hash extensible es el más rápido en todos los tamaños (1.05~$\mu$s con 100\,000 filas), seguido del B+ no agrupado (3.8~$\mu$s) y del B+ agrupado (12.5~$\mu$s). Los tiempos del B+ crecen muy poco con $n$, como corresponde a una altura de 2 a 4 niveles.
+  \item \textbf{Rango.} El B+ no agrupado es el mejor (3.7~ms con 100\,000 filas): baja una vez y avanza por las hojas enlazadas. El hash no soporta rangos y debe recorrer el \emph{heap} completo (29.5~ms). El B+ agrupado resultó el más lento (51.8~ms), contrario a lo esperado en teoría, donde las filas del rango están contiguas. La causa más probable es que, con claves insertadas en desorden, parte de las filas siguen en el auxiliar del archivo secuencial y su lectura no es contigua. Es un punto a revisar en la implementación.
+  \item \textbf{Recorrido ordenado.} Aquí sí gana el B+ agrupado (69~ms frente a 317~ms del no agrupado): el orden físico coincide con el del índice. El B+ no agrupado paga un acceso aleatorio al \emph{heap} por cada fila, y el hash debe recorrer y luego ordenar.
+  \item \textbf{Altas y bajas.} El hash es dos órdenes de magnitud más rápido (362~$\mu$s por operación con 100\,000 filas, frente a 32--54~ms de los B+). En ambos B+, el costo por operación crece casi linealmente con $n$ (unas 140 veces de 1\,000 a 100\,000 filas), lo que coincide con la eliminación $O(N)$ por reconstrucción del árbol. Implementar la eliminación con redistribución y fusión de nodos es la mejora más importante pendiente.
+  \item \textbf{Construcción.} El B+ agrupado es el más caro (2.45~s con 100\,000 filas), porque mantener el orden físico con claves desordenadas implica reconstrucciones del archivo secuencial. En los otros dos, el costo propio del índice es pequeño frente a la carga de los datos; en 10\,000 filas incluso sale negativo, lo que indica que esa diferencia está dentro del ruido de medición.
+  \item \textbf{Espacio.} Los tres índices ocupan una memoria parecida ($\approx$73--79 bytes por clave con 100\,000 filas). La diferencia está en la tabla: el archivo secuencial del B+ agrupado ocupa unas \textbf{4.2 veces menos} disco que el \emph{heap} de los otros dos.
+\end{itemize}
+
+\paragraph{Recomendación.} Usar hashing extensible para columnas consultadas solo por igualdad y con muchas actualizaciones; B+ no agrupado para columnas con consultas por rango; y una tabla agrupada cuando predominan los recorridos completos en orden de la clave primaria y el espacio en disco importa.
+
+% ===========================================================================
+\section{Parte 2: índice espacial R-Tree}
+% ===========================================================================
+
+\subsection{Estructura}
+
+El R-Tree indexa puntos \texttt{(latitud, longitud)}. Cada hoja guarda puntos junto con el RID de su fila, y cada nodo interno guarda hijos. Todo nodo mantiene su \textbf{MBR} (\emph{Minimum Bounding Rectangle}) \textbf{cacheado}, de modo que consultarlo cuesta $O(1)$ y solo se recalcula cuando cambia su contenido.
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[scale=0.95]
+    \draw[thick,primario,rounded corners=2pt] (0,0) rectangle (3.0,2.4);
+    \node[font=\scriptsize,text=primario] at (0.35,2.2) {R1};
+    \draw[thick,acento,rounded corners=2pt] (3.4,0.6) rectangle (6.2,3.2);
+    \node[font=\scriptsize,text=acento] at (3.75,3.0) {R2};
+    \foreach \p in {(0.4,0.4),(1.1,1.8),(2.5,0.9),(1.8,0.3),(2.7,2.0)}
+      \fill[primario] \p circle (2pt);
+    \foreach \p in {(3.7,0.9),(4.6,2.8),(5.8,1.2),(5.1,2.0)}
+      \fill[acento] \p circle (2pt);
+    \draw[dashed,gris] (-0.2,-0.2) rectangle (6.4,3.4);
+    \node[font=\scriptsize,text=gris] at (5.8,-0.45) {MBR de la raíz};
+    \begin{scope}[xshift=8.2cm,yshift=1.6cm]
+      \node[draw=gris,fill=suave,font=\scriptsize,minimum width=1.8cm] (raiz) at (1.5,1.2) {raíz};
+      \node[draw=primario,fill=suave,font=\scriptsize,minimum width=1.2cm] (r1) at (0.5,0) {R1};
+      \node[draw=acento,fill=acento!15,font=\scriptsize,minimum width=1.2cm] (r2) at (2.5,0) {R2};
+      \draw[-{Stealth}] (raiz) -- (r1);
+      \draw[-{Stealth}] (raiz) -- (r2);
+      \node[font=\tiny,text=primario] at (0.5,-0.55) {5 puntos};
+      \node[font=\tiny,text=acento] at (2.5,-0.55) {4 puntos};
+    \end{scope}
+  \end{tikzpicture}
+  \caption{Puntos agrupados en MBRs y el árbol correspondiente.}
+\end{figure}
+
+\paragraph{Inserción.} Se desciende por el hijo cuyo MBR necesita \textbf{crecer menos} para incluir el punto; si hay empate, el de menor área. Si la hoja se desborda, se divide y la división se propaga hacia arriba.
+
+\subsection{División estilo R*-tree}
+
+La primera versión dividía siempre por longitud a la mitad. Eso producía rectángulos largos y muy solapados en latitud, y el árbol casi no podía descartar ramas. La versión final usa una variante simplificada de la división del R*-tree~\cite{beckmann1990}:
+
+\begin{enumerate}
+  \item Para cada eje (latitud y longitud) se ordenan los elementos y se prueban todos los cortes válidos. Se elige el eje con \textbf{menor suma de márgenes} (semiperímetros), es decir, el que produce rectángulos más ``cuadrados''.
+  \item En ese eje se elige el corte con \textbf{menor solapamiento} entre los dos grupos; si empatan, el de menor área total, y luego el más cercano al centro.
+  \item Cada grupo conserva al menos $\approx$40\% de las entradas del nodo.
+\end{enumerate}
+
+Con puntos alineados el área de los rectángulos es 0, por lo que el margen sirve también como desempate.
+
+\subsection{Métricas de distancia}
+
+Se soportan dos métricas:
+\begin{align*}
+  d_{\text{euclídea}} &= \sqrt{\Delta\text{lat}^2 + \Delta\text{lon}^2} \quad\text{(en grados)}\\[2pt]
+  h &= \sin^2\!\tfrac{\Delta\varphi}{2} + \cos\varphi_1\cos\varphi_2\sin^2\!\tfrac{\Delta\lambda}{2},
+  \qquad d_{\text{Haversine}} = 2R\,\operatorname{atan2}\!\big(\sqrt{h},\sqrt{1-h}\big)
+\end{align*}
+con $R = 6\,371$~km. Haversine da la distancia real sobre la superficie terrestre, en kilómetros.
+
+\subsection{Consultas}
+
+\paragraph{Por radio.} Se proyecta el círculo de radio $r$ a un rectángulo en grados, que sirve de prefiltro: se descartan las ramas cuyo MBR no lo intersecta. Sobre los candidatos, la distancia exacta decide qué puntos entran.
+
+\paragraph{$k$ vecinos más cercanos.} Se usa la búsqueda \emph{best-first} de Hjaltason y Samet~\cite{hjaltason1999}. Una cola de prioridad mezcla nodos y puntos:
+\begin{itemize}
+  \item la prioridad de un nodo es $\text{MINDIST}(q, \text{MBR})$, una cota inferior de la distancia de $q$ a cualquier punto del rectángulo;
+  \item la prioridad de un punto es su distancia exacta a $q$.
+\end{itemize}
+Siempre se extrae lo más cercano. Si es un nodo, se encolan sus hijos; si es un punto, ese es el siguiente vecino, porque todo lo que queda en la cola tiene una cota inferior mayor o igual. El algoritmo termina al tener $k$ puntos y solo visita las ramas que pueden contener alguno de ellos.
+
+Para que el resultado sea correcto, MINDIST debe ser una cota inferior real en la misma métrica. Con Haversine, si $q$ cae dentro del rectángulo la cota es 0; si no, se calcula la distancia geodésica mínima a sus bordes. Para los bordes que son meridianos, se calcula el pie de la perpendicular $\varphi^* = \arctan(B/A)$ y, si cae fuera del segmento, se usa el extremo más cercano. Esta versión no contempla rectángulos que crucen el antimeridiano ($\pm180^\circ$).
+
+\paragraph{Por polígono.} Devuelve los puntos dentro de un polígono arbitrario, que puede ser cóncavo y tener cualquier orientación. La pertenencia de un punto se decide con la regla \textbf{par-impar}, y los puntos sobre el borde cuentan como dentro. Para podar el árbol, cada MBR se clasifica respecto del polígono:
+\begin{itemize}
+  \item \textbf{fuera}: se descarta toda la rama;
+  \item \textbf{dentro}: se devuelve todo lo que hay debajo, sin probar punto por punto;
+  \item \textbf{parcial}: se desciende y se prueba cada punto.
+\end{itemize}
+Un margen de $\approx$0.1~mm hace que lo muy cercano a una arista se decida siempre punto por punto, lo que evita errores de redondeo. El polígono se valida antes de buscar: al menos 3 vértices y coordenadas finitas.
+
+\subsection{Extensión SQL espacial}
+\label{sec:sql-espacial}
+
+El motor tiene un tipo de columna \texttt{POINT}. Un punto se guarda como texto canónico \texttt{POINT(lat lon)} (el almacenamiento no tiene tipo flotante) y toda columna \texttt{POINT} lleva un índice R-Tree, \texttt{rtree\_<columna>}, que se mantiene en cada \texttt{INSERT}, \texttt{UPDATE} y \texttt{DELETE} y se reconstruye al abrir la base. Las funciones disponibles son:
+
+\begin{itemize}
+  \item \texttt{POINT(lat, lon)} y \texttt{POLYGON(p1, p2, \dots)} construyen valores.
+  \item \texttt{distancia(a, b)} devuelve la distancia geodésica (Haversine) en metros; \texttt{distancia(a, b, 'euclidean')} devuelve la distancia euclidiana en grados.
+  \item \texttt{dentro(p, polígono)} indica si el punto cae dentro del polígono.
+\end{itemize}
+
+\begin{lstlisting}[language=SQL]
+CREATE TABLE tiendas (id INT PRIMARY KEY, nombre VARCHAR(40), ubicacion POINT);
+INSERT INTO tiendas VALUES (1, 'Centro', POINT(-12.0464, -77.0428));
+-- rango: tiendas a menos de 5 km
+SELECT * FROM tiendas WHERE distancia(ubicacion, POINT(-12.0464, -77.0428)) < 5000;
+-- k-NN: las 10 más cercanas
+SELECT * FROM tiendas ORDER BY distancia(ubicacion, POINT(-12.0464, -77.0428)) LIMIT 10;
+-- intersección con un polígono (por ejemplo, un distrito)
+SELECT * FROM tiendas WHERE dentro(ubicacion,
+  POLYGON(POINT(-12.04,-77.05), POINT(-12.04,-77.03), POINT(-12.06,-77.03))) = true;
+\end{lstlisting}
+
+El planificador reconoce estos patrones y los resuelve con el R-Tree: \texttt{distancia(col, punto) < r} se convierte en una búsqueda por radio, \texttt{dentro(col, polígono)} en la búsqueda por polígono, y \texttt{ORDER BY distancia(col, punto) LIMIT k} en el $k$-NN \emph{best-first}, sin ordenar la tabla. Con otras condiciones en el \texttt{WHERE}, el resto se aplica como filtro residual; si el patrón no se puede resolver con el índice (por ejemplo, $k$-NN con un \texttt{WHERE} adicional), la consulta se ejecuta con recorrido secuencial y \emph{external sort}, con el mismo resultado.
+
+\subsection{Integración con el sistema}
+
+Además de SQL, el R-Tree se usa desde el panel de mapa. Para el mapa se construye a partir de una tabla \texttt{ubicaciones} con las columnas \texttt{id}, \texttt{nombre}, \texttt{tipo} y, para las coordenadas, \texttt{latitud} y \texttt{longitud} o una columna \texttt{POINT} llamada \texttt{ubicacion}. Se reconstruye después de cada consulta SQL y de cada importación de CSV. El servidor expone tres \emph{endpoints}:
+
+\begin{table}[H]
+  \centering
+  \small
+  \begin{tabular}{@{}ll@{}}
+    \toprule
+    \textbf{Endpoint} & \textbf{Cuerpo de la petición} \\
+    \midrule
+    \texttt{POST /api/spatial/range}   & \texttt{\{latitude, longitude, radius, metric\}} \\
+    \texttt{POST /api/spatial/knn}     & \texttt{\{latitude, longitude, k, metric\}} \\
+    \texttt{POST /api/spatial/polygon} & \texttt{\{vertices: [\{lat, lon\}, \dots]\}} \\
+    \bottomrule
+  \end{tabular}
+  \caption{API REST de las consultas espaciales. \texttt{metric} es \texttt{haversine} o \texttt{euclidean}.}
+\end{table}
+
+En el frontend, el panel de mapa (Leaflet) ofrece tres modos: \textbf{rango} (clic para el centro y radio en km o grados), \textbf{$k$-NN} (clic para el punto de consulta y valor de $k$) y \textbf{polígono} (los vértices se dibujan con clics). Los resultados se marcan en el mapa con su distancia, y la interfaz valida las entradas ($k \ge 1$, radio $\ge 0$) antes de enviarlas.
+
+\subsection{Pruebas}
+
+El R-Tree y la capa espacial tienen 31 pruebas automatizadas. Entre ellas: $k$-NN y búsqueda por polígono comparados contra \textbf{fuerza bruta}; rango comparado contra un recorrido lineal; validez del MBR después de cada inserción; MINDIST como cota inferior; polígonos cóncavos, autointersectados e inválidos, y búsquedas cerca del polo. La extensión SQL tiene pruebas propias: radio y polígono resueltos con el R-Tree (en tablas \emph{heap} y agrupadas), $k$-NN con \texttt{ORDER BY \dots\ LIMIT}, métrica euclidiana, mantenimiento del índice tras \texttt{UPDATE} y \texttt{DELETE}, persistencia al reabrir la base y comparación del radio contra fuerza bruta sobre una malla de 400 puntos.
+
+% ===========================================================================
+\section{Parte 2: resultados experimentales}
+\label{sec:exp-espacial}
+% ===========================================================================
+
+\subsection{Metodología}
+
+Se comparan tres técnicas sobre los mismos datos:
+\begin{itemize}
+  \item \textbf{Secuencial}: recorrido completo sin índice; para $k$-NN se recorre todo conservando los $k$ mejores.
+  \item \textbf{R-Tree} del proyecto, con 16 entradas máximas por nodo.
+  \item \textbf{GiST de PostgreSQL}, sin PostGIS. Para el radio se indexa una columna \texttt{box} (operador \texttt{\&\&}) y encima se calcula Haversine exacto, la misma estrategia que el R-Tree. Para $k$-NN se usa el operador nativo \texttt{ORDER BY pt <-> centro LIMIT k}. Se construyen ambos índices y se reporta la suma.
+\end{itemize}
+
+Los puntos se generan uniformemente en una caja de Lima (latitud $-12.10$ a $-11.90$, longitud $-77.20$ a $-76.90$) con semilla fija. Se lanzan 100 consultas por medición, con centros generados con otra semilla, y se reporta el promedio. Las consultas por radio usan Haversine con radios de 1, 5 y 10~km. Las de $k$-NN usan distancia euclídea en grados, que es la nativa del operador \texttt{<->} de GiST, con $k \in \{10, 50, 100\}$. Las tres técnicas devuelven el mismo número de filas, lo que se verifica en cada medición.
+
+\paragraph{Consideraciones.} El R-Tree vive en memoria y se mide dentro del mismo proceso; su espacio es memoria. GiST se mide con \texttt{\textbackslash timing} de \texttt{psql}, que incluye el análisis y la planificación de la consulta y la comunicación con el servidor, y su espacio es disco. La comparación es útil para ubicar el orden de magnitud, pero favorece al R-Tree.
+
+\subsection{Resultados}
+
+\begin{table}[H]
+  \centering
+  \small
+  \begin{tabular}{@{}rlrrrr@{}}
+    \toprule
+    $n$ & Consulta & Filas promedio & Secuencial (ms) & R-Tree (ms) & GiST (ms) \\
+    \midrule
+    \multirow{6}{*}{1\,000}
+      & Radio 1 km  & 4.1       & 0.161  & \textbf{0.0047} & 0.180 \\
+      & Radio 5 km  & 90.1      & 0.208  & \textbf{0.0214} & 0.255 \\
+      & Radio 10 km & 300.8     & 0.137  & \textbf{0.0505} & 0.321 \\
+      & $k$-NN 10   & 10        & 0.147  & \textbf{0.0110} & 0.129 \\
+      & $k$-NN 50   & 50        & 0.187  & \textbf{0.0230} & 0.184 \\
+      & $k$-NN 100  & 100       & 0.255  & \textbf{0.0409} & 0.263 \\
+    \midrule
+    \multirow{6}{*}{10\,000}
+      & Radio 1 km  & 40.8      & 1.247  & \textbf{0.0155} & 0.235 \\
+      & Radio 5 km  & 903.3     & 1.355  & \textbf{0.185}  & 0.863 \\
+      & Radio 10 km & 3\,008.0  & 1.233  & \textbf{0.481}  & 2.093 \\
+      & $k$-NN 10   & 10        & 1.388  & \textbf{0.0147} & 0.161 \\
+      & $k$-NN 50   & 50        & 1.995  & \textbf{0.0309} & 0.192 \\
+      & $k$-NN 100  & 100       & 2.633  & \textbf{0.0492} & 0.279 \\
+    \midrule
+    \multirow{6}{*}{100\,000}
+      & Radio 1 km  & 415.4     & 12.151 & \textbf{0.104}  & 0.827 \\
+      & Radio 5 km  & 9\,018.1  & 11.856 & \textbf{1.576}  & 6.837 \\
+      & Radio 10 km & 29\,974.1 & 11.719 & \textbf{5.166}  & 18.235 \\
+      & $k$-NN 10   & 10        & 13.375 & \textbf{0.0231} & 0.181 \\
+      & $k$-NN 50   & 50        & 19.419 & \textbf{0.0439} & 0.219 \\
+      & $k$-NN 100  & 100       & 25.632 & \textbf{0.0742} & 0.284 \\
+    \bottomrule
+  \end{tabular}
+  \caption{Tiempo promedio por consulta (\texttt{espacial.csv}). En negrita, la técnica más rápida.}
+  \label{tab:espacial}
+\end{table}
+
+\begin{table}[H]
+  \centering
+  \small
+  \begin{tabular}{@{}rrrrr@{}}
+    \toprule
+    & \multicolumn{2}{c}{\textbf{Construcción (ms)}} & \multicolumn{2}{c}{\textbf{Espacio}} \\
+    \cmidrule(lr){2-3}\cmidrule(lr){4-5}
+    $n$ & R-Tree & GiST & R-Tree (memoria) & GiST (disco) \\
+    \midrule
+    1\,000   & 1.05   & 3.86   & 53.2 kB  & 155.6 kB \\
+    10\,000  & 17.46  & 54.77  & 507.9 kB & 1.40 MB \\
+    100\,000 & 225.16 & 765.36 & 5.40 MB  & 14.19 MB \\
+    \bottomrule
+  \end{tabular}
+  \caption{Construcción y espacio de los índices espaciales. La técnica secuencial no construye nada ni ocupa espacio adicional.}
+  \label{tab:espacial-construccion}
+\end{table}
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}{0.49\textwidth}\grafica{espacial_radio1.jpg}\caption{Radio de 1 km (log).}\end{subfigure}\hfill
+  \begin{subfigure}{0.49\textwidth}\grafica{espacial_radio5.jpg}\caption{Radio de 5 km (log).}\end{subfigure}\\[0.4em]
+  \begin{subfigure}{0.49\textwidth}\grafica{espacial_radio10.jpg}\caption{Radio de 10 km (log).}\end{subfigure}
+  \caption{Consultas por radio: secuencial vs.\ R-Tree vs.\ GiST.}
+  \label{fig:espacial-radio}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}{0.49\textwidth}\grafica{espacial_knn10.jpg}\caption{$k = 10$ (log).}\end{subfigure}\hfill
+  \begin{subfigure}{0.49\textwidth}\grafica{espacial_knn50.jpg}\caption{$k = 50$ (log).}\end{subfigure}\\[0.4em]
+  \begin{subfigure}{0.49\textwidth}\grafica{espacial_knn100.jpg}\caption{$k = 100$ (log).}\end{subfigure}
+  \caption{$k$ vecinos más cercanos: secuencial vs.\ R-Tree vs.\ GiST.}
+  \label{fig:espacial-knn}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}{0.49\textwidth}\grafica{espacial_construccion.jpg}\caption{Construcción del índice (log).}\end{subfigure}\hfill
+  \begin{subfigure}{0.49\textwidth}\grafica{espacial_espacio_indice.jpg}\caption{Espacio del índice (lineal).}\end{subfigure}
+  \caption{Costo de construcción y espacio de los índices espaciales.}
+  \label{fig:espacial-costo}
+\end{figure}
+
+\subsection{Análisis}
+
+\begin{itemize}
+  \item \textbf{$k$-NN.} Es donde el índice rinde más. Con 100\,000 puntos y $k=10$, el R-Tree responde en 0.023~ms: unas \textbf{580 veces más rápido} que el recorrido secuencial (13.4~ms) y unas \textbf{8 veces} más rápido que GiST (0.18~ms). Al multiplicar los datos por 100, el tiempo del R-Tree solo se duplica, mientras que el secuencial crece unas 90 veces. GiST también se mantiene casi constante, pero con un costo fijo por consulta de $\approx$0.13--0.28~ms.
+  \item \textbf{Radio.} El R-Tree es el más rápido en todos los casos, pero la ventaja depende de la \textbf{selectividad}. Con radio de 1~km (0.4\% de los puntos) es 117 veces más rápido que el secuencial; con 10~km (30\% de los puntos), solo 2.3 veces, porque igual tiene que visitar y devolver casi un tercio del conjunto. En ese caso GiST (18.2~ms) es incluso más lento que el secuencial (11.7~ms), por el costo de producir y transferir $\approx$30\,000 filas.
+  \item \textbf{Construcción y espacio.} El R-Tree se construye unas 3.4 veces más rápido que los dos índices GiST y ocupa unas 2.6 veces menos ($\approx$54 bytes por punto frente a $\approx$142). Parte de la diferencia viene de que GiST guarda páginas en disco con su propia cabecera y relleno, y mantiene dos índices.
+  \item \textbf{Conclusión.} Un índice espacial vale la pena sobre todo para consultas selectivas y para $k$-NN, donde evita recorrer todo el conjunto. Para consultas que devuelven una fracción grande de los datos, el beneficio se reduce mucho.
+\end{itemize}
+
+% ===========================================================================
+\section{Limitaciones y trabajo futuro}
+% ===========================================================================
+
+\begin{itemize}
+  \item \textbf{Eliminación en el B+.} Hoy reconstruye el árbol en $O(N)$. Implementar redistribución y fusión de nodos debería bajar el costo de altas y bajas a $O(\log N)$.
+  \item \textbf{Rango en el B+ agrupado.} Fue más lento de lo esperado; hay que revisar cómo se leen las filas que siguen en el auxiliar del archivo secuencial.
+  \item \textbf{Índices en memoria.} Los índices se reconstruyen al abrir la tabla. Persistirlos en disco reduciría el tiempo de arranque.
+  \item \textbf{Granularidad de los bloqueos.} El aislamiento entre transacciones se hace por tabla: dos transacciones que escriben filas distintas de la misma tabla se ejecutan una después de otra. Bloqueos de intención (IS/IX) permitirían bloquear solo filas.
+  \item \textbf{Tipos numéricos.} El almacenamiento no tiene tipo decimal; las coordenadas se guardan como texto en las columnas \texttt{POINT}.
+  \item \textbf{JOIN.} \texttt{RIGHT} y \texttt{FULL JOIN} no están soportados.
+  \item \textbf{Antimeridiano.} El cálculo de MINDIST con Haversine no contempla rectángulos que crucen $\pm180^\circ$.
+\end{itemize}
+
+% ===========================================================================
+\section{Conclusiones}
+% ===========================================================================
+
+\begin{itemize}
+  \item No hay una organización de archivo ni un índice óptimo para todo. El \emph{heap file} favorece la inserción y el archivo secuencial favorece la búsqueda por clave y el espacio; los experimentos cuantifican ese compromiso (7.7 veces en inserción contra 760 veces en búsqueda).
+  \item Entre los índices, el hashing extensible domina en igualdad y en actualizaciones, el B+ no agrupado en rangos, y el B+ agrupado en recorridos ordenados y espacio en disco.
+  \item El R-Tree con división estilo R* y búsqueda \emph{best-first} resuelve $k$-NN en tiempo casi independiente del tamaño de los datos, y supera a la referencia de PostgreSQL en este escenario.
+  \item Con sesiones, 2PL estricto y detección de \emph{deadlocks}, varias transacciones pueden trabajar a la vez sin perder actualizaciones ni leer datos sin confirmar; la demostración con hilos muestra la diferencia frente a no usar transacciones.
+  \item Los experimentos también mostraron puntos débiles concretos de la implementación (eliminación en el B+ y rango en el B+ agrupado), que orientan el trabajo de las siguientes partes.
+\end{itemize}
+
+% ===========================================================================
+\begin{thebibliography}{9}
+\bibitem{guttman1984} A.~Guttman. \emph{R-trees: A dynamic index structure for spatial searching}. Proceedings of ACM SIGMOD, 1984.
+\bibitem{beckmann1990} N.~Beckmann, H.-P.~Kriegel, R.~Schneider y B.~Seeger. \emph{The R*-tree: An efficient and robust access method for points and rectangles}. Proceedings of ACM SIGMOD, 1990.
+\bibitem{hjaltason1999} G.~R.~Hjaltason y H.~Samet. \emph{Distance browsing in spatial databases}. ACM Transactions on Database Systems, 24(2), 1999.
+\bibitem{fagin1979} R.~Fagin, J.~Nievergelt, N.~Pippenger y H.~R.~Strong. \emph{Extendible hashing: A fast access method for dynamic files}. ACM Transactions on Database Systems, 4(3), 1979.
+\bibitem{comer1979} D.~Comer. \emph{The ubiquitous B-tree}. ACM Computing Surveys, 11(2), 1979.
+\bibitem{ramakrishnan2003} R.~Ramakrishnan y J.~Gehrke. \emph{Database Management Systems}, 3.\textsuperscript{a} ed. McGraw-Hill, 2003.
+\bibitem{postgresgist} The PostgreSQL Global Development Group. \emph{GiST Indexes}. Documentación de PostgreSQL.
+\end{thebibliography}
+
+\appendix
+% ===========================================================================
+\section{Reproducción de los experimentos}
+\label{sec:reproducir}
+% ===========================================================================
+
+Los tres experimentos se ejecutan con el comando de línea del proyecto. Cada uno escribe sus resultados en CSV (\texttt{archivos.csv}, \texttt{indices.csv} y \texttt{espacial.csv}) y genera las gráficas.
+
+\begin{lstlisting}
+dbms bench files    -n 1000,10000,100000 -queries 200
+dbms bench indexes  -n 1000,10000,100000 -queries 500
+dbms bench spatial  -n 1000,10000,100000 -queries 100 -pg-socket <socket>
+dbms bench all      -n 1000,10000,100000
+\end{lstlisting}
+
+La demostración de concurrencia (Sección~\ref{sec:concurrencia}) se ejecuta con \texttt{dbms concurrencia [-hilos 5] [-depositos 3]}.
+
+La comparación espacial necesita un servidor de PostgreSQL accesible por el \emph{socket} indicado; con \texttt{-sin-gist} se omite GiST. La semilla de los datos se fija con \texttt{-seed}.
+
+\end{document}

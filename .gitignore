@@ -33,3 +33,10 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# macOS
+.DS_Store
+
+# Copias y exportaciones del informe (la fuente es informe/main.tex)
+informe.zip
+informe/informe_overleaf/
