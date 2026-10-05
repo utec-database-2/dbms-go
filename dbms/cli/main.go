@@ -7,6 +7,7 @@
 //	dbms bench indexes  B+ agrupado vs B+ no agrupado vs hash dinámico
 //	dbms bench spatial  Secuencial vs R-Tree vs GiST de PostgreSQL
 //	dbms bench all      Las tres comparaciones seguidas
+//	dbms concurrencia   Simulación con hilos de transacciones concurrentes
 //
 // Cada benchmark escribe sus resultados en CSV (para poder volver a graficarlos
 // sin repetir las mediciones) y un resumen en la terminal con gráficas de barras.
@@ -29,6 +30,8 @@ func main() {
 	switch os.Args[1] {
 	case "bench":
 		runBench(os.Args[2:])
+	case "concurrencia", "concurrency":
+		runConcurrencia(os.Args[2:])
 	case "-h", "--help", "help", "ayuda":
 		uso()
 	default:
@@ -46,6 +49,9 @@ func uso() {
   dbms bench spatial  [-n 1000,10000,100000] [-queries 100] [-out resultados] [-pg-socket /tmp/pgsock]
   dbms bench all      [-n ...] [-queries ...] [-dir ...] [-out resultados]
   dbms bench charts   [-out resultados]   Regenera las gráficas desde los CSV
+  dbms concurrencia   [-hilos 5] [-depositos 3] [-pausa 15ms]
+                      Simulación con hilos: race condition, transacciones,
+                      bloqueos 2PL, deadlocks y lecturas sucias
 
 Cada benchmark imprime tablas y barras en la terminal, deja un CSV en -out y
 dibuja las gráficas SVG en -out/gráficas.
