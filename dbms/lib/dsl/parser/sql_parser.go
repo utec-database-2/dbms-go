@@ -157,8 +157,8 @@ func (parser *ParserContext) ParseFloat() *ast.FloatExpr {
 	if err != nil {
 		return &ast.FloatExpr{}
 	}
-	v, _ := strconv.ParseFloat(t.GetContent(), 64)
-	return &ast.FloatExpr{Value: v}
+	v, _ := strconv.ParseFloat(t.GetContent(), 32)
+	return &ast.FloatExpr{Value: float32(v)}
 }
 
 func (parser *ParserContext) ParseString() *ast.StringExpr {
@@ -171,130 +171,51 @@ func (parser *ParserContext) ParseString() *ast.StringExpr {
 
 func (parser *ParserContext) ParseValue() (ast.ASTNode, error) {
 
-	// Número negativo
-	if parser.Match(token.TokenMinus) {
+    // Número negativo
+    if parser.Match(token.TokenMinus) {
 
-		switch parser.CurrToken().GetType() {
+        switch parser.CurrToken().GetType() {
 
-		case token.TokenInt:
-			value := parser.ParseInt()
-			value.Value = -value.Value
-			return value, nil
+        case token.TokenInt:
+            value := parser.ParseInt()
+            value.Value = -value.Value
+            return value, nil
 
-		case token.TokenDecimal:
-			value := parser.ParseFloat()
-			value.Value = -value.Value
-			return value, nil
+        case token.TokenDecimal:
+            value := parser.ParseFloat()
+            value.Value = -value.Value
+            return value, nil
 
-		default:
-			return nil, fmt.Errorf(
-				"expected numeric value after '-', got %q",
-				parser.CurrStr(),
-			)
-		}
-	}
+        default:
+            return nil, fmt.Errorf(
+                "expected numeric value after '-', got %q",
+                parser.CurrStr(),
+            )
+        }
+    }
 
-	switch parser.CurrToken().GetType() {
+    switch parser.CurrToken().GetType() {
 
-	case token.TokenId:
-		id := parser.ParseId()
-		if !parser.Check(token.TokenLparent) {
-			return id, nil
-		}
-		return parser.parseCall(id.Name)
+    case token.TokenId:
+        return parser.ParseId(), nil
 
-	case token.TokenTrue, token.TokenFalse:
-		return parser.ParseBool(), nil
+    case token.TokenTrue, token.TokenFalse:
+        return parser.ParseBool(), nil
 
-	case token.TokenInt:
-		return parser.ParseInt(), nil
+    case token.TokenInt:
+        return parser.ParseInt(), nil
 
-	case token.TokenDecimal:
-		return parser.ParseFloat(), nil
+    case token.TokenDecimal:
+        return parser.ParseFloat(), nil
 
-	case token.TokenString:
-		return parser.ParseString(), nil
-	}
+    case token.TokenString:
+        return parser.ParseString(), nil
+    }
 
-	return nil, fmt.Errorf(
-		"expected value, got %q",
-		parser.CurrStr(),
-	)
-}
-
-func (parser *ParserContext) fail(err error) {
-	if parser.err == nil {
-		parser.err = err
-	}
-}
-
-func (parser *ParserContext) expect(t token.TokenType) {
-	if _, err := parser.Required(t); err != nil {
-		parser.fail(err)
-	}
-}
-
-func (parser *ParserContext) parseCall(name string) (ast.ASTNode, error) {
-	parser.idx++ // '('
-
-	if strings.EqualFold(name, "point") {
-		return parser.parsePointLiteral()
-	}
-
-	var args []ast.ASTNode
-	for !parser.Check(token.TokenRparent) {
-		arg, err := parser.ParseValue()
-		if err != nil {
-			return nil, err
-		}
-		args = append(args, arg)
-		if !parser.Match(token.TokenComma) {
-			break
-		}
-	}
-	if _, err := parser.Required(token.TokenRparent); err != nil {
-		return nil, err
-	}
-
-	return &ast.CallExpr{Name: name, Args: args}, nil
-}
-
-func (parser *ParserContext) parsePointLiteral() (ast.ASTNode, error) {
-	lat, err := parser.parseSignedNumber()
-	if err != nil {
-		return nil, err
-	}
-	if _, err := parser.Required(token.TokenComma); err != nil {
-		return nil, err
-	}
-	lon, err := parser.parseSignedNumber()
-	if err != nil {
-		return nil, err
-	}
-	if _, err := parser.Required(token.TokenRparent); err != nil {
-		return nil, err
-	}
-
-	return &ast.PointExpr{Lat: lat, Lon: lon}, nil
-}
-
-func (parser *ParserContext) parseSignedNumber() (float64, error) {
-	negative := parser.Match(token.TokenMinus)
-
-	tok := parser.CurrToken()
-	if tok.GetType() != token.TokenInt && tok.GetType() != token.TokenDecimal {
-		return 0, fmt.Errorf("expected number, got %q", parser.CurrStr())
-	}
-	parser.idx++
-
-	v, err := strconv.ParseFloat(tok.GetContent(), 64)
-	if err != nil {
-		return 0, err
-	}
-	if negative {
-		v = -v
-	}
-	return v, nil
+    return nil, fmt.Errorf(
+        "expected value, got %q",
+        parser.CurrStr(),
+    )
 }
 
 func tokenToOperator(t token.TokenType) ast.Operator {
@@ -386,7 +307,6 @@ func (parser *ParserContext) ParseWhereExpr() *ast.WhereExpr {
 
 	cond, err := parser.ParseCondition()
 	if err != nil {
-		parser.fail(err)
 		return nil
 	}
 
@@ -421,14 +341,9 @@ func (parser *ParserContext) ParseSelect() *ast.Select {
 
 	if parser.Match(token.TokenOrder) {
 		parser.Match(token.TokenBy)
-		expr, err := parser.ParseValue()
-		switch {
-		case err != nil:
-			parser.fail(err)
-		case !isOrderable(expr):
-			parser.fail(fmt.Errorf("ORDER BY solo soporta una columna o una función"))
-		default:
-			order := &ast.OrderBy{Expr: expr}
+		id, err := parser.Required(token.TokenId)
+		if err == nil {
+			order := &ast.OrderBy{Expr: &ast.IdExpr{Name: id.GetContent()}}
 			if parser.Check(token.TokenId) {
 				direction := strings.ToLower(parser.CurrStr())
 				if direction == "asc" || direction == "desc" {
@@ -440,25 +355,7 @@ func (parser *ParserContext) ParseSelect() *ast.Select {
 		}
 	}
 
-	if parser.Match(token.TokenLimit) {
-		t, err := parser.Required(token.TokenInt)
-		if err != nil {
-			parser.fail(err)
-		} else {
-			n, _ := strconv.Atoi(t.GetContent())
-			node.Limit = &n
-		}
-	}
-
 	return node
-}
-
-func isOrderable(expr ast.ASTNode) bool {
-	switch expr.(type) {
-	case *ast.IdExpr, *ast.CallExpr:
-		return true
-	}
-	return false
 }
 
 func (parser *ParserContext) ParseInsert() *ast.Insert {
@@ -478,12 +375,12 @@ func (parser *ParserContext) ParseInsert() *ast.Insert {
 				break
 			}
 		}
-		parser.expect(token.TokenRparent)
+		parser.Required(token.TokenRparent)
 	}
 
 	if parser.Match(token.TokenValues) {
 		for {
-			parser.expect(token.TokenLparent)
+			parser.Required(token.TokenLparent)
 			var row []ast.ASTNode
 			for !parser.Check(token.TokenRparent) {
 				v, err := parser.ParseValue()
@@ -495,7 +392,7 @@ func (parser *ParserContext) ParseInsert() *ast.Insert {
 					break
 				}
 			}
-			parser.expect(token.TokenRparent)
+			parser.Required(token.TokenRparent)
 			node.Rows = append(node.Rows, row)
 			if !parser.Match(token.TokenComma) {
 				break
@@ -559,7 +456,7 @@ func (parser *ParserContext) ParseCreate() *ast.CreateTable {
 				break
 			}
 		}
-		parser.expect(token.TokenRparent)
+		parser.Required(token.TokenRparent)
 	}
 
 	return node

@@ -40,8 +40,6 @@ func TestTokenizeKeywords(t *testing.T) {
 		"ORDER":  token.TokenOrder,
 		"BY":     token.TokenBy,
 		"AS":     token.TokenAs,
-		"LIMIT":  token.TokenLimit,
-		"limit":  token.TokenLimit,
 		"AND":    token.TokenAnd,
 		"OR":     token.TokenOr,
 		"TRUE":   token.TokenTrue,

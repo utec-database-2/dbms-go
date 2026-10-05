@@ -275,12 +275,6 @@ func rowToSQLTuple(info *sql.TableInfo, record []string) (string, error) {
 			default:
 				return "", fmt.Errorf("columna %q: %q no es un booleano", col.Name, raw)
 			}
-		case "POINT":
-			lit, err := pointLiteralFromCell(raw)
-			if err != nil {
-				return "", fmt.Errorf("columna %q: %v", col.Name, err)
-			}
-			vals[i] = lit
 		default: // STRING
 			// El lexer del proyecto no soporta comillas escapadas dentro de
 			// un literal, así que se quitan para no romper el parseo.

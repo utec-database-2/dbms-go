@@ -23,26 +23,6 @@ function QueryPanel({ query, onQueryChange, onExecute, loading }) {
       name: "Ordenar por ciclo",
       sql: "SELECT * FROM alumno ORDER BY ciclo DESC;",
     },
-    {
-      name: "Tabla espacial",
-      sql: "CREATE TABLE tiendas (id INT, nombre STRING, ubicacion POINT);",
-    },
-    {
-      name: "Insertar tiendas",
-      sql: `INSERT INTO tiendas VALUES
-  (1, "Tienda Centro", POINT(-12.0432, -77.0282)),
-  (2, "Tienda Norte", POINT(-12.0200, -77.0282)),
-  (3, "Tienda Cercana", POINT(-12.0500, -77.0282)),
-  (4, "Tienda Sur", POINT(-12.0700, -77.0282));`,
-    },
-    {
-      name: "Tiendas a menos de 5 km",
-      sql: "SELECT * FROM tiendas WHERE distancia(ubicacion, POINT(-12.0464, -77.0428)) < 5000;",
-    },
-    {
-      name: "Las 3 más cercanas",
-      sql: "SELECT * FROM tiendas ORDER BY distancia(ubicacion, POINT(-12.0464, -77.0428)) LIMIT 3;",
-    },
   ];
 
   const handleClear = () => onQueryChange("");

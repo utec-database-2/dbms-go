@@ -70,7 +70,6 @@ const (
 	TokenBy
 	TokenIn
 	TokenAs
-	TokenLimit
 
 	TokenIf
 	TokenElse
@@ -135,7 +134,6 @@ var tokenSymbols = map[TokenType]string{
 	TokenBy:     "by",
 	TokenIn:     "in",
 	TokenAs:     "as",
-	TokenLimit:  "limit",
 
 	TokenTrue:  "true",
 	TokenFalse: "false",
