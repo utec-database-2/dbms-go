@@ -2433,3 +2433,112 @@ body {
 .polygon-mode .leaflet-container {
   cursor: crosshair;
 }
+
+/* =================================
+   ÁRBOL DE LA CONSULTA
+================================= */
+
+.qt-title {
+  flex-wrap: wrap;
+}
+
+.qt-toggle {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.qt-toggle button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--secondary-text);
+  font-size: 11px;
+  text-transform: none;
+  cursor: pointer;
+}
+
+.qt-toggle button.active {
+  border-color: #7c3aed;
+  color: var(--text);
+  background: rgba(124, 58, 237, 0.12);
+}
+
+.qt-toggle button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.qt-card {
+  cursor: default;
+}
+
+.qt-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.qt-content span {
+  overflow-wrap: anywhere;
+}
+
+.qt-role {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface-hover);
+  color: var(--secondary-text);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 500;
+}
+
+.qt-badges {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.qt-badges span {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--surface-hover);
+  color: var(--secondary-text);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+/* Las entradas de un operador van debajo y a la derecha, unidas por líneas. */
+.qt-children {
+  padding-left: 26px;
+}
+
+.qt-children > .qt-node {
+  position: relative;
+}
+
+.qt-children > .qt-node::before {
+  content: "";
+  position: absolute;
+  left: -13px;
+  top: 25px;
+  width: 13px;
+  height: 1px;
+  background: var(--border);
+}
+
+/* El árbol usa todo el ancho del panel (no hay columna de detalles). */
+.execution-body.qt-body {
+  grid-template-columns: 1fr;
+}
+
+.execution-body.qt-body .plan-tree {
+  border-right: none;
+}

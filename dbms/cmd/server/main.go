@@ -72,11 +72,13 @@ func (db *database) locked(h http.HandlerFunc) http.HandlerFunc {
 // queryResult es la respuesta de /api/query con la forma que espera el
 // frontend: el plan va como texto legible, un paso por línea.
 type queryResult struct {
-	Columns   []string
-	Rows      [][]any
-	Affected  int
-	Message   string
-	Plan      []string
+	Columns  []string
+	Rows     [][]any
+	Affected int
+	Message  string
+	Plan     []string
+	// Tree es el plan como árbol de operadores (raíz = último operador).
+	Tree      *sql.PlanNode
 	ElapsedMs float64
 }
 
@@ -93,12 +95,13 @@ func (db *database) execute(query string) (*queryResult, error) {
 		Affected:  res.Affected,
 		Message:   res.Message,
 		Plan:      make([]string, 0, len(res.Plan)),
+		Tree:      res.PlanTree(),
 		ElapsedMs: float64(time.Since(start).Microseconds()) / 1000,
 	}
 	if out.Rows == nil {
 		out.Rows = [][]any{}
 	}
-	for _, st := range res.Plan {
+	stepLine := func(st sql.Step) string {
 		line := fmt.Sprintf("[%s] %s", st.Kind, st.Detail)
 		if st.Rows > 0 {
 			line += fmt.Sprintf(" · %d fila(s)", st.Rows)
@@ -106,7 +109,14 @@ func (db *database) execute(query string) (*queryResult, error) {
 		if st.Cost > 0 {
 			line += fmt.Sprintf(" · costo ≈ %d página(s)", st.Cost)
 		}
-		out.Plan = append(out.Plan, line)
+		return line
+	}
+	for _, st := range res.Plan {
+		// La entrada derecha de un JOIN se lee antes de unir.
+		for _, in := range st.Inputs {
+			out.Plan = append(out.Plan, stepLine(in))
+		}
+		out.Plan = append(out.Plan, stepLine(st))
 	}
 	return out, nil
 }
