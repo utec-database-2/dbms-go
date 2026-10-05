@@ -2,3 +2,9 @@ n,structure,index_bytes,index_mb
 1000,bplus_clustered,73728,0.070312
 1000,bplus_unclustered,73728,0.070312
 1000,extendible_hash,98304,0.093750
+10000,bplus_clustered,671744,0.640625
+10000,bplus_unclustered,671744,0.640625
+10000,extendible_hash,1056768,1.007812
+100000,bplus_clustered,6615040,6.308594
+100000,bplus_unclustered,6615040,6.308594
+100000,extendible_hash,8699904,8.296875
