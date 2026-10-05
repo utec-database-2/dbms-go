@@ -53,8 +53,7 @@ type TableInfo struct {
 	IndexType string
 }
 
-
-//-------------------------------------------------------
+// -------------------------------------------------------
 // TABLA SPACIAL
 type TableRecord struct {
 	RID    storage.RID
@@ -103,10 +102,7 @@ func (db *Database) ScanTable(name string) ([]TableRecord, error) {
 	return records, nil
 }
 
-
-
 //----------------------------------------------
-
 
 // TableInfo devuelve el esquema y las estadísticas de una tabla conocida.
 func (db *Database) TableInfo(name string) (*TableInfo, bool) {
@@ -148,6 +144,8 @@ type table struct {
 	schema *ast.CreateTable
 	heap   *heap.HeapFile
 	idx    *bplus.UnclusteredIndex[int] // clave = primera columna (INT)
+
+	spatial map[int]*spatialIndex // R-Tree por columna POINT, se arma bajo demanda
 }
 
 // Database es un catálogo en memoria sobre un directorio de datos en disco.
@@ -231,7 +229,9 @@ func (db *Database) execCreate(ct *ast.CreateTable) (*Result, error) {
 		return nil, fmt.Errorf("sql: la primera columna (clave) debe ser INT, no %q", ct.Columns[0].Type.Name)
 	}
 	for _, c := range ct.Columns {
-		if c.Type.Name != "INT" && c.Type.Name != "STRING" && c.Type.Name != "DECIMAL" && c.Type.Name != "BOOL" {
+		switch strings.ToUpper(c.Type.Name) {
+		case "INT", "STRING", "DECIMAL", "BOOL", "POINT":
+		default:
 			return nil, fmt.Errorf("sql: tipo de columna no soportado: %q", c.Type.Name)
 		}
 	}
@@ -295,6 +295,13 @@ func (db *Database) execInsert(ins *ast.Insert) (*Result, error) {
 				vals[i] = zeroValue(schema.Columns[i].Type.Name)
 			}
 		}
+		for i, c := range schema.Columns {
+			_, isPoint := vals[i].(shared.Point)
+			if isPointType(c.Type.Name) != isPoint {
+				return nil, fmt.Errorf("sql: el valor de la columna %q no es compatible con su tipo %s",
+					c.Name.Name, strings.ToUpper(c.Type.Name))
+			}
+		}
 		key, ok := vals[0].(int)
 		if !ok {
 			return nil, fmt.Errorf("sql: la clave (primera columna) debe ser entera")
@@ -303,9 +310,11 @@ func (db *Database) execInsert(ins *ast.Insert) (*Result, error) {
 		if err != nil {
 			return nil, err
 		}
-		if _, err := t.idx.InsertWithKey(key, payload); err != nil {
+		rid, err := t.idx.InsertWithKey(key, payload)
+		if err != nil {
 			return nil, err
 		}
+		t.indexInsertedPoints(vals, rid)
 		affected++
 	}
 	return &Result{
@@ -342,11 +351,75 @@ func (db *Database) execSelect(sel *ast.Select) (*Result, error) {
 		}
 	}
 
-	// WHERE sobre la clave -> punto/rango en el B+.
+	whereSp, err := analyzeSpatialWhere(sel.Closure, schema)
+	if err != nil {
+		return nil, err
+	}
+	orderSp, err := analyzeSpatialOrder(sel.OrderBy, schema)
+	if err != nil {
+		return nil, err
+	}
+
+	var rows []shared.Record
+	var plan []string
+	sorted := false
+
+	switch {
+	case whereSp != nil:
+		rows, plan, err = db.spatialWhereRows(t, whereSp)
+	case orderSp != nil && sel.Closure == nil && orderSp.canUseKNN(sel.Limit):
+		rows, plan, err = db.spatialKNNRows(t, orderSp, *sel.Limit)
+		sorted = true
+	default:
+		rows, plan, err = db.keyRows(t, sel)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	switch {
+	case orderSp != nil && !sorted:
+		var step string
+		rows, step, err = db.orderByDistance(rows, orderSp)
+		if err != nil {
+			return nil, err
+		}
+		plan = append(plan, step)
+	case orderSp == nil && sel.OrderBy != nil:
+		var step string
+		rows, step, err = db.orderByColumn(rows, sel.OrderBy, schema)
+		if err != nil {
+			return nil, err
+		}
+		plan = append(plan, step)
+	}
+
+	if sel.Limit != nil {
+		if len(rows) > *sel.Limit {
+			rows = rows[:*sel.Limit]
+		}
+		plan = append(plan, fmt.Sprintf("LIMIT %d", *sel.Limit))
+	}
+
+	res := &Result{Columns: outCols, Plan: plan}
+	for _, r := range rows {
+		proj := make([]any, len(projPos))
+		for i, p := range projPos {
+			proj[i] = r.Values[p]
+		}
+		res.Rows = append(res.Rows, proj)
+	}
+	return res, nil
+}
+
+// keyRows resuelve el WHERE sobre la clave (o ninguno) con el índice B+.
+func (db *Database) keyRows(t *table, sel *ast.Select) ([]shared.Record, []string, error) {
+	schema := t.schema
+
 	var recs []bplus.UnclusteredRecord[int]
 	low, high, point, hasWhere, err := whereRange(sel, schema.Columns[0].Name.Name)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	plan := []string{}
 	switch {
@@ -361,7 +434,7 @@ func (db *Database) execSelect(sel *ast.Select) (*Result, error) {
 		plan = append(plan, fmt.Sprintf("Búsqueda por rango (RangeSearch) en el índice B+: %s en [%d, %d]", schema.Columns[0].Name.Name, low, high))
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	plan = append(plan, fmt.Sprintf("%d registro(s) recuperados del Heap File vía el RID del índice", len(recs)))
 
@@ -369,41 +442,35 @@ func (db *Database) execSelect(sel *ast.Select) (*Result, error) {
 	for _, r := range recs {
 		vals, err := decodeRow(r.Payload)
 		if err != nil {
-			return nil, fmt.Errorf("sql: decodificación de fila: %v", err)
+			return nil, nil, fmt.Errorf("sql: decodificación de fila: %v", err)
 		}
 		rows = append(rows, shared.Record{Values: vals, RID: r.RID})
 	}
+	return rows, plan, nil
+}
 
-	// ORDER BY <col> [ASC|DESC] mediante external sorting.
-	if sel.OrderBy != nil {
-		name, ok := sel.OrderBy.Expr.(*ast.IdExpr)
-		if !ok {
-			return nil, fmt.Errorf("sql: ORDER BY solo soporta columnas")
-		}
-		pos := columnPos(schema, name.Name)
-		if pos < 0 {
-			return nil, fmt.Errorf("sql: ORDER BY columna desconocida %q", name.Name)
-		}
-		rows, err = sortRows(db, rows, pos, sel.OrderBy.Descendent)
-		if err != nil {
-			return nil, err
-		}
-		dir := "ASC"
-		if sel.OrderBy.Descendent {
-			dir = "DESC"
-		}
-		plan = append(plan, fmt.Sprintf("ORDER BY %s %s vía External Sort (k-way merge)", name.Name, dir))
+// orderByColumn implementa ORDER BY <col> [ASC|DESC] mediante external sorting.
+func (db *Database) orderByColumn(rows []shared.Record, order *ast.OrderBy, schema *ast.CreateTable) ([]shared.Record, string, error) {
+	name, ok := order.Expr.(*ast.IdExpr)
+	if !ok {
+		return nil, "", fmt.Errorf("sql: ORDER BY solo soporta columnas")
 	}
-
-	res := &Result{Columns: outCols, Plan: plan}
-	for _, r := range rows {
-		proj := make([]any, len(projPos))
-		for i, p := range projPos {
-			proj[i] = r.Values[p]
-		}
-		res.Rows = append(res.Rows, proj)
+	pos := columnPos(schema, name.Name)
+	if pos < 0 {
+		return nil, "", fmt.Errorf("sql: ORDER BY columna desconocida %q", name.Name)
 	}
-	return res, nil
+	if isPointType(schema.Columns[pos].Type.Name) {
+		return nil, "", fmt.Errorf("sql: no se puede ordenar por la columna POINT %q; use ORDER BY distancia(%s, POINT(lat, lon))", name.Name, name.Name)
+	}
+	sorted, err := sortRows(db, rows, pos, order.Descendent)
+	if err != nil {
+		return nil, "", err
+	}
+	dir := "ASC"
+	if order.Descendent {
+		dir = "DESC"
+	}
+	return sorted, fmt.Sprintf("ORDER BY %s %s vía External Sort (k-way merge)", name.Name, dir), nil
 }
 
 func sortRows(db *Database, rows []shared.Record, pos int, desc bool) ([]shared.Record, error) {
@@ -434,6 +501,15 @@ func (db *Database) execDelete(del *ast.Delete) (*Result, error) {
 	if del.Closure == nil {
 		return nil, fmt.Errorf("sql: DELETE requiere WHERE")
 	}
+
+	spatialWhere, err := analyzeSpatialWhere(del.Closure, t.schema)
+	if err != nil {
+		return nil, err
+	}
+	if spatialWhere != nil {
+		return db.execDeleteSpatial(del, t, spatialWhere)
+	}
+
 	low, high, point, _, err := whereRangeFromClosure(del.Closure, t.schema.Columns[0].Name.Name)
 	if err != nil {
 		return nil, err
@@ -456,6 +532,7 @@ func (db *Database) execDelete(del *ast.Delete) (*Result, error) {
 		}
 		affected++
 	}
+	t.dropSpatialIndexes()
 	return &Result{
 		Affected: affected,
 		Plan: []string{
@@ -544,9 +621,11 @@ func literalValue(node ast.ASTNode) (any, error) {
 	case *ast.StringExpr:
 		return strings.Trim(n.Value, "'\""), nil
 	case *ast.FloatExpr:
-		return float64(n.Value), nil
+		return n.Value, nil
 	case *ast.BoolExpr:
 		return n.Value, nil
+	case *ast.PointExpr:
+		return shared.Point{Lat: n.Lat, Lon: n.Lon}, nil
 	default:
 		return nil, fmt.Errorf("literal no soportado %T", node)
 	}
@@ -562,6 +641,8 @@ func zeroValue(typeName string) any {
 		return float64(0)
 	case "BOOL":
 		return false
+	case "POINT":
+		return shared.Point{}
 	default:
 		return nil
 	}
