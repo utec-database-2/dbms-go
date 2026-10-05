@@ -221,6 +221,12 @@ func (e *Engine) joinStep(left []joinSource, right joinSource, rows []storage.Tu
 			Detail: fmt.Sprintf("%s por nested loop: %d × %d pares evaluados", label, len(rows), len(rrows)),
 			Rows:   len(out),
 			Cost:   len(rows) * len(rrows),
+			Inputs: []Step{{
+				Kind:   StepScan,
+				Detail: fmt.Sprintf("%s: recorrido secuencial de %s (lado interno del nested loop)", right.alias, right.tbl.Name()),
+				Rows:   len(rrows),
+				Cost:   len(rrows),
+			}},
 		}, nil
 	}
 
@@ -253,6 +259,13 @@ func (e *Engine) joinStep(left []joinSource, right joinSource, rows []storage.Tu
 					label, lookups, idx.Name(), idx.Kind(), right.alias, rcol),
 				Rows: len(out),
 				Cost: lookups + len(out),
+				Inputs: []Step{{
+					Kind: StepIndexSeek,
+					Detail: fmt.Sprintf("%s: índice %s (%s) sobre %s = valor de cada fila de la izquierda",
+						right.alias, idx.Name(), idx.Kind(), rcol),
+					Rows: len(out),
+					Cost: lookups,
+				}},
 			}, nil
 		}
 	}
@@ -323,6 +336,12 @@ func (e *Engine) joinStep(left []joinSource, right joinSource, rows []storage.Tu
 			label, parts, where, right.alias, rcol, len(rrows), len(rows)),
 		Rows: len(out),
 		Cost: len(rows) + len(rrows),
+		Inputs: []Step{{
+			Kind:   StepScan,
+			Detail: fmt.Sprintf("%s: recorrido secuencial de %s (lado build del hash join)", right.alias, right.tbl.Name()),
+			Rows:   len(rrows),
+			Cost:   len(rrows),
+		}},
 	}, nil
 }
 

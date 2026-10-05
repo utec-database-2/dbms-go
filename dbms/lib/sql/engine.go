@@ -56,6 +56,10 @@ type Step struct {
 	Rows int
 	// Cost es una estimación de E/S (lecturas de página) del paso.
 	Cost int
+	// Inputs son las entradas propias del paso, además del resultado de los
+	// pasos anteriores. Solo las usa el JOIN: su entrada derecha es el acceso
+	// a la otra tabla. Con ellas se arma el árbol del plan (PlanTree).
+	Inputs []Step
 }
 
 // Result es la respuesta del motor a una consulta.

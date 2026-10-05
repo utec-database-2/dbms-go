@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   GitBranch,
   Search,
@@ -11,6 +12,13 @@ import {
   GitMerge,
   Boxes,
   Lock,
+  Filter,
+  ChevronDown,
+  ChevronRight,
+  ListTree,
+  List,
+  Scissors,
+  Columns3,
 } from "lucide-react";
 
 // Elige un ícono según palabras clave del paso real que devolvió el
@@ -32,9 +40,93 @@ function iconFor(step) {
   return <Database size={17} />;
 }
 
+// Ícono de un operador del árbol según su tipo (Kind del motor).
+function iconForKind(kind) {
+  switch (kind) {
+    case "seq-scan":
+      return <Table2 size={17} />;
+    case "index-seek":
+    case "index-scan":
+      return <Search size={17} />;
+    case "filter":
+      return <Filter size={17} />;
+    case "project":
+      return <Columns3 size={17} />;
+    case "external-sort":
+      return <ArrowDownUp size={17} />;
+    case "group-by":
+      return <Boxes size={17} />;
+    case "join":
+      return <GitMerge size={17} />;
+    case "limit":
+      return <Scissors size={17} />;
+    default:
+      return <Database size={17} />;
+  }
+}
+
+// Rol de cada entrada de un JOIN, para leer el árbol de abajo hacia arriba.
+function inputRole(parentKind, index) {
+  if (parentKind !== "join") return null;
+  return index === 0 ? "entrada izquierda" : "entrada derecha";
+}
+
+// Un operador del árbol de la consulta y, debajo, sus entradas.
+function PlanTreeNode({ node, role }) {
+  const [open, setOpen] = useState(true);
+  const children = node.Children || [];
+  const hasChildren = children.length > 0;
+
+  return (
+    <div className="qt-node">
+      <div className="plan-node qt-card">
+        <div className="plan-expand">
+          {hasChildren ? (
+            <button
+              className="expand-button"
+              onClick={() => setOpen(!open)}
+              title={open ? "Contraer" : "Expandir"}
+            >
+              {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            </button>
+          ) : (
+            <span className="expand-placeholder"></span>
+          )}
+        </div>
+        <div className="plan-node-icon">{iconForKind(node.Kind)}</div>
+        <div className="plan-node-content qt-content">
+          <strong>
+            {node.Op}
+            {role && <em className="qt-role">{role}</em>}
+          </strong>
+          <span>{node.Detail}</span>
+        </div>
+        <div className="qt-badges">
+          <span>{node.Rows} fila(s)</span>
+          {node.Cost > 0 && <span>costo ≈ {node.Cost}</span>}
+        </div>
+      </div>
+      {hasChildren && open && (
+        <div className="plan-children qt-children">
+          {children.map((child, i) => (
+            <PlanTreeNode
+              key={i}
+              node={child}
+              role={inputRole(node.Kind, i)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ExecutionPlanPanel({ result, query }) {
   const plan = result?.Plan || [];
   const hasPlan = plan.length > 0;
+  const tree = result?.Tree || null;
+  const [view, setView] = useState("tree");
+  const showTree = view === "tree" && tree;
 
   return (
     <section className="execution-panel">
@@ -83,15 +175,36 @@ function ExecutionPlanPanel({ result, query }) {
         </div>
       </div>
 
-      <div className="execution-body">
+      <div className="execution-body qt-body">
         <div className="plan-tree" style={{ flex: 1 }}>
-          <div className="section-title">
+          <div className="section-title qt-title">
             <Layers3 size={15} />
-            <span>Pasos reales de ejecución</span>
+            <span>
+              {showTree
+                ? "Árbol de la consulta (raíz = resultado, hojas = acceso a tablas)"
+                : "Pasos reales de ejecución"}
+            </span>
+            <div className="qt-toggle">
+              <button
+                className={view === "tree" ? "active" : ""}
+                onClick={() => setView("tree")}
+                disabled={!tree}
+              >
+                <ListTree size={13} /> Árbol
+              </button>
+              <button
+                className={view === "list" ? "active" : ""}
+                onClick={() => setView("list")}
+              >
+                <List size={13} /> Pasos
+              </button>
+            </div>
           </div>
 
           <div className="tree-container">
-            {hasPlan ? (
+            {showTree ? (
+              <PlanTreeNode node={tree} />
+            ) : hasPlan ? (
               plan.map((step, i) => (
                 <div className="plan-node-container" key={i}>
                   <div className="plan-node">
