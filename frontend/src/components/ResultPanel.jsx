@@ -10,7 +10,15 @@ import {
   AlertCircle,
 } from "lucide-react";
 
-function ResultPanel({ result, error, loading }) {
+// describeResult resume una sentencia para su pestaña: filas del SELECT,
+// filas afectadas por DML o el mensaje de las sentencias sin resultado.
+function describeResult(r) {
+  if (r?.Columns?.length) return `${r.Rows?.length ?? 0} filas`;
+  if (r?.Affected > 0) return `${r.Affected} afectadas`;
+  return (r?.Message || "").slice(0, 32);
+}
+
+function ResultPanel({ result, error, loading, results, index, onSelect, failed }) {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
 
@@ -19,6 +27,10 @@ function ResultPanel({ result, error, loading }) {
     setShownResult(result);
     setPage(1);
   }
+
+  // Las pestañas por sentencia solo aparecen cuando el script tenía varias.
+  const list = results || [];
+  const showTabs = list.length > 1 || failed >= 0;
 
   const columns = result?.Columns || [];
   const rows = result?.Rows || [];
@@ -84,6 +96,28 @@ function ResultPanel({ result, error, loading }) {
           <span>{statusText}</span>
         </div>
       </div>
+
+      {showTabs && (
+        <div className="result-tabs">
+          {list.map((r, i) => (
+            <button
+              key={i}
+              type="button"
+              className={`result-tab${i === index ? " active" : ""}`}
+              onClick={() => onSelect?.(i)}
+              title={r.Message || `Sentencia ${i + 1}`}
+            >
+              <strong>{i + 1}</strong>
+              <span>{describeResult(r)}</span>
+            </button>
+          ))}
+          {failed >= 0 && (
+            <span className="result-tab failed" title={error || "Sentencia que falló"}>
+              Sentencia {failed + 1} ✗
+            </span>
+          )}
+        </div>
+      )}
 
       {error && <div className="result-error">{error}</div>}
 

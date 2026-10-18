@@ -7,6 +7,7 @@ package main
 import (
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -69,7 +70,7 @@ func (db *database) locked(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// queryResult es la respuesta de /api/query con la forma que espera el
+// queryResult es el resultado de UNA sentencia, la forma que espera el
 // frontend: el plan va como texto legible, un paso por línea.
 type queryResult struct {
 	Columns  []string
@@ -82,21 +83,58 @@ type queryResult struct {
 	ElapsedMs float64
 }
 
-// execute corre una sentencia; el llamador debe tener db.mu tomado.
-func (db *database) execute(query string) (*queryResult, error) {
+// scriptResult es la respuesta de /api/query: un resultado por sentencia
+// ejecutada, en orden. Si el script falló a mitad, Failed y Error señalan la
+// sentencia que falló y Results conserva las que sí corrieron (Failed coincide
+// con len(Results), porque la sentencia que falló no llegó a producir
+// resultado). Failed es -1 y Error "" cuando todo se ejecutó.
+type scriptResult struct {
+	Results   []queryResult
+	Failed    int
+	Error     string
+	ElapsedMs float64 // total del script
+}
+
+// execute corre un script completo (una o varias sentencias separadas por
+// ";"); el llamador debe tener db.mu tomado.
+//
+// Devuelve nil con error cuando no hay nada que enseñar: error de sintaxis
+// (no se ejecutó nada) o fallo en la primera sentencia. Si el script falla a
+// mitad, devuelve los resultados parciales con Failed/Error y sin error, para
+// que el cliente pueda mostrar lo que sí se ejecutó.
+func (db *database) execute(script string) (*scriptResult, error) {
 	start := time.Now()
-	res, err := db.eng.Exec(query)
-	if err != nil {
-		return nil, err
+	results, err := db.eng.ExecScript(script)
+	out := &scriptResult{
+		Results:   make([]queryResult, 0, len(results)),
+		Failed:    -1,
+		ElapsedMs: float64(time.Since(start).Microseconds()) / 1000,
 	}
-	out := &queryResult{
+	for _, res := range results {
+		out.Results = append(out.Results, toQueryResult(res))
+	}
+	if err != nil {
+		var se *sql.StmtError
+		if !errors.As(err, &se) || len(results) == 0 {
+			return nil, err
+		}
+		out.Failed = se.Index
+		out.Error = err.Error()
+	}
+	return out, nil
+}
+
+// toQueryResult adapta un *sql.Result (una sentencia) a la forma que espera
+// el frontend: el plan va como texto legible, un paso por línea.
+func toQueryResult(res *sql.Result) queryResult {
+	out := queryResult{
 		Columns:   res.Columns,
 		Rows:      res.Rows,
 		Affected:  res.Affected,
 		Message:   res.Message,
 		Plan:      make([]string, 0, len(res.Plan)),
 		Tree:      res.PlanTree(),
-		ElapsedMs: float64(time.Since(start).Microseconds()) / 1000,
+		ElapsedMs: res.ElapsedMs,
 	}
 	if out.Rows == nil {
 		out.Rows = [][]any{}
@@ -118,7 +156,7 @@ func (db *database) execute(query string) (*queryResult, error) {
 		}
 		out.Plan = append(out.Plan, stepLine(st))
 	}
-	return out, nil
+	return out
 }
 
 // ColumnInfo y TableInfo describen una tabla para el panel de archivos.
@@ -243,46 +281,17 @@ func handleQuery(db *database, spatialStore *spatial.Store) http.HandlerFunc {
 		}
 		db.mu.Lock()
 		defer db.mu.Unlock()
-		res, err := db.execute(req.SQL)
+		out, err := db.execute(req.SQL)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, res)
+		writeJSON(w, http.StatusOK, out)
 
-		// Si la consulta modifica la tabla espacial,
-		// reconstruimos el R-Tree.
-		upperSQL := strings.ToUpper(
-			strings.TrimSpace(req.SQL),
-		)
-
-		if strings.HasPrefix(
-			upperSQL,
-			"CREATE TABLE UBICACIONES",
-		) ||
-			strings.HasPrefix(
-				upperSQL,
-				"INSERT INTO UBICACIONES",
-			) ||
-			strings.HasPrefix(
-				upperSQL,
-				"DELETE FROM UBICACIONES",
-			) ||
-			strings.HasPrefix(
-				upperSQL,
-				"UPDATE UBICACIONES",
-			) ||
-			strings.HasPrefix(
-				upperSQL,
-				"DROP TABLE UBICACIONES",
-			) ||
-			strings.HasPrefix(
-				upperSQL,
-				"TRUNCATE",
-			) ||
-			strings.HasPrefix(upperSQL, "COMMIT") ||
-			strings.HasPrefix(upperSQL, "ROLLBACK") {
-
+		// Si el script pudo cambiar el contenido visible de la tabla
+		// espacial (escrituras sobre ella o COMMIT/ROLLBACK que confirman
+		// cambios pendientes), reconstruimos el R-Tree.
+		if touches, err := db.eng.ScriptTouches(req.SQL, spatialStore.TableName); err == nil && touches {
 			_ = spatialStore.Refresh()
 		}
 	}

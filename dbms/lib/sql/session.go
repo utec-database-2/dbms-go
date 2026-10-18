@@ -151,17 +151,9 @@ func statementLocks(root ast.ASTNode) []tableLock {
 	return out
 }
 
-// Exec parsea y ejecuta una sentencia en esta sesión.
-func (s *Session) Exec(query string) (*Result, error) {
+func (s *Session) doExec(root ast.ASTNode) (*Result, error) {
 	e := s.e
-	root, err := e.parse(query)
-	if err != nil {
-		return nil, err
-	}
-	if e.initErr != nil {
-		return nil, e.initErr
-	}
-
+	inicio := time.Now()
 	// 1. Bloqueos de tabla. Dentro de una transacción los toma la propia
 	// transacción (y los conserva hasta el final); en autocommit, una
 	// transacción de bloqueo que solo dura esta sentencia.
@@ -195,6 +187,10 @@ func (s *Session) Exec(query string) (*Result, error) {
 	e.stmtMu.Unlock()
 	releaseAuto()
 
+	if res != nil {
+		res.ElapsedMs = float64(time.Since(inicio).Microseconds()) / 1000
+	}
+
 	if res != nil && len(locks) > 0 {
 		parts := make([]string, len(locks))
 		for i, l := range locks {
@@ -211,6 +207,68 @@ func (s *Session) Exec(query string) (*Result, error) {
 		res.Plan = append([]Step{{Kind: StepLock, Detail: detail}}, res.Plan...)
 	}
 	return res, err
+}
+
+// Exec parsea y ejecuta una sentencia en esta sesión.
+func (s *Session) Exec(query string) (*Result, error) {
+	e := s.e
+	root, err := e.parse(query)
+	if err != nil {
+		return nil, err
+	}
+	if e.initErr != nil {
+		return nil, e.initErr
+	}
+
+	return s.doExec(root)
+}
+
+// StmtError indica en qué sentencia de un script falló la ejecución. Los
+// resultados que acompañan al error contienen las sentencias que sí se
+// ejecutaron (de la 0 a Index-1); la sentencia Index no corrió.
+type StmtError struct {
+	Index int // índice 0-based de la sentencia que falló
+	Total int // sentencias que tenía el script
+	Err   error
+}
+
+func (e *StmtError) Error() string {
+	return fmt.Sprintf("sentencia %d de %d: %v", e.Index+1, e.Total, e.Err)
+}
+
+func (e *StmtError) Unwrap() error { return e.Err }
+
+// ExecScript parsea y ejecuta un script con una o varias sentencias separadas
+// por ";" y devuelve un resultado por sentencia, en orden.
+//
+// Primero parsea el script completo: si alguna sentencia tiene error de
+// sintaxis no se ejecuta ninguna. Después ejecuta sentencia a sentencia y, si
+// una falla, se detiene ahí y devuelve los resultados parciales junto con un
+// *StmtError que señala cuál falló (el error sigue envolviendo el original,
+// así que errors.Is/As siguen funcionando: deadlock, clave duplicada, etc.).
+//
+// Sin BEGIN explícito cada sentencia corre en autocommit (una sentencia no ve
+// a medio hacer a la siguiente); con BEGIN ... COMMIT dentro del script,
+// todas corren en la misma transacción hasta el COMMIT.
+func (s *Session) ExecScript(script string) ([]*Result, error) {
+	e := s.e
+	stmts, err := e.parseAll(script)
+	if err != nil {
+		return nil, err
+	}
+	if e.initErr != nil {
+		return nil, e.initErr
+	}
+
+	results := make([]*Result, 0, len(stmts))
+	for i, root := range stmts {
+		res, err := s.doExec(root)
+		if err != nil {
+			return results, &StmtError{Index: i, Total: len(stmts), Err: err}
+		}
+		results = append(results, res)
+	}
+	return results, nil
 }
 
 // lockFailed maneja un bloqueo rechazado. Si fue por deadlock y la sesión
