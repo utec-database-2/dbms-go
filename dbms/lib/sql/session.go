@@ -51,7 +51,7 @@ func (e *Engine) NewSession() *Session {
 }
 
 // Close deshace la transacción que la sesión tenga abierta y la desregistra.
-func (s *Session) Close() {
+func (s *Session) Close() error {
 	e := s.e
 	if s.active != nil {
 		e.stmtMu.Lock()
@@ -63,6 +63,7 @@ func (s *Session) Close() {
 	e.sessionsMu.Lock()
 	delete(e.sessions, s)
 	e.sessionsMu.Unlock()
+	return nil
 }
 
 // InTransaction indica si la sesión tiene una transacción abierta.

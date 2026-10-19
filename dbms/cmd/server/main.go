@@ -16,7 +16,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/dbms-go/v2/dbms/lib/spatial"
@@ -52,22 +51,15 @@ func main() {
 	log.Fatal(http.ListenAndServe(*addr, withCORS(mux)))
 }
 
-// database envuelve el sql.Engine para el servidor HTTP. El engine guarda la
-// transacción activa como estado propio (una sola sesión), así que las
-// peticiones se serializan con un mutex.
+// database envuelve el sql.Engine para el servidor HTTP.
 type database struct {
-	mu  sync.Mutex
 	eng *sql.Engine
 }
 
-// locked serializa un handler que toca el engine (los espaciales leen la
-// tabla con un SELECT al reconstruir el R-Tree).
+// locked deja pasar las peticiones (los endpoints espaciales no requieren
+// serializar la ejecución con otras peticiones).
 func (db *database) locked(h http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		db.mu.Lock()
-		defer db.mu.Unlock()
-		h(w, r)
-	}
+	return h
 }
 
 // queryResult es el resultado de UNA sentencia, la forma que espera el
@@ -95,16 +87,12 @@ type scriptResult struct {
 	ElapsedMs float64 // total del script
 }
 
-// execute corre un script completo (una o varias sentencias separadas por
-// ";"); el llamador debe tener db.mu tomado.
-//
-// Devuelve nil con error cuando no hay nada que enseñar: error de sintaxis
-// (no se ejecutó nada) o fallo en la primera sentencia. Si el script falla a
-// mitad, devuelve los resultados parciales con Failed/Error y sin error, para
-// que el cliente pueda mostrar lo que sí se ejecutó.
-func (db *database) execute(script string) (*scriptResult, error) {
+// executeSession ejecuta un script completo sobre una Session concreta.
+// Si el script falla a mitad, devuelve los resultados parciales con
+// Failed/Error y sin error para que el cliente pueda mostrar lo ejecutado.
+func executeSession(s *sql.Session, script string) (*scriptResult, error) {
 	start := time.Now()
-	results, err := db.eng.ExecScript(script)
+	results, err := s.ExecScript(script)
 	out := &scriptResult{
 		Results:   make([]queryResult, 0, len(results)),
 		Failed:    -1,
@@ -210,7 +198,10 @@ func tableInfoFrom(f sql.TableFileInfo) *TableInfo {
 	return info
 }
 
-// tablesInfo y tableInfo leen el catálogo; el llamador debe tener db.mu.
+// tablesInfo y tableInfo leen el catálogo directamente del motor.
+// No requieren sincronización global porque el catálogo es leído a través
+// de la API del Engine (Files) y las escrituras ya están coordinadas por
+// el motor (bloqueos de tabla + stmtMu).
 func (db *database) tablesInfo() []*TableInfo {
 	files := db.eng.Files()
 	out := make([]*TableInfo, 0, len(files))
@@ -257,8 +248,6 @@ func writeError(w http.ResponseWriter, status int, err error) {
 // GET /api/tables
 func handleListTables(db *database) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		db.mu.Lock()
-		defer db.mu.Unlock()
 		writeJSON(w, http.StatusOK, db.tablesInfo())
 	}
 }
@@ -279,9 +268,10 @@ func handleQuery(db *database, spatialStore *spatial.Store) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("falta el campo \"sql\""))
 			return
 		}
-		db.mu.Lock()
-		defer db.mu.Unlock()
-		out, err := db.execute(req.SQL)
+		s := db.eng.NewSession()
+		defer s.Close()
+
+		out, err := executeSession(s, req.SQL)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -304,8 +294,6 @@ func handleQuery(db *database, spatialStore *spatial.Store) http.HandlerFunc {
 func handleImportCSV(db *database, spatialStore *spatial.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tableName := r.PathValue("name")
-		db.mu.Lock()
-		defer db.mu.Unlock()
 		info, ok := db.tableInfo(tableName)
 		if !ok {
 			writeError(w, http.StatusNotFound, fmt.Errorf("la tabla %q no existe; créala primero con CREATE TABLE", tableName))
@@ -323,7 +311,10 @@ func handleImportCSV(db *database, spatialStore *spatial.Store) http.HandlerFunc
 		}
 		defer file.Close()
 
-		inserted, skipped, errs := importRows(db, info, file)
+		s := db.eng.NewSession()
+		defer s.Close()
+
+		inserted, skipped, errs := importRowsWithSession(s, info, file)
 		if strings.EqualFold(tableName, "ubicaciones") && inserted > 0 {
 			_ = spatialStore.Refresh()
 		}
@@ -336,7 +327,7 @@ func handleImportCSV(db *database, spatialStore *spatial.Store) http.HandlerFunc
 	}
 }
 
-func importRows(db *database, info *TableInfo, file multipart.File) (inserted, skipped int, errs []string) {
+func importRowsWithSession(s *sql.Session, info *TableInfo, file multipart.File) (inserted, skipped int, errs []string) {
 	const batchSize = 200
 
 	reader := csv.NewReader(file)
@@ -362,11 +353,14 @@ func importRows(db *database, info *TableInfo, file multipart.File) (inserted, s
 			return
 		}
 		stmt := fmt.Sprintf("INSERT INTO %s VALUES %s;", info.Name, strings.Join(batch, ", "))
-		if _, err := db.execute(stmt); err != nil {
+		out, err := executeSession(s, stmt)
+		if err != nil {
 			skipped += len(batch)
 			errs = append(errs, err.Error())
-		} else {
-			inserted += len(batch)
+			return
+		}
+		for _, r := range out.Results {
+			inserted += r.Affected
 		}
 		batch = batch[:0]
 	}

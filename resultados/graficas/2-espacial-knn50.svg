@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="460" viewBox="0 0 900 460" font-family="DejaVu Sans, Helvetica, Arial, sans-serif">
+  <rect width="900" height="460" fill="#ffffff"/>
+  <text x="50" y="28" font-size="17" font-weight="bold" fill="#1c1c1c">k vecinos más cercanos (k = 50)</text>
+  <text x="50" y="48" font-size="12" fill="#555">ms por consulta (media de 100)</text>
+  <line x1="110" y1="400.0" x2="860" y2="400.0" stroke="#e3e3e3"/>
+  <text x="102" y="404.0" font-size="11" fill="#555" text-anchor="end">23.0m</text>
+  <line x1="110" y1="334.0" x2="860" y2="334.0" stroke="#e3e3e3"/>
+  <text x="102" y="338.0" font-size="11" fill="#555" text-anchor="end">88.5m</text>
+  <line x1="110" y1="268.0" x2="860" y2="268.0" stroke="#e3e3e3"/>
+  <text x="102" y="272.0" font-size="11" fill="#555" text-anchor="end">340.5m</text>
+  <line x1="110" y1="202.0" x2="860" y2="202.0" stroke="#e3e3e3"/>
+  <text x="102" y="206.0" font-size="11" fill="#555" text-anchor="end">1.3</text>
+  <line x1="110" y1="136.0" x2="860" y2="136.0" stroke="#e3e3e3"/>
+  <text x="102" y="140.0" font-size="11" fill="#555" text-anchor="end">5.0</text>
+  <line x1="110" y1="70.0" x2="860" y2="70.0" stroke="#e3e3e3"/>
+  <text x="102" y="74.0" font-size="11" fill="#555" text-anchor="end">19.4</text>
+  <line x1="110" y1="400" x2="860" y2="400" stroke="#888"/>
+  <rect x="145.0" y="297.2" width="58.0" height="102.8" fill="#2f6fb2" opacity="0.85"/>
+  <text x="174.0" y="293.2" font-size="10" fill="#333" text-anchor="middle">187.4m</text>
+  <rect x="205.0" y="400.0" width="58.0" height="0.0" fill="#d1704a" opacity="0.85"/>
+  <text x="234.0" y="396.0" font-size="10" fill="#333" text-anchor="middle">23.0m</text>
+  <rect x="265.0" y="298.2" width="58.0" height="101.8" fill="#4f9d69" opacity="0.85"/>
+  <text x="294.0" y="294.2" font-size="10" fill="#333" text-anchor="middle">183.8m</text>
+  <text x="235.0" y="422" font-size="12" fill="#1c1c1c" text-anchor="middle">1000 puntos</text>
+  <rect x="395.0" y="181.4" width="58.0" height="218.6" fill="#2f6fb2" opacity="0.85"/>
+  <text x="424.0" y="177.4" font-size="10" fill="#333" text-anchor="middle">2.0</text>
+  <rect x="455.0" y="385.6" width="58.0" height="14.4" fill="#d1704a" opacity="0.85"/>
+  <text x="484.0" y="381.6" font-size="10" fill="#333" text-anchor="middle">30.9m</text>
+  <rect x="515.0" y="296.1" width="58.0" height="103.9" fill="#4f9d69" opacity="0.85"/>
+  <text x="544.0" y="292.1" font-size="10" fill="#333" text-anchor="middle">191.8m</text>
+  <text x="485.0" y="422" font-size="12" fill="#1c1c1c" text-anchor="middle">10000 puntos</text>
+  <rect x="645.0" y="70.0" width="58.0" height="330.0" fill="#2f6fb2" opacity="0.85"/>
+  <text x="674.0" y="66.0" font-size="10" fill="#333" text-anchor="middle">19.4</text>
+  <rect x="705.0" y="368.3" width="58.0" height="31.7" fill="#d1704a" opacity="0.85"/>
+  <text x="734.0" y="364.3" font-size="10" fill="#333" text-anchor="middle">43.9m</text>
+  <rect x="765.0" y="289.6" width="58.0" height="110.4" fill="#4f9d69" opacity="0.85"/>
+  <text x="794.0" y="285.6" font-size="10" fill="#333" text-anchor="middle">219.0m</text>
+  <text x="735.0" y="422" font-size="12" fill="#1c1c1c" text-anchor="middle">100000 puntos</text>
+  <text x="450" y="446" font-size="12" fill="#555" text-anchor="middle">puntos</text>
+  <rect x="110" y="414" width="12" height="12" fill="#2f6fb2"/>
+  <text x="127" y="424" font-size="12" fill="#333">Secuencial</text>
+  <rect x="202" y="414" width="12" height="12" fill="#d1704a"/>
+  <text x="219" y="424" font-size="12" fill="#333">R-Tree</text>
+  <rect x="266" y="414" width="12" height="12" fill="#4f9d69"/>
+  <text x="283" y="424" font-size="12" fill="#333">GiST (PostgreSQL)</text>
+  <text x="50" y="456" font-size="10" fill="#888">escala logarítmica</text>
+</svg>
