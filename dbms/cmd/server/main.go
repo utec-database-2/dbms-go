@@ -7,6 +7,7 @@ package main
 import (
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -15,7 +16,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/dbms-go/v2/dbms/lib/spatial"
@@ -51,25 +51,18 @@ func main() {
 	log.Fatal(http.ListenAndServe(*addr, withCORS(mux)))
 }
 
-// database envuelve el sql.Engine para el servidor HTTP. El engine guarda la
-// transacción activa como estado propio (una sola sesión), así que las
-// peticiones se serializan con un mutex.
+// database envuelve el sql.Engine para el servidor HTTP.
 type database struct {
-	mu  sync.Mutex
 	eng *sql.Engine
 }
 
-// locked serializa un handler que toca el engine (los espaciales leen la
-// tabla con un SELECT al reconstruir el R-Tree).
+// locked deja pasar las peticiones (los endpoints espaciales no requieren
+// serializar la ejecución con otras peticiones).
 func (db *database) locked(h http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		db.mu.Lock()
-		defer db.mu.Unlock()
-		h(w, r)
-	}
+	return h
 }
 
-// queryResult es la respuesta de /api/query con la forma que espera el
+// queryResult es el resultado de UNA sentencia, la forma que espera el
 // frontend: el plan va como texto legible, un paso por línea.
 type queryResult struct {
 	Columns  []string
@@ -82,21 +75,54 @@ type queryResult struct {
 	ElapsedMs float64
 }
 
-// execute corre una sentencia; el llamador debe tener db.mu tomado.
-func (db *database) execute(query string) (*queryResult, error) {
+// scriptResult es la respuesta de /api/query: un resultado por sentencia
+// ejecutada, en orden. Si el script falló a mitad, Failed y Error señalan la
+// sentencia que falló y Results conserva las que sí corrieron (Failed coincide
+// con len(Results), porque la sentencia que falló no llegó a producir
+// resultado). Failed es -1 y Error "" cuando todo se ejecutó.
+type scriptResult struct {
+	Results   []queryResult
+	Failed    int
+	Error     string
+	ElapsedMs float64 // total del script
+}
+
+// executeSession ejecuta un script completo sobre una Session concreta.
+// Si el script falla a mitad, devuelve los resultados parciales con
+// Failed/Error y sin error para que el cliente pueda mostrar lo ejecutado.
+func executeSession(s *sql.Session, script string) (*scriptResult, error) {
 	start := time.Now()
-	res, err := db.eng.Exec(query)
-	if err != nil {
-		return nil, err
+	results, err := s.ExecScript(script)
+	out := &scriptResult{
+		Results:   make([]queryResult, 0, len(results)),
+		Failed:    -1,
+		ElapsedMs: float64(time.Since(start).Microseconds()) / 1000,
 	}
-	out := &queryResult{
+	for _, res := range results {
+		out.Results = append(out.Results, toQueryResult(res))
+	}
+	if err != nil {
+		var se *sql.StmtError
+		if !errors.As(err, &se) || len(results) == 0 {
+			return nil, err
+		}
+		out.Failed = se.Index
+		out.Error = err.Error()
+	}
+	return out, nil
+}
+
+// toQueryResult adapta un *sql.Result (una sentencia) a la forma que espera
+// el frontend: el plan va como texto legible, un paso por línea.
+func toQueryResult(res *sql.Result) queryResult {
+	out := queryResult{
 		Columns:   res.Columns,
 		Rows:      res.Rows,
 		Affected:  res.Affected,
 		Message:   res.Message,
 		Plan:      make([]string, 0, len(res.Plan)),
 		Tree:      res.PlanTree(),
-		ElapsedMs: float64(time.Since(start).Microseconds()) / 1000,
+		ElapsedMs: res.ElapsedMs,
 	}
 	if out.Rows == nil {
 		out.Rows = [][]any{}
@@ -118,7 +144,7 @@ func (db *database) execute(query string) (*queryResult, error) {
 		}
 		out.Plan = append(out.Plan, stepLine(st))
 	}
-	return out, nil
+	return out
 }
 
 // ColumnInfo y TableInfo describen una tabla para el panel de archivos.
@@ -172,7 +198,10 @@ func tableInfoFrom(f sql.TableFileInfo) *TableInfo {
 	return info
 }
 
-// tablesInfo y tableInfo leen el catálogo; el llamador debe tener db.mu.
+// tablesInfo y tableInfo leen el catálogo directamente del motor.
+// No requieren sincronización global porque el catálogo es leído a través
+// de la API del Engine (Files) y las escrituras ya están coordinadas por
+// el motor (bloqueos de tabla + stmtMu).
 func (db *database) tablesInfo() []*TableInfo {
 	files := db.eng.Files()
 	out := make([]*TableInfo, 0, len(files))
@@ -219,8 +248,6 @@ func writeError(w http.ResponseWriter, status int, err error) {
 // GET /api/tables
 func handleListTables(db *database) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		db.mu.Lock()
-		defer db.mu.Unlock()
 		writeJSON(w, http.StatusOK, db.tablesInfo())
 	}
 }
@@ -241,48 +268,20 @@ func handleQuery(db *database, spatialStore *spatial.Store) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("falta el campo \"sql\""))
 			return
 		}
-		db.mu.Lock()
-		defer db.mu.Unlock()
-		res, err := db.execute(req.SQL)
+		s := db.eng.NewSession()
+		defer s.Close()
+
+		out, err := executeSession(s, req.SQL)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, res)
+		writeJSON(w, http.StatusOK, out)
 
-		// Si la consulta modifica la tabla espacial,
-		// reconstruimos el R-Tree.
-		upperSQL := strings.ToUpper(
-			strings.TrimSpace(req.SQL),
-		)
-
-		if strings.HasPrefix(
-			upperSQL,
-			"CREATE TABLE UBICACIONES",
-		) ||
-			strings.HasPrefix(
-				upperSQL,
-				"INSERT INTO UBICACIONES",
-			) ||
-			strings.HasPrefix(
-				upperSQL,
-				"DELETE FROM UBICACIONES",
-			) ||
-			strings.HasPrefix(
-				upperSQL,
-				"UPDATE UBICACIONES",
-			) ||
-			strings.HasPrefix(
-				upperSQL,
-				"DROP TABLE UBICACIONES",
-			) ||
-			strings.HasPrefix(
-				upperSQL,
-				"TRUNCATE",
-			) ||
-			strings.HasPrefix(upperSQL, "COMMIT") ||
-			strings.HasPrefix(upperSQL, "ROLLBACK") {
-
+		// Si el script pudo cambiar el contenido visible de la tabla
+		// espacial (escrituras sobre ella o COMMIT/ROLLBACK que confirman
+		// cambios pendientes), reconstruimos el R-Tree.
+		if touches, err := db.eng.ScriptTouches(req.SQL, spatialStore.TableName); err == nil && touches {
 			_ = spatialStore.Refresh()
 		}
 	}
@@ -295,8 +294,6 @@ func handleQuery(db *database, spatialStore *spatial.Store) http.HandlerFunc {
 func handleImportCSV(db *database, spatialStore *spatial.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tableName := r.PathValue("name")
-		db.mu.Lock()
-		defer db.mu.Unlock()
 		info, ok := db.tableInfo(tableName)
 		if !ok {
 			writeError(w, http.StatusNotFound, fmt.Errorf("la tabla %q no existe; créala primero con CREATE TABLE", tableName))
@@ -314,7 +311,10 @@ func handleImportCSV(db *database, spatialStore *spatial.Store) http.HandlerFunc
 		}
 		defer file.Close()
 
-		inserted, skipped, errs := importRows(db, info, file)
+		s := db.eng.NewSession()
+		defer s.Close()
+
+		inserted, skipped, errs := importRowsWithSession(s, info, file)
 		if strings.EqualFold(tableName, "ubicaciones") && inserted > 0 {
 			_ = spatialStore.Refresh()
 		}
@@ -327,7 +327,7 @@ func handleImportCSV(db *database, spatialStore *spatial.Store) http.HandlerFunc
 	}
 }
 
-func importRows(db *database, info *TableInfo, file multipart.File) (inserted, skipped int, errs []string) {
+func importRowsWithSession(s *sql.Session, info *TableInfo, file multipart.File) (inserted, skipped int, errs []string) {
 	const batchSize = 200
 
 	reader := csv.NewReader(file)
@@ -353,11 +353,14 @@ func importRows(db *database, info *TableInfo, file multipart.File) (inserted, s
 			return
 		}
 		stmt := fmt.Sprintf("INSERT INTO %s VALUES %s;", info.Name, strings.Join(batch, ", "))
-		if _, err := db.execute(stmt); err != nil {
+		out, err := executeSession(s, stmt)
+		if err != nil {
 			skipped += len(batch)
 			errs = append(errs, err.Error())
-		} else {
-			inserted += len(batch)
+			return
+		}
+		for _, r := range out.Results {
+			inserted += r.Affected
 		}
 		batch = batch[:0]
 	}

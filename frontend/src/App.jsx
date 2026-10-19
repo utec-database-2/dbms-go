@@ -19,7 +19,11 @@ function App() {
   const [query, setQuery] = useState(
     "CREATE TABLE alumno (codigo INT PRIMARY KEY, nombre VARCHAR(40), ciclo INT);",
   );
-  const [result, setResult] = useState(null);
+  // results tiene un resultado por sentencia ejecutada (scripts con ";");
+  // resultIndex selecciona cuál se muestra en los paneles de resultados y plan.
+  const [results, setResults] = useState([]);
+  const [resultIndex, setResultIndex] = useState(0);
+  const [failedIndex, setFailedIndex] = useState(-1);
   const [lastQuery, setLastQuery] = useState("");
   const [queryError, setQueryError] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -64,12 +68,21 @@ function App() {
     setQueryError(null);
     try {
       const res = await runQuery(query);
-      setResult(res);
+      const list = res.Results || [];
+      setResults(list);
+      // Se muestra la última sentencia ejecutada (antes era la única).
+      setResultIndex(list.length > 0 ? list.length - 1 : 0);
+      setFailedIndex(typeof res.Failed === "number" ? res.Failed : -1);
+      // Si el script falló a mitad, se enseñan juntos el error y los
+      // resultados parciales de las sentencias que sí corrieron.
+      setQueryError(res.Error || null);
       setLastQuery(query);
       await refreshTables();
     } catch (err) {
       setQueryError(err.message);
-      setResult(null);
+      setResults([]);
+      setResultIndex(0);
+      setFailedIndex(-1);
     } finally {
       setLoading(false);
     }
@@ -100,6 +113,11 @@ function App() {
     },
     [refreshTables],
   );
+
+  // Resultado mostrado: la sentencia seleccionada de results (si el índice se
+  // quedó fuera de rango, la última).
+  const safeIndex = results.length > 0 ? Math.min(resultIndex, results.length - 1) : -1;
+  const result = safeIndex >= 0 ? results[safeIndex] : null;
 
   return (
     <div className={darkMode ? "app dark" : "app light"}>
@@ -146,7 +164,15 @@ function App() {
           loading={loading}
         />
 
-        <ResultPanel result={result} error={queryError} loading={loading} />
+        <ResultPanel
+          result={result}
+          results={results}
+          index={safeIndex}
+          onSelect={setResultIndex}
+          failed={failedIndex}
+          error={queryError}
+          loading={loading}
+        />
 
         <ExecutionPlanPanel result={result} query={lastQuery} />
       </main>

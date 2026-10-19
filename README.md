@@ -159,13 +159,15 @@ El tipo de índice se elige por nombre: `pk_<tabla>` es el índice de la clave p
 | Método y ruta | Cuerpo | Respuesta |
 | - | - | - |
 | `GET /api/tables` | | Tablas con columnas, filas, páginas e índices |
-| `POST /api/query` | `{"sql": "..."}` | `Columns`, `Rows`, `Affected`, `Message`, `Plan`, `ElapsedMs` |
+| `POST /api/query` | `{"sql": "..."}` (varias sentencias separadas por `;`) | `Results`: un elemento por sentencia con `Columns`, `Rows`, `Affected`, `Message`, `Plan`, `ElapsedMs`; más `Failed`/`Error` si el script falló a mitad y `ElapsedMs` total |
 | `POST /api/tables/{t}/import` | multipart con `file` (CSV) | Filas importadas, omitidas y errores |
 | `POST /api/spatial/range` | `{latitude, longitude, radius, metric}` | Puntos dentro del radio (km o grados) |
 | `POST /api/spatial/knn` | `{latitude, longitude, k, metric}` | k vecinos ordenados por distancia |
 | `POST /api/spatial/polygon` | `{vertices: [{lat, lon}, ...]}` | Puntos dentro del polígono |
 
 `metric` es `haversine` o `euclidean`. El panel de mapa usa la tabla `ubicaciones`, que debe tener `id`, `nombre`, `tipo` y las coordenadas: `latitud` y `longitud`, o una columna `POINT` llamada `ubicacion`.
+
+Un script se parsea completo antes de ejecutar nada: si una sentencia tiene error de sintaxis no corre ninguna y la respuesta es 400. Si falla al ejecutarse (tabla inexistente, clave duplicada, deadlock, …) se detiene ahí, la respuesta es 200 con `Failed`/`Error` apuntando a la sentencia y `Results` con las que sí corrieron. Sin `BEGIN` cada sentencia corre en autocommit; con `BEGIN ... COMMIT` dentro del mismo script todas corren en la misma transacción.
 
 ## Pruebas
 
