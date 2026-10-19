@@ -205,6 +205,9 @@ func (ec *evalContext) eval(node ast.ASTNode) (any, error) {
 		if v, ok, err := ec.evalSpatialFunc(n); ok {
 			return v, err
 		}
+		if v, ok, err := ec.evalMatchFunc(n); ok {
+			return v, err
+		}
 		return nil, fmt.Errorf("sql: la función %s todavía no está implementada", n.Name)
 
 	default:
