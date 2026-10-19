@@ -314,6 +314,7 @@ func (e *Engine) execDelete(n *ast.Delete) (*Result, error) {
 // execSelect ejecuta una consulta completa: elección de acceso (índice o
 // recorrido), filtro, GROUP BY, ORDER BY con external sorting, y LIMIT.
 func (e *Engine) execSelect(n *ast.Select) (*Result, error) {
+	resolveOrderByAlias(n)
 	if n.From.Name == "" {
 		return nil, fmt.Errorf("sql: SELECT sin FROM (no se soporta SELECT de constantes)")
 	}
@@ -589,6 +590,30 @@ func unwrapSelectItem(node ast.ASTNode) (ast.ASTNode, *string) {
 		return a.Expr, a.Alias
 	}
 	return node, nil
+}
+
+// resolveOrderByAlias deja que ORDER BY use un nombre de salida
+// (SELECT expr AS x ... ORDER BY x): sustituye el identificador por la
+// expresión a la que apunta el alias, como hace PostgreSQL. Si el ORDER BY no
+// es un identificador sin calificar no hace nada.
+func resolveOrderByAlias(n *ast.Select) {
+	if n.OrderBy == nil {
+		return
+	}
+	id, ok := n.OrderBy.Expr.(*ast.IdExpr)
+	if !ok || id.Table != nil {
+		return
+	}
+	for _, sel := range n.Selected {
+		al, ok := sel.(*ast.AliasedExpr)
+		if !ok || al.Alias == nil {
+			continue
+		}
+		if strings.EqualFold(*al.Alias, id.Name) {
+			n.OrderBy.Expr = al.Expr
+			return
+		}
+	}
 }
 
 // exprLabel derives el nombre de columna de una expresión proyectada.
