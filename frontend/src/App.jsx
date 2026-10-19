@@ -10,7 +10,9 @@ import { importCsv, listTables, runQuery } from "./api";
 import "./App.css";
 
 function App() {
-  const [darkMode, setDarkMode] = useState(true);
+  const [darkMode, setDarkMode] = useState(false);
+  
+  const [activeView, setActiveView] = useState("sql");
 
   const [tables, setTables] = useState([]);
   const [tablesError, setTablesError] = useState(null);
@@ -23,17 +25,25 @@ function App() {
   const [lastQuery, setLastQuery] = useState("");
   const [queryError, setQueryError] = useState(null);
   const [loading, setLoading] = useState(false);
-
+  
   const [notice, setNotice] = useState(null);
-
+  const [showExecutionPlan, setShowExecutionPlan] = useState(false);
+  const toggleExecutionPlan = () => {
+    setShowExecutionPlan((prev) => !prev);
+  };
   const toggleTheme = () => setDarkMode((v) => !v);
 
   const applyTables = useCallback((data) => {
     const list = data || [];
+
     setTables(list);
     setTablesError(null);
+
     setSelectedTableName((current) => {
-      if (current && list.some((t) => t.Name === current)) return current;
+      if (current && list.some((t) => t.Name === current)) {
+        return current;
+      }
+
       return list[0]?.Name ?? null;
     });
   }, []);
@@ -60,12 +70,16 @@ function App() {
 
   const handleExecute = useCallback(async () => {
     if (!query.trim()) return;
+
     setLoading(true);
     setQueryError(null);
+
     try {
       const res = await runQuery(query);
+
       setResult(res);
       setLastQuery(query);
+
       await refreshTables();
     } catch (err) {
       setQueryError(err.message);
@@ -78,19 +92,29 @@ function App() {
   const handleImport = useCallback(
     async (tableName, file) => {
       if (!tableName) {
-        setNotice({ type: "error", text: "No hay tabla seleccionada para importar." });
+        setNotice({
+          type: "error",
+          text: "No hay tabla seleccionada para importar.",
+        });
         return;
       }
+
       setLoading(true);
+
       try {
         const res = await importCsv(tableName, file);
         const parts = [`${res.inserted} fila(s) importadas a "${res.table}"`];
-        if (res.skipped) parts.push(`${res.skipped} omitida(s)`);
+
+        if (res.skipped) {
+          parts.push(`${res.skipped} omitida(s)`);
+        }
+
         setNotice({
           type: res.errors?.length ? "warning" : "success",
           text: parts.join(", "),
           details: res.errors,
         });
+
         await refreshTables();
       } catch (err) {
         setNotice({ type: "error", text: err.message });
@@ -109,17 +133,43 @@ function App() {
         apiOk={!tablesError}
       />
 
-      <Toolbar
-        tables={tables}
-        selectedTableName={selectedTableName}
-        onImport={handleImport}
-        onExecute={handleExecute}
-        loading={loading}
-      />
+      <nav className="workspace-nav" aria-label="Navegación principal">
+        <button
+          type="button"
+          className={`toolbar-button ${activeView === "sql" ? "active" : ""}`}
+          onClick={() => setActiveView("sql")}
+          aria-pressed={activeView === "sql"}
+        >
+          SQL y tablas
+        </button>
+
+        <button
+          type="button"
+          className={`toolbar-button ${
+            activeView === "spatial" ? "active" : ""
+          }`}
+          onClick={() => setActiveView("spatial")}
+          aria-pressed={activeView === "spatial"}
+        >
+          Explorador espacial
+        </button>
+
+        <div className="workspace-nav-spacer" />
+
+        {activeView === "sql" && (
+          <Toolbar
+            tables={tables}
+            selectedTableName={selectedTableName}
+            onImport={handleImport}
+            loading={loading}
+          />
+        )}
+      </nav>
 
       {notice && (
         <div className={`app-notice ${notice.type}`}>
           <span>{notice.text}</span>
+
           {notice.details?.length > 0 && (
             <ul>
               {notice.details.map((d, i) => (
@@ -127,32 +177,54 @@ function App() {
               ))}
             </ul>
           )}
+
           <button onClick={() => setNotice(null)}>×</button>
         </div>
       )}
 
-      <main className="dashboard-grid">
-        <FilePanel
-          tables={tables}
-          error={tablesError}
-          selectedTableName={selectedTableName}
-          onSelectTable={setSelectedTableName}
-        />
+      {activeView === "sql" && (
+        <>
+          <main className="dashboard-grid">
+            <FilePanel
+              tables={tables}
+              error={tablesError}
+              selectedTableName={selectedTableName}
+              onSelectTable={setSelectedTableName}
+            />
 
-        <QueryPanel
-          query={query}
-          onQueryChange={setQuery}
-          onExecute={handleExecute}
-          loading={loading}
-        />
+            <QueryPanel
+              query={query}
+              onQueryChange={setQuery}
+              onExecute={handleExecute}
+              loading={loading}
+            />
 
-        <ResultPanel result={result} error={queryError} loading={loading} />
+            {/* <ResultPanel result={result} error={queryError} loading={loading} /> */}
 
-        <ExecutionPlanPanel result={result} query={lastQuery} />
-      </main>
-      <div className="spatial-section">
-        <MapPanel />
-      </div>
+            {/* <ExecutionPlanPanel result={result} query={lastQuery} /> */}
+            {showExecutionPlan ? (
+              <ExecutionPlanPanel
+                result={result}
+                query={lastQuery}
+                onBack={toggleExecutionPlan}
+              />
+            ) : (
+              <ResultPanel
+                result={result}
+                error={queryError}
+                loading={loading}
+                onShowExecutionPlan={toggleExecutionPlan}
+              />
+            )}
+          </main>
+        </>
+      )}
+
+      {activeView === "spatial" && (
+        <main className="spatial-section">
+          <MapPanel />
+        </main>
+      )}
     </div>
   );
 }

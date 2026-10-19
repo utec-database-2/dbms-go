@@ -18,7 +18,7 @@ function FilePanel({ tables, error, selectedTableName, onSelectTable }) {
       <div className="panel-title">
         <div>
           <h2>Panel de Archivos</h2>
-          <p>Tablas y estructura</p>
+          {/* <p>Tablas y estructura</p> */}
         </div>
         <Database size={20} />
       </div>

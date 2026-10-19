@@ -121,7 +121,7 @@ function PlanTreeNode({ node, role }) {
   );
 }
 
-function ExecutionPlanPanel({ result, query }) {
+function ExecutionPlanPanel({ result, query,onBack }) {
   const plan = result?.Plan || [];
   const hasPlan = plan.length > 0;
   const tree = result?.Tree || null;
@@ -135,8 +135,15 @@ function ExecutionPlanPanel({ result, query }) {
           <GitBranch size={19} />
           <div>
             <h2>Panel de Plan de Ejecución</h2>
-            <p>Cómo se resolvió la última consulta</p>
+            {/* <p>Cómo se resolvió la última consulta</p> */}
           </div>
+          <button
+            type="button"
+            onClick={onBack}
+            className="panel-switch-button"
+          >
+            Volver a resultados
+          </button>
         </div>
 
         <div className="execution-status">
@@ -150,7 +157,7 @@ function ExecutionPlanPanel({ result, query }) {
           <span>Consulta ejecutada</span>
           <Clock3 size={14} />
         </div>
-        <pre>{query || "—"}</pre>
+        {/* <pre>{query || "—"}</pre> */}
       </div>
 
       <div className="execution-summary">
@@ -222,8 +229,8 @@ function ExecutionPlanPanel({ result, query }) {
               <div className="plan-node-container">
                 <div className="plan-node-content">
                   <span>
-                    <ListChecks size={14} /> Ejecuta una consulta para ver aquí qué
-                    índice o estrategia usó el motor.
+                    <ListChecks size={14} /> Ejecuta una consulta para ver aquí
+                    qué índice o estrategia usó el motor.
                   </span>
                 </div>
               </div>
@@ -232,13 +239,13 @@ function ExecutionPlanPanel({ result, query }) {
         </div>
       </div>
 
-      <div className="execution-footer">
+      {/* <div className="execution-footer">
         <span>
           <HardDrive size={13} />
           Motor de ejecución: MiniGestor DB
         </span>
         <span>{plan.length} paso(s) ejecutados</span>
-      </div>
+      </div> */}
     </section>
   );
 }

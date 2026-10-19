@@ -92,7 +92,7 @@ function QueryPanel({ query, onQueryChange, onExecute, loading }) {
 
   return (
     <section className="query-panel">
-      <div className="query-header">
+      {/* <div className="query-header">
         <div className="query-title">
           <Database size={19} />
           <div>
@@ -102,7 +102,7 @@ function QueryPanel({ query, onQueryChange, onExecute, loading }) {
         </div>
 
         <div className="query-info">SQL + espacial</div>
-      </div>
+      </div> */}
 
       <div className="query-toolbar">
         <button
@@ -158,11 +158,11 @@ function QueryPanel({ query, onQueryChange, onExecute, loading }) {
         />
       </div>
 
-      <div className="query-footer">
+      {/* <div className="query-footer">
         <span>Líneas: {query === "" ? 0 : query.split("\n").length}</span>
         <span>Caracteres: {query.length}</span>
         <span className="query-hint">Ctrl + Enter para ejecutar</span>
-      </div>
+      </div> */}
     </section>
   );
 }

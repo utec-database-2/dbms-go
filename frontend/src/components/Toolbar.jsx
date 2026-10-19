@@ -41,10 +41,10 @@ function Toolbar({ tables, selectedTableName, onImport, onExecute, loading }) {
         <span>Importar CSV</span>
       </button>
 
-      <button className="toolbar-button execute" onClick={onExecute} disabled={loading}>
+      {/* <button className="toolbar-button execute" onClick={onExecute} disabled={loading}>
         <Play size={17} />
         <span>{loading ? "Ejecutando..." : "Ejecutar (Ctrl+Enter)"}</span>
-      </button>
+      </button> */}
     </div>
   );
 }

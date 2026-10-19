@@ -10,7 +10,7 @@ import {
   AlertCircle,
 } from "lucide-react";
 
-function ResultPanel({ result, error, loading }) {
+function ResultPanel({ result, error, loading, onShowExecutionPlan }) {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
 
@@ -25,7 +25,9 @@ function ResultPanel({ result, error, loading }) {
   const rowsPerPage = 5;
 
   const filteredRows = rows.filter((row) =>
-    row.some((value) => String(value).toLowerCase().includes(search.toLowerCase())),
+    row.some((value) =>
+      String(value).toLowerCase().includes(search.toLowerCase()),
+    ),
   );
 
   const totalPages = Math.max(1, Math.ceil(filteredRows.length / rowsPerPage));
@@ -48,7 +50,9 @@ function ResultPanel({ result, error, loading }) {
   const handleExport = () => {
     if (columns.length === 0) return;
     const csvHeader = columns.join(",");
-    const csvRows = filteredRows.map((row) => row.map((v) => `"${v}"`).join(","));
+    const csvRows = filteredRows.map((row) =>
+      row.map((v) => `"${v}"`).join(","),
+    );
     const csvContent = [csvHeader, ...csvRows].join("\n");
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -75,8 +79,15 @@ function ResultPanel({ result, error, loading }) {
           <Table2 size={19} />
           <div>
             <h2>Panel de Resultados</h2>
-            <p>Resultado de la consulta</p>
+            {/* <p>Resultado de la consulta</p> */}
           </div>
+          <button
+            type="button"
+            onClick={onShowExecutionPlan}
+            className="panel-switch-button"
+          >
+            Ver plan de ejecución
+          </button>
         </div>
 
         <div className={`result-status${error ? " error" : ""}`}>
@@ -87,7 +98,7 @@ function ResultPanel({ result, error, loading }) {
 
       {error && <div className="result-error">{error}</div>}
 
-      <div className="result-toolbar">
+      {/* <div className="result-toolbar">
         <div className="result-search">
           <Search size={15} />
           <input
@@ -105,7 +116,7 @@ function ResultPanel({ result, error, loading }) {
             Exportar CSV
           </button>
         </div>
-      </div>
+      </div> */}
 
       <div className="result-info">
         <span>
@@ -118,7 +129,10 @@ function ResultPanel({ result, error, loading }) {
         </span>
         <span>
           Tiempo:
-          <strong> {result ? `${result.ElapsedMs?.toFixed(2)} ms` : "—"}</strong>
+          <strong>
+            {" "}
+            {result ? `${result.ElapsedMs?.toFixed(2)} ms` : "—"}
+          </strong>
         </span>
         {result?.Affected > 0 && (
           <span>
@@ -192,7 +206,9 @@ function ResultPanel({ result, error, loading }) {
           <button
             className="pagination-button"
             disabled={page === totalPages}
-            onClick={() => setPage((previous) => Math.min(totalPages, previous + 1))}
+            onClick={() =>
+              setPage((previous) => Math.min(totalPages, previous + 1))
+            }
           >
             <ChevronRight size={15} />
           </button>

@@ -45,14 +45,6 @@ function Header({ darkMode, toggleTheme, apiOk }) {
           )}
         </button>
 
-        {/* CONFIGURACIÓN */}
-        <button
-          className="icon-button"
-          title="Configuración"
-        >
-          <Settings size={18} />
-        </button>
-
       </div>
 
     </header>
