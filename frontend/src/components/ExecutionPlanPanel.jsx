@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import {
   GitBranch,
   Search,
@@ -20,6 +21,10 @@ import {
   Scissors,
   Columns3,
 } from "lucide-react";
+import { ExpandBackdrop, ExpandButton } from "./Expandable";
+import { useExpandable } from "./useExpandable";
+import PerfChart from "./PerfChart";
+import { PLAN_INFO, kindOfStep } from "../lib/planInfo";
 
 // Elige un ícono según palabras clave del paso real que devolvió el
 // executor (dbms/lib/sql), en vez de un árbol inventado.
@@ -72,14 +77,18 @@ function inputRole(parentKind, index) {
 }
 
 // Un operador del árbol de la consulta y, debajo, sus entradas.
-function PlanTreeNode({ node, role }) {
+function PlanTreeNode({ node, role, onTip }) {
   const [open, setOpen] = useState(true);
   const children = node.Children || [];
   const hasChildren = children.length > 0;
 
   return (
     <div className="qt-node">
-      <div className="plan-node qt-card">
+      <div
+        className="plan-node qt-card"
+        onMouseEnter={(event) => onTip(node.Kind, event.currentTarget, node)}
+        onMouseLeave={() => onTip(null)}
+      >
         <div className="plan-expand">
           {hasChildren ? (
             <button
@@ -93,7 +102,9 @@ function PlanTreeNode({ node, role }) {
             <span className="expand-placeholder"></span>
           )}
         </div>
-        <div className="plan-node-icon">{iconForKind(node.Kind)}</div>
+        <div className="plan-node-icon" data-kind={node.Kind}>
+          {iconForKind(node.Kind)}
+        </div>
         <div className="plan-node-content qt-content">
           <strong>
             {node.Op}
@@ -113,6 +124,7 @@ function PlanTreeNode({ node, role }) {
               key={i}
               node={child}
               role={inputRole(node.Kind, i)}
+              onTip={onTip}
             />
           ))}
         </div>
@@ -121,15 +133,64 @@ function PlanTreeNode({ node, role }) {
   );
 }
 
-function ExecutionPlanPanel({ result, query }) {
+// Globo con la explicación del operador. Se dibuja fuera del panel (portal)
+// para que no lo recorte el scroll del árbol.
+function OperatorTip({ tip }) {
+  if (!tip?.container) return null;
+  return createPortal(
+    <div
+      className={tip.above ? "op-tooltip above" : "op-tooltip"}
+      style={{ left: tip.left, top: tip.top }}
+      role="tooltip"
+    >
+      <strong>{tip.info.title}</strong>
+      <p>{tip.info.what}</p>
+      <p className="op-why">
+        <b>¿Por qué?</b> {tip.info.why}
+      </p>
+      {tip.node && (
+        <div className="op-stats">
+          <span>{tip.node.Rows} fila(s)</span>
+          {tip.node.Cost > 0 && <span>≈ {tip.node.Cost} página(s) leídas</span>}
+        </div>
+      )}
+    </div>,
+    tip.container,
+  );
+}
+
+function ExecutionPlanPanel({ result, query, history = [] }) {
   const plan = result?.Plan || [];
   const hasPlan = plan.length > 0;
   const tree = result?.Tree || null;
   const [view, setView] = useState("tree");
   const showTree = view === "tree" && tree;
+  const [expanded, setExpanded] = useExpandable();
+  const [tip, setTip] = useState(null);
+
+  const showTip = (kind, target, node) => {
+    const info = kind && PLAN_INFO[kind];
+    if (!info) {
+      setTip(null);
+      return;
+    }
+    const rect = target.getBoundingClientRect();
+    const below = rect.bottom + 190 < window.innerHeight;
+    setTip({
+      info,
+      node,
+      container: target.closest(".app"),
+      left: Math.max(8, Math.min(rect.left + 24, window.innerWidth - 348)),
+      top: below ? rect.bottom + 6 : rect.top - 6,
+      above: !below,
+    });
+  };
 
   return (
-    <section className="execution-panel">
+    <>
+    <ExpandBackdrop expanded={expanded} onClose={() => setExpanded(false)} />
+    <section className={expanded ? "execution-panel panel-expanded" : "execution-panel"}>
+      <OperatorTip tip={tip} />
       <div className="execution-header">
         <div className="execution-title">
           <GitBranch size={19} />
@@ -140,9 +201,10 @@ function ExecutionPlanPanel({ result, query }) {
         </div>
 
         <div className="execution-status">
-          <span className="execution-status-dot"></span>
+          <span className={hasPlan ? "execution-status-dot" : "execution-status-dot idle"}></span>
           {hasPlan ? "Plan disponible" : "Sin consulta ejecutada"}
         </div>
+        <ExpandButton expanded={expanded} onToggle={setExpanded} />
       </div>
 
       <div className="execution-query">
@@ -156,7 +218,10 @@ function ExecutionPlanPanel({ result, query }) {
       <div className="execution-summary">
         <div className="execution-stat">
           <span>Tiempo</span>
-          <strong>{result ? `${result.ElapsedMs?.toFixed(2)} ms` : "—"}</strong>
+          <div className="stat-with-spark">
+            <strong>{result ? `${result.ElapsedMs?.toFixed(2)} ms` : "—"}</strong>
+            <PerfChart entries={history} compact limit={10} />
+          </div>
         </div>
 
         <div className="execution-stat">
@@ -201,17 +266,23 @@ function ExecutionPlanPanel({ result, query }) {
             </div>
           </div>
 
-          <div className="tree-container">
+          <div className="tree-container" onScroll={() => setTip(null)}>
             {showTree ? (
-              <PlanTreeNode node={tree} />
+              <PlanTreeNode node={tree} onTip={showTip} />
             ) : hasPlan ? (
               plan.map((step, i) => (
                 <div className="plan-node-container" key={i}>
-                  <div className="plan-node">
+                  <div
+                    className="plan-node"
+                    onMouseEnter={(event) => showTip(kindOfStep(step), event.currentTarget)}
+                    onMouseLeave={() => setTip(null)}
+                  >
                     <div className="plan-expand">
                       <span className="expand-placeholder">{i + 1}</span>
                     </div>
-                    <div className="plan-node-icon">{iconFor(step)}</div>
+                    <div className="plan-node-icon" data-kind={kindOfStep(step)}>
+                      {iconFor(step)}
+                    </div>
                     <div className="plan-node-content">
                       <span>{step}</span>
                     </div>
@@ -240,6 +311,7 @@ function ExecutionPlanPanel({ result, query }) {
         <span>{plan.length} paso(s) ejecutados</span>
       </div>
     </section>
+    </>
   );
 }
 

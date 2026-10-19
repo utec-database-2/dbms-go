@@ -81,3 +81,11 @@ export async function searchSpatialPolygon(data) {
 
   return parseJSON(res);
 }
+
+// Estructura del R-Tree (MBR de cada nodo) para dibujarla en el mapa.
+export async function getRTree() {
+  const res = await fetch(`${BASE_URL}/api/spatial/rtree`);
+  return parseJSON(res);
+}
+
+export const API_URL = BASE_URL;
