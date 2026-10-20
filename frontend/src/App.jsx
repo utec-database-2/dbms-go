@@ -3,7 +3,9 @@ import {
   ClockArrowUp,
   Eraser,
   FileSpreadsheet,
+  GitBranch,
   LayoutDashboard,
+  Map as MapIcon,
   Moon,
   Play,
   Settings2,
@@ -13,7 +15,7 @@ import {
   WandSparkles,
 } from "lucide-react";
 import Header from "./components/Header";
-import Toolbar from "./components/Toolbar";
+import ActivityBar from "./components/ActivityBar";
 import FilePanel from "./components/FilePanel";
 import QueryPanel from "./components/QueryPanel";
 import ResultPanel from "./components/ResultPanel";
@@ -49,13 +51,20 @@ function App() {
   const [loading, setLoading] = useState(false);
 
   const [notice, setNotice] = useState(null);
-  // Transacción abierta (entre BEGIN y END/COMMIT/ROLLBACK).
-  const [txn, setTxn] = useState({ active: false });
   // Punto/fila elegido en el mapa o en la tabla, para resaltarlo en el otro.
   const [linked, setLinked] = useState(null);
   // Diálogo abierto: "settings" | "palette" | "history" | { type: "import", file }.
   const [dialog, setDialog] = useState(null);
   const closeDialog = useCallback(() => setDialog(null), []);
+  // La consulta espacial vive en una ventana emergente que se abre desde la
+  // barra de la izquierda (queda montada para no perder la búsqueda).
+  const [mapOpen, setMapOpen] = useState(false);
+
+  const showPlan = settings.showPlan;
+  const togglePlan = useCallback(
+    () => updateSettings((s) => ({ showPlan: !s.showPlan })),
+    [updateSettings],
+  );
 
   const current = runs[activeRun] || null;
   const result = current?.result || null;
@@ -108,76 +117,78 @@ function App() {
   }, [notice]);
 
   // Ejecuta el texto del editor (o el texto que se pase, p. ej. la selección).
-  // El servidor recibe una sentencia por petición: el script se divide por ";"
-  // y se manda en orden. Si una falla, se detiene ahí.
+  // El servidor recibe el script completo en una sola petición y devuelve un
+  // resultado por sentencia (Results); si una falla, Failed/Error la señalan
+  // y Results trae las que sí corrieron.
   const handleExecute = useCallback(
     async (text) => {
       const source = typeof text === "string" ? text : query;
+      if (!source.trim()) return;
       const statements = splitStatements(source);
-      if (statements.length === 0) return;
+      const label = (i) => statements[i] ?? `Sentencia ${i + 1}`;
 
       setLoading(true);
       setNotice(null);
-      const done = [];
-      let totalMs = 0;
-      // Estado de la transacción según lo que va respondiendo el motor.
-      let txnState;
 
-      for (let i = 0; i < statements.length; i++) {
-        const sql = statements[i];
-        try {
-          const res = await runQuery(sql);
-          totalMs += res.ElapsedMs || 0;
-          done.push({ sql, result: res });
-          const t = transactionFromMessage(res.Message);
-          if (t) {
-            txnState = t;
-            setTxn(t);
-          }
-          addHistory({
-            sql,
-            ok: true,
-            ms: res.ElapsedMs,
-            rows: res.Rows?.length ?? 0,
-            affected: res.Affected,
-            access: accessKind(res),
-          });
-        } catch (err) {
-          const message =
-            statements.length > 1
-              ? `Sentencia ${i + 1} de ${statements.length}: ${err.message}`
-              : err.message;
-          done.push({ sql, error: message });
-          addHistory({ sql, ok: false, error: err.message, access: "none" });
-          break;
+      try {
+        const res = await runQuery(source);
+        const list = res.Results || [];
+        const failed = typeof res.Failed === "number" ? res.Failed : -1;
+
+        const next = list.map((r, i) => ({ sql: label(i), result: r }));
+        if (failed >= 0) next.push({ sql: label(failed), error: res.Error });
+
+        // Transacción abierta al terminar: cada petición usa su propia sesión
+        // y el servidor la cierra al final, deshaciendo lo que no se confirmó.
+        let openTxn = null;
+        for (const r of list) {
+          const t = transactionFromMessage(r.Message);
+          if (t) openTxn = t.active ? t.id : null;
         }
-        setRuns([...done]);
-        setActiveRun(done.length - 1);
+
+        for (const run of next) {
+          addHistory(
+            run.result
+              ? {
+                  sql: run.sql,
+                  ok: true,
+                  ms: run.result.ElapsedMs,
+                  rows: run.result.Rows?.length ?? 0,
+                  affected: run.result.Affected,
+                  access: accessKind(run.result),
+                }
+              : { sql: run.sql, ok: false, error: run.error, access: "none" },
+          );
+        }
+
+        setRuns(next);
+        setActiveRun(Math.max(0, next.length - 1));
+
+        const total = failed >= 0 ? failed + 1 : list.length;
+        const rolledBack =
+          openTxn != null
+            ? ` La transacción ${openTxn} quedó sin END TRANSACTION y el servidor la deshizo (ROLLBACK) al terminar.`
+            : "";
+        if (failed >= 0 && total > 1) {
+          setNotice({
+            type: "warning",
+            text: `Se ejecutaron ${failed} sentencia(s); se detuvo en la ${failed + 1} por un error.${rolledBack}`,
+          });
+        } else if (rolledBack) {
+          setNotice({ type: "warning", text: rolledBack.trim() });
+        } else if (list.length > 1) {
+          setNotice({
+            type: "success",
+            text: `${list.length} sentencias ejecutadas en ${res.ElapsedMs?.toFixed(2)} ms.`,
+          });
+        }
+      } catch (err) {
+        setRuns([{ sql: source, error: err.message }]);
+        setActiveRun(0);
+        addHistory({ sql: source, ok: false, error: err.message, access: "none" });
       }
 
-      setRuns(done);
-      setActiveRun(done.length - 1);
       setLinked(null);
-
-      if (statements.length > 1) {
-        const failed = done.some((r) => r.error);
-        setNotice(
-          failed
-            ? {
-                type: "warning",
-                text:
-                  `Se ejecutaron ${done.length - 1} de ${statements.length} sentencias; se detuvo en la ${done.length} por un error.` +
-                  (txnState?.active
-                    ? " La transacción sigue abierta: ciérrala con ROLLBACK o END TRANSACTION."
-                    : ""),
-              }
-            : {
-                type: "success",
-                text: `${statements.length} sentencias ejecutadas en ${totalMs.toFixed(2)} ms.`,
-              },
-        );
-      }
-
       await refreshTables();
       setLoading(false);
     },
@@ -224,23 +235,33 @@ function App() {
     [tables.length],
   );
 
-  // Atajo global: Ctrl/⌘ + K abre la paleta de comandos.
+  // Atajos globales: Ctrl/⌘ + K abre la paleta; Esc cierra la consulta espacial.
   useEffect(() => {
     const onKey = (event) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
         setDialog((d) => (d === "palette" ? null : "palette"));
+      } else if (event.key === "Escape" && mapOpen && !document.querySelector(".modal-layer")) {
+        setMapOpen(false);
       }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, []);
+  }, [mapOpen]);
 
   const commands = useMemo(
     () => [
       { id: "run", group: "Consulta", label: "Ejecutar consulta", hint: "Ctrl Enter", icon: <Play size={15} />, run: () => handleExecute() },
       { id: "format", group: "Consulta", label: "Formatear SQL", icon: <WandSparkles size={15} />, run: () => setQuery((q) => formatSql(q)) },
       { id: "clear", group: "Consulta", label: "Limpiar editor", icon: <Eraser size={15} />, run: () => setQuery("") },
+      { id: "map", group: "Herramientas", label: "Abrir consulta espacial", icon: <MapIcon size={15} />, run: () => setMapOpen(true) },
+      {
+        id: "plan",
+        group: "Herramientas",
+        label: showPlan ? "Ocultar plan de ejecución" : "Mostrar plan de ejecución",
+        icon: <GitBranch size={15} />,
+        run: togglePlan,
+      },
       { id: "history", group: "Herramientas", label: "Historial y rendimiento", icon: <ClockArrowUp size={15} />, run: () => setDialog("history") },
       { id: "import", group: "Herramientas", label: "Importar CSV", icon: <FileSpreadsheet size={15} />, run: () => openImport() },
       { id: "settings", group: "Herramientas", label: "Ajustes", icon: <Settings2 size={15} />, run: () => setDialog("settings") },
@@ -272,7 +293,7 @@ function App() {
         run: () => setQuery(ex.sql),
       })),
     ],
-    [handleExecute, openImport, darkMode, toggleTheme, resetLayout, tables],
+    [handleExecute, openImport, darkMode, toggleTheme, resetLayout, tables, showPlan, togglePlan],
   );
 
   const appClass = [
@@ -289,21 +310,7 @@ function App() {
       {loading && <div className="top-progress" />}
 
       <div className="topbar">
-        <Header
-          darkMode={darkMode}
-          toggleTheme={toggleTheme}
-          apiOk={!tablesError}
-          txn={txn}
-          onOpenSettings={() => setDialog("settings")}
-          onOpenPalette={() => setDialog("palette")}
-        />
-
-        <Toolbar
-          onOpenImport={() => openImport()}
-          onOpenHistory={() => setDialog("history")}
-          onExecute={handleExecute}
-          loading={loading}
-        />
+        <Header apiOk={!tablesError} onImport={() => openImport()} />
       </div>
 
       {notice && (
@@ -320,45 +327,79 @@ function App() {
         </div>
       )}
 
-      <Dashboard
-        layout={settings.layout}
-        onLayoutChange={(layout) => updateSettings({ layout })}
-        onResetLayout={resetLayout}
-        files={
-          <FilePanel
-            tables={tables}
-            error={tablesError}
-            selectedTableName={selectedTableName}
-            onSelectTable={setSelectedTableName}
-            onDropFile={openImport}
-          />
-        }
-        query={
-          <QueryPanel
-            query={query}
-            onQueryChange={setQuery}
-            onExecute={handleExecute}
-            loading={loading}
-            tables={tables}
-            fontSize={settings.editorFontSize}
-          />
-        }
-        results={
-          <ResultPanel
-            result={result}
-            error={queryError}
-            loading={loading}
-            runs={runs}
-            activeRun={activeRun}
-            onSelectRun={setActiveRun}
-            rowsPerPage={settings.rowsPerPage}
-            linked={linked}
-            onLink={setLinked}
-          />
-        }
-        plan={<ExecutionPlanPanel result={result} query={current?.sql || ""} history={history} />}
-        map={<MapPanel linked={linked} onLink={setLinked} />}
-      />
+      <div className="workbench">
+        <ActivityBar
+          mapOpen={mapOpen}
+          planOpen={showPlan}
+          historyOpen={dialog === "history"}
+          paletteOpen={dialog === "palette"}
+          settingsOpen={dialog === "settings"}
+          onMap={() => setMapOpen((v) => !v)}
+          onHistory={() => setDialog("history")}
+          onPalette={() => setDialog("palette")}
+          onPlan={togglePlan}
+          onSettings={() => setDialog("settings")}
+        />
+
+        <Dashboard
+          layout={settings.layout}
+          onLayoutChange={(layout) => updateSettings({ layout })}
+          onResetLayout={resetLayout}
+          showPlan={showPlan}
+          files={
+            <FilePanel
+              tables={tables}
+              error={tablesError}
+              selectedTableName={selectedTableName}
+              onSelectTable={setSelectedTableName}
+              onDropFile={openImport}
+            />
+          }
+          query={
+            <QueryPanel
+              query={query}
+              onQueryChange={setQuery}
+              onExecute={handleExecute}
+              loading={loading}
+              tables={tables}
+              fontSize={settings.editorFontSize}
+            />
+          }
+          results={
+            <ResultPanel
+              result={result}
+              error={queryError}
+              loading={loading}
+              runs={runs}
+              activeRun={activeRun}
+              onSelectRun={setActiveRun}
+              rowsPerPage={settings.rowsPerPage}
+              linked={linked}
+              onLink={setLinked}
+              onShowOnMap={() => setMapOpen(true)}
+            />
+          }
+          plan={
+            <ExecutionPlanPanel
+              result={result}
+              query={current?.sql || ""}
+              history={history}
+              onClose={togglePlan}
+            />
+          }
+        />
+      </div>
+
+      {/* Consulta espacial: ventana emergente que se abre desde la barra lateral. */}
+      <div
+        className={mapOpen ? "map-window-layer open" : "map-window-layer"}
+        aria-hidden={!mapOpen}
+        onMouseDown={(event) => event.target === event.currentTarget && setMapOpen(false)}
+      >
+        <div className="map-window">
+          <MapPanel linked={linked} onLink={setLinked} onClose={() => setMapOpen(false)} />
+        </div>
+      </div>
 
       {dialog === "settings" && (
         <SettingsDialog

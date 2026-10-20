@@ -23,9 +23,9 @@ function writeJSON(key, value) {
 
 // Fracciones de ancho/alto de los paneles (ver Dashboard.jsx).
 export const DEFAULT_LAYOUT = {
-  top: [3, 4, 5], // Archivos | Consultas | Resultados
-  bottom: [5, 7], // Plan | Mapa
-  rows: [1, 1], // fila de arriba | fila de abajo
+  side: [1, 3], // Archivos | Consultas y Resultados
+  rows: [1, 1], // Consultas | Resultados (y Plan)
+  bottom: [1, 1], // Resultados | Plan de ejecución
 };
 
 export const DEFAULT_SETTINGS = {
@@ -34,6 +34,7 @@ export const DEFAULT_SETTINGS = {
   editorFontSize: 13,
   darkMap: true,
   animations: true,
+  showPlan: false,
   layout: DEFAULT_LAYOUT,
 };
 
@@ -42,10 +43,13 @@ const HISTORY_KEY = "minigestor.history.v1";
 const HISTORY_MAX = 50;
 
 export function useSettings() {
-  const [settings, setSettings] = useState(() => ({
-    ...DEFAULT_SETTINGS,
-    ...readJSON(SETTINGS_KEY, {}),
-  }));
+  const [settings, setSettings] = useState(() => {
+    const saved = { ...DEFAULT_SETTINGS, ...readJSON(SETTINGS_KEY, {}) };
+    // Una distribución guardada con la forma anterior de la pantalla se
+    // descarta y se usa la nueva.
+    if (!saved.layout?.side) saved.layout = DEFAULT_LAYOUT;
+    return saved;
+  });
 
   useEffect(() => writeJSON(SETTINGS_KEY, settings), [settings]);
 

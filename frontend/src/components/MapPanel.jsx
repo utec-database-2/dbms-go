@@ -15,7 +15,7 @@ import {
   useMap,
   useMapEvents,
 } from "react-leaflet";
-import { Map as MapIcon, Network, Search, Trash2, Undo2 } from "lucide-react";
+import { Map as MapIcon, Network, Search, Trash2, Undo2, X } from "lucide-react";
 
 import {
   getRTree,
@@ -128,7 +128,9 @@ function MapUpdater({ center, extentMeters, boundsKey, resetKey }) {
   return null;
 }
 
-function MapPanel({ linked, onLink }) {
+// onClose: si viene, el panel vive en una ventana emergente y muestra una X
+// en vez del botón de ampliar.
+function MapPanel({ linked, onLink, onClose }) {
   const [latitude, setLatitude] = useState("-12.0432");
   const [longitude, setLongitude] = useState("-77.0282");
   const [radius, setRadius] = useState("5");
@@ -322,7 +324,13 @@ function MapPanel({ linked, onLink }) {
           <div className="map-result-count">
             {spatialResult ? `${results.length} resultado(s)` : "Sin consulta"}
           </div>
-          <ExpandButton expanded={expanded} onToggle={setExpanded} />
+          {onClose ? (
+            <button className="expand-toggle" onClick={onClose} title="Cerrar (Esc)">
+              <X size={16} />
+            </button>
+          ) : (
+            <ExpandButton expanded={expanded} onToggle={setExpanded} />
+          )}
         </div>
       </div>
 

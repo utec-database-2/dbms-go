@@ -1,8 +1,7 @@
 import { useRef } from "react";
 
-const MIN_COL = 0.16; // ningún panel queda más angosto que el 16 % de su fila
-const MIN_ROW = 0.28;
-const SPLITTER = 12; // px, igual que --splitter en App.css
+const MIN_FRACTION = 0.18; // ningún panel queda con menos del 18 % de su espacio
+const SPLITTER = 10; // px, igual que el ancho de .splitter en App.css
 
 // Divisor entre dos paneles: se arrastra para repartir el espacio y con doble
 // clic vuelve a la distribución original.
@@ -28,7 +27,7 @@ function Splitter({ direction, onStart, onMove, onEnd, onReset }) {
         dragging.current = false;
         event.currentTarget.releasePointerCapture(event.pointerId);
         document.body.classList.remove(`resizing-${direction}`);
-        onEnd?.();
+        onEnd();
       }}
       onDoubleClick={onReset}
     >
@@ -39,29 +38,31 @@ function Splitter({ direction, onStart, onMove, onEnd, onReset }) {
 
 const template = (sizes) => sizes.map((s) => `minmax(0, ${s}fr)`).join(` ${SPLITTER}px `);
 
-// Distribución de los 5 paneles: dos filas y divisores arrastrables. Los
-// tamaños son fracciones guardadas en los ajustes (layout).
-function Dashboard({ layout, onLayoutChange, onResetLayout, files, query, results, plan, map }) {
+// Distribución principal (estilo pgAdmin): Archivos a la izquierda; Consultas
+// arriba y Resultados abajo a la derecha. El Plan de ejecución, cuando está
+// abierto, se parte al lado de Resultados (como dos terminales en VS Code).
+//
+// layout = { side: [archivos, derecha], rows: [consultas, abajo],
+//            bottom: [resultados, plan] } en fracciones (fr).
+function Dashboard({ layout, onLayoutChange, onResetLayout, showPlan, files, query, results, plan }) {
   const mainRef = useRef(null);
-  const topRef = useRef(null);
+  const rightRef = useRef(null);
   const bottomRef = useRef(null);
   const drag = useRef(null);
 
-  const start = (key, index) => (event) => {
-    const horizontal = key !== "rows";
-    const container = { top: topRef, bottom: bottomRef, rows: mainRef }[key].current;
+  // key: qué par de tamaños cambia; horizontal: si se arrastra en X o en Y.
+  // El contenedor se busca recién al arrastrar (no durante el render).
+  const start = (key, horizontal) => (event) => {
+    const container = { side: mainRef, rows: rightRef, bottom: bottomRef }[key].current;
     const rect = container.getBoundingClientRect();
     const sizes = layout[key];
-    const total = sizes.reduce((a, b) => a + b, 0);
-    const length = (horizontal ? rect.width : rect.height) - SPLITTER * (sizes.length - 1);
     drag.current = {
       key,
-      index,
-      sizes: [...sizes],
-      total,
-      length,
-      origin: horizontal ? event.clientX : event.clientY,
       horizontal,
+      sizes: [...sizes],
+      total: sizes[0] + sizes[1],
+      length: (horizontal ? rect.width : rect.height) - SPLITTER,
+      origin: horizontal ? event.clientX : event.clientY,
     };
   };
 
@@ -70,23 +71,19 @@ function Dashboard({ layout, onLayoutChange, onResetLayout, files, query, result
     if (!d) return;
     const deltaPx = (d.horizontal ? event.clientX : event.clientY) - d.origin;
     const delta = (deltaPx / d.length) * d.total;
-    const min = d.total * (d.horizontal ? MIN_COL : MIN_ROW);
-    const pair = d.sizes[d.index] + d.sizes[d.index + 1];
-    const a = Math.min(pair - min, Math.max(min, d.sizes[d.index] + delta));
-    const next = [...d.sizes];
-    next[d.index] = a;
-    next[d.index + 1] = pair - a;
-    onLayoutChange({ ...layout, [d.key]: next });
+    const min = d.total * MIN_FRACTION;
+    const first = Math.min(d.total - min, Math.max(min, d.sizes[0] + delta));
+    onLayoutChange({ ...layout, [d.key]: [first, d.total - first] });
   };
 
   const end = () => {
     drag.current = null;
   };
 
-  const splitter = (key, index) => (
+  const splitter = (key, horizontal) => (
     <Splitter
-      direction={key === "rows" ? "row" : "col"}
-      onStart={start(key, index)}
+      direction={horizontal ? "col" : "row"}
+      onStart={start(key, horizontal)}
       onMove={move}
       onEnd={end}
       onReset={onResetLayout}
@@ -97,26 +94,26 @@ function Dashboard({ layout, onLayoutChange, onResetLayout, files, query, result
     <main
       className="dashboard"
       ref={mainRef}
-      style={{ gridTemplateRows: template(layout.rows) }}
+      style={{ gridTemplateColumns: template(layout.side) }}
     >
-      <div className="dash-row" ref={topRef} style={{ gridTemplateColumns: template(layout.top) }}>
-        <div className="dash-cell">{files}</div>
-        {splitter("top", 0)}
+      <div className="dash-cell">{files}</div>
+
+      {splitter("side", true)}
+
+      <div className="dash-col" ref={rightRef} style={{ gridTemplateRows: template(layout.rows) }}>
         <div className="dash-cell">{query}</div>
-        {splitter("top", 1)}
-        <div className="dash-cell">{results}</div>
-      </div>
 
-      {splitter("rows", 0)}
+        {splitter("rows", false)}
 
-      <div
-        className="dash-row"
-        ref={bottomRef}
-        style={{ gridTemplateColumns: template(layout.bottom) }}
-      >
-        <div className="dash-cell">{plan}</div>
-        {splitter("bottom", 0)}
-        <div className="dash-cell">{map}</div>
+        <div
+          className="dash-row"
+          ref={bottomRef}
+          style={{ gridTemplateColumns: showPlan ? template(layout.bottom) : "minmax(0, 1fr)" }}
+        >
+          <div className="dash-cell">{results}</div>
+          {showPlan && splitter("bottom", true)}
+          {showPlan && <div className="dash-cell plan-cell">{plan}</div>}
+        </div>
       </div>
     </main>
   );

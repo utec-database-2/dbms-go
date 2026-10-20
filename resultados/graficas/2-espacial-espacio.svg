@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="460" viewBox="0 0 900 460" font-family="DejaVu Sans, Helvetica, Arial, sans-serif">
+  <rect width="900" height="460" fill="#ffffff"/>
+  <text x="50" y="28" font-size="17" font-weight="bold" fill="#1c1c1c">Espacio del índice</text>
+  <text x="50" y="48" font-size="12" fill="#555">bytes</text>
+  <line x1="110" y1="400.0" x2="860" y2="400.0" stroke="#e3e3e3"/>
+  <text x="102" y="404.0" font-size="11" fill="#555" text-anchor="end">0</text>
+  <line x1="110" y1="334.0" x2="860" y2="334.0" stroke="#e3e3e3"/>
+  <text x="102" y="338.0" font-size="11" fill="#555" text-anchor="end">2.8M</text>
+  <line x1="110" y1="268.0" x2="860" y2="268.0" stroke="#e3e3e3"/>
+  <text x="102" y="272.0" font-size="11" fill="#555" text-anchor="end">5.7M</text>
+  <line x1="110" y1="202.0" x2="860" y2="202.0" stroke="#e3e3e3"/>
+  <text x="102" y="206.0" font-size="11" fill="#555" text-anchor="end">8.5M</text>
+  <line x1="110" y1="136.0" x2="860" y2="136.0" stroke="#e3e3e3"/>
+  <text x="102" y="140.0" font-size="11" fill="#555" text-anchor="end">11.4M</text>
+  <line x1="110" y1="70.0" x2="860" y2="70.0" stroke="#e3e3e3"/>
+  <text x="102" y="74.0" font-size="11" fill="#555" text-anchor="end">14.2M</text>
+  <line x1="110" y1="400" x2="860" y2="400" stroke="#888"/>
+  <rect x="145.0" y="400.0" width="58.0" height="0.0" fill="#2f6fb2" opacity="0.85"/>
+  <text x="174.0" y="396.0" font-size="10" fill="#333" text-anchor="middle">0</text>
+  <rect x="205.0" y="398.8" width="58.0" height="1.2" fill="#d1704a" opacity="0.85"/>
+  <text x="234.0" y="394.8" font-size="10" fill="#333" text-anchor="middle">53.2k</text>
+  <rect x="265.0" y="396.4" width="58.0" height="3.6" fill="#4f9d69" opacity="0.85"/>
+  <text x="294.0" y="392.4" font-size="10" fill="#333" text-anchor="middle">155.6k</text>
+  <text x="235.0" y="422" font-size="12" fill="#1c1c1c" text-anchor="middle">1000 puntos</text>
+  <rect x="395.0" y="400.0" width="58.0" height="0.0" fill="#2f6fb2" opacity="0.85"/>
+  <text x="424.0" y="396.0" font-size="10" fill="#333" text-anchor="middle">0</text>
+  <rect x="455.0" y="388.2" width="58.0" height="11.8" fill="#d1704a" opacity="0.85"/>
+  <text x="484.0" y="384.2" font-size="10" fill="#333" text-anchor="middle">507.9k</text>
+  <rect x="515.0" y="367.4" width="58.0" height="32.6" fill="#4f9d69" opacity="0.85"/>
+  <text x="544.0" y="363.4" font-size="10" fill="#333" text-anchor="middle">1.4M</text>
+  <text x="485.0" y="422" font-size="12" fill="#1c1c1c" text-anchor="middle">10000 puntos</text>
+  <rect x="645.0" y="400.0" width="58.0" height="0.0" fill="#2f6fb2" opacity="0.85"/>
+  <text x="674.0" y="396.0" font-size="10" fill="#333" text-anchor="middle">0</text>
+  <rect x="705.0" y="274.4" width="58.0" height="125.6" fill="#d1704a" opacity="0.85"/>
+  <text x="734.0" y="270.4" font-size="10" fill="#333" text-anchor="middle">5.4M</text>
+  <rect x="765.0" y="70.0" width="58.0" height="330.0" fill="#4f9d69" opacity="0.85"/>
+  <text x="794.0" y="66.0" font-size="10" fill="#333" text-anchor="middle">14.2M</text>
+  <text x="735.0" y="422" font-size="12" fill="#1c1c1c" text-anchor="middle">100000 puntos</text>
+  <text x="450" y="446" font-size="12" fill="#555" text-anchor="middle">puntos</text>
+  <rect x="110" y="414" width="12" height="12" fill="#2f6fb2"/>
+  <text x="127" y="424" font-size="12" fill="#333">Secuencial</text>
+  <rect x="202" y="414" width="12" height="12" fill="#d1704a"/>
+  <text x="219" y="424" font-size="12" fill="#333">R-Tree</text>
+  <rect x="266" y="414" width="12" height="12" fill="#4f9d69"/>
+  <text x="283" y="424" font-size="12" fill="#333">GiST (PostgreSQL)</text>
+  <text x="50" y="456" font-size="10" fill="#888">escala lineal</text>
+</svg>

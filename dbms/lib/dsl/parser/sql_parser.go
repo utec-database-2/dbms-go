@@ -78,55 +78,63 @@ func (parser *ParserContext) Required(t token.TokenType) (token.Token, error) {
 		fmt.Errorf("expected %v, got %q", t, parser.CurrStr())
 }
 
-func Parse(lexer lexer.LexerContext) ParserContext {
-	ctx := ParserContext{tokens: lexer.Tokens}
-
-	switch ctx.CurrToken().GetType() {
+// parseOne parsea la sentencia que empieza en el token actual y deja el
+// resultado en ctx.parent. No comprueba si quedan tokens después: eso lo
+// hacen Parse (una sola sentencia) y ParseAll (un script).
+func (parser *ParserContext) parseOne() {
+	switch parser.CurrToken().GetType() {
 	case token.TokenSelect:
-		ctx.parent = ctx.ParseSelect()
+		parser.parent = parser.ParseSelect()
 	case token.TokenInsert:
-		ctx.parent = ctx.ParseInsert()
+		parser.parent = parser.ParseInsert()
 	case token.TokenDelete:
-		ctx.parent = ctx.ParseDelete()
+		parser.parent = parser.ParseDelete()
 	case token.TokenCreate:
-		if ctx.Peek(1) == token.TokenIndex || ctx.Peek(1) == token.TokenUnique {
-			ctx.parent = ctx.parseCreateIndex()
+		if parser.Peek(1) == token.TokenIndex || parser.Peek(1) == token.TokenUnique {
+			parser.parent = parser.parseCreateIndex()
 		} else {
-			ctx.parent = ctx.ParseCreate()
+			parser.parent = parser.ParseCreate()
 		}
 	case token.TokenUpdate:
-		ctx.parent = ctx.ParseUpdate()
+		parser.parent = parser.ParseUpdate()
 	case token.TokenDrop:
-		ctx.parent = ctx.ParseDrop()
+		parser.parent = parser.ParseDrop()
 	case token.TokenTruncate:
-		ctx.parent = ctx.ParseTruncate()
+		parser.parent = parser.ParseTruncate()
 	case token.TokenAlter:
-		ctx.parent = ctx.ParseAlter()
+		parser.parent = parser.ParseAlter()
 	case token.TokenBegin:
-		ctx.parent = ctx.ParseBegin()
+		parser.parent = parser.ParseBegin()
 	case token.TokenCommit:
-		ctx.parent = ctx.ParseCommit()
+		parser.parent = parser.ParseCommit()
 	case token.TokenRollback:
-		ctx.parent = ctx.ParseRollback()
+		parser.parent = parser.ParseRollback()
 	case token.TokenSavepoint:
-		ctx.parent = ctx.ParseSavepoint()
+		parser.parent = parser.ParseSavepoint()
 	case token.TokenRelease:
-		ctx.parent = ctx.ParseRelease()
+		parser.parent = parser.ParseRelease()
 	case token.TokenEnd:
-		ctx.err = errors.New("empty input")
+		parser.err = errors.New("empty input")
 	case token.TokenId:
 		// END [TRANSACTION] es sinónimo de COMMIT. "end" no es palabra
 		// reservada en el lexer, así que llega como identificador.
-		if strings.EqualFold(ctx.CurrStr(), "end") {
-			ctx.idx++
-			ctx.Match(token.TokenTransaction)
-			ctx.parent = &ast.Commit{}
+		if strings.EqualFold(parser.CurrStr(), "end") {
+			parser.idx++
+			parser.Match(token.TokenTransaction)
+			parser.parent = &ast.Commit{}
 		} else {
-			ctx.err = fmt.Errorf("unexpected token %q", ctx.CurrStr())
+			parser.err = fmt.Errorf("unexpected token %q", parser.CurrStr())
 		}
 	default:
-		ctx.err = fmt.Errorf("unexpected token %q", ctx.CurrStr())
+		parser.err = fmt.Errorf("unexpected token %q", parser.CurrStr())
 	}
+}
+
+// Parse parsea exactamente una sentencia: cualquier token que quede después
+// del ";" final es un error ("unexpected trailing token").
+func Parse(lexer lexer.LexerContext) ParserContext {
+	ctx := ParserContext{tokens: lexer.Tokens}
+	ctx.parseOne()
 
 	if ctx.err == nil {
 		ctx.Match(token.TokenSemicolon)
@@ -136,6 +144,42 @@ func Parse(lexer lexer.LexerContext) ParserContext {
 	}
 
 	return ctx
+}
+
+// ParseAll parsea un script con una o varias sentencias separadas por ";".
+//
+// Los ";" que no separan nada se descartan (";;", el ";" final y la entrada
+// que solo tiene espacios o está vacía). El ";" es un token del flujo, así
+// que un ";" dentro de un literal de texto no parte la sentencia: eso lo
+// resuelve el lexer, que empaqueta el literal completo.
+//
+// El script entero se parsea antes de devolver: si una sentencia tiene error
+// de sintaxis, el error indica cuál ("sentencia 2: ...") y no se devuelve
+// ninguna, para que el llamador no ejecute nada.
+func ParseAll(lexer lexer.LexerContext) ([]ast.ASTNode, error) {
+	ctx := ParserContext{tokens: lexer.Tokens}
+	stmts := make([]ast.ASTNode, 0)
+
+	for !ctx.IsEnd() {
+		if ctx.Match(token.TokenSemicolon) {
+			continue
+		}
+		before := ctx.idx
+		ctx.parseOne()
+		if ctx.err != nil {
+			return nil, fmt.Errorf("sentencia %d: %w", len(stmts)+1, ctx.err)
+		}
+		if ctx.idx == before {
+			// Ningún parser consumió tokens: sin esto el bucle no avanzaría.
+			return nil, fmt.Errorf("sentencia %d: entrada no reconocida", len(stmts)+1)
+		}
+		stmts = append(stmts, ctx.parent)
+	}
+
+	if len(stmts) == 0 {
+		return nil, errors.New("empty input")
+	}
+	return stmts, nil
 }
 
 func (parser *ParserContext) ParseNameIndex() *ast.NameExpr {

@@ -19,6 +19,14 @@ function verbOf(sql) {
   return /^\s*(?:--[^\n]*\n\s*)*([A-Za-z]+)/.exec(sql)?.[1]?.toUpperCase() ?? "SQL";
 }
 
+// Resumen de la sentencia para su pestaña: filas del SELECT, filas afectadas
+// o el mensaje (idea de describeResult en main).
+function describeResult(r) {
+  if (r?.Columns?.length) return `${r.Rows?.length ?? 0} filas`;
+  if (r?.Affected > 0) return `${r.Affected} afectadas`;
+  return "";
+}
+
 const rowKey = (row) => row.map(String).join("\u241f");
 
 function ResultPanel({
@@ -31,6 +39,7 @@ function ResultPanel({
   rowsPerPage: baseRowsPerPage = 5,
   linked,
   onLink,
+  onShowOnMap,
 }) {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
@@ -168,6 +177,9 @@ function ResultPanel({
               {run.error ? <AlertCircle size={13} /> : <CheckCircle2 size={13} />}
               <b>{i + 1}</b>
               {verbOf(run.sql)}
+              {run.result && describeResult(run.result) && (
+                <small>· {describeResult(run.result)}</small>
+              )}
             </button>
           ))}
         </div>
@@ -245,11 +257,31 @@ function ResultPanel({
                       .filter(Boolean)
                       .join(" ")}
                     onClick={() => handleRowClick(row)}
-                    title={hasPoint ? "Clic para ubicar este punto en el mapa" : "Clic para resaltar la fila"}
+                    title={hasPoint ? "Clic para resaltar la fila · 📍 para verla en el mapa" : "Clic para resaltar la fila"}
                   >
                     {row.map((value, columnIndex) => (
                       <td key={columnIndex}>
-                        {parsePoint(value) && <MapPin size={12} className="cell-pin" />}
+                        {parsePoint(value) && (
+                          <button
+                            className="cell-pin"
+                            title="Ver en la consulta espacial"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              const point = parsePoint(value);
+                              const link = {
+                                source: "table",
+                                key: rowKey(row),
+                                id: idCol >= 0 ? row[idCol] : undefined,
+                                name: String(nameCol >= 0 ? row[nameCol] : value),
+                                ...point,
+                              };
+                              onLink?.(link);
+                              onShowOnMap?.();
+                            }}
+                          >
+                            <MapPin size={12} />
+                          </button>
+                        )}
                         {String(value)}
                       </td>
                     ))}

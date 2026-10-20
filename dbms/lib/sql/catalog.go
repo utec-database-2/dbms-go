@@ -94,6 +94,10 @@ type Table struct {
 	// columna, para resolver nombres calificados (alias.columna).
 	joinCols []joinCol
 
+	// text cachea la estadística del corpus de cada columna para el scoring
+	// textual (MATCH ... USING implícito). Se descarta en cada escritura.
+	text map[int]*textCorpus
+
 	mu sync.RWMutex
 }
 

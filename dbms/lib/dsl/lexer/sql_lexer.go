@@ -2,7 +2,6 @@ package lexer
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 	"unicode"
 
@@ -38,7 +37,6 @@ func Tokenize(src string, nl string) LexerContext {
 	for ctx.HasNext() {
 		token, err := ctx.Next()
 		if err != nil {
-			fmt.Println("Lexer error:", err)
 			ctx.err = err
 			return ctx
 		}
@@ -46,7 +44,11 @@ func Tokenize(src string, nl string) LexerContext {
 		ctx.Tokens = append(ctx.Tokens, token)
 	}
 
-	ctx.Tokens = append(ctx.Tokens, token.CreateToken(token.TokenEnd, "", 0, 0))
+	// Next devuelve ya el TokenEnd cuando la entrada termina en espacios
+	// (antes de llegar aquí no queda nada por leer); no se duplica.
+	if len(ctx.Tokens) == 0 || ctx.Tokens[len(ctx.Tokens)-1].GetType() != token.TokenEnd {
+		ctx.Tokens = append(ctx.Tokens, token.CreateToken(token.TokenEnd, "", 0, 0))
+	}
 
 	return ctx
 }
@@ -56,6 +58,11 @@ func (ctx *LexerContext) Next() (token.Token, error) {
 		return token.CreateToken(token.TokenUnknown, "", 0, 0), errors.New("Lexer ends")
 	}
 	ctx.ConsumeSpaces()
+	if !ctx.HasNext() {
+		// La entrada solo tenía espacios (o termina en ellos): no hay más
+		// tokens. CurrChar indexaría fuera de rango sin esta salida.
+		return token.CreateToken(token.TokenEnd, "", 0, 0), nil
+	}
 	ctx.first = ctx.current
 
 	curr := ctx.CurrChar()

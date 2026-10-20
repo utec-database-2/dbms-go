@@ -20,6 +20,7 @@ import {
   List,
   Scissors,
   Columns3,
+  X,
 } from "lucide-react";
 import { ExpandBackdrop, ExpandButton } from "./Expandable";
 import { useExpandable } from "./useExpandable";
@@ -159,7 +160,7 @@ function OperatorTip({ tip }) {
   );
 }
 
-function ExecutionPlanPanel({ result, query, history = [] }) {
+function ExecutionPlanPanel({ result, query, history = [], onClose }) {
   const plan = result?.Plan || [];
   const hasPlan = plan.length > 0;
   const tree = result?.Tree || null;
@@ -205,6 +206,11 @@ function ExecutionPlanPanel({ result, query, history = [] }) {
           {hasPlan ? "Plan disponible" : "Sin consulta ejecutada"}
         </div>
         <ExpandButton expanded={expanded} onToggle={setExpanded} />
+        {onClose && !expanded && (
+          <button className="expand-toggle" onClick={onClose} title="Cerrar el plan de ejecución">
+            <X size={16} />
+          </button>
+        )}
       </div>
 
       <div className="execution-query">

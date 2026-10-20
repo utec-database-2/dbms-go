@@ -312,12 +312,9 @@ select:focus-visible {
 ========================= */
 
 .header-actions {
-  order: 2;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding-left: 12px;
-  border-left: 1px solid var(--border);
 }
 
 .connection-status {
@@ -394,13 +391,6 @@ select:focus-visible {
 /* =========================
    TOOLBAR
 ========================= */
-
-.toolbar {
-  order: 1;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
 
 /* =========================
    BOTONES (TOOLBAR / CONSULTAS / RESULTADOS)
@@ -593,25 +583,139 @@ select:focus-visible {
    DISTRIBUCIÓN
 ================================= */
 
-/* Los 5 paneles a la vista. Arriba el flujo esquema → consulta → resultado;
-   abajo el plan y el mapa. Los tamaños (fr) vienen de los ajustes y se
+/* Barra de íconos a la izquierda + área de paneles (estilo pgAdmin). */
+.workbench {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.activity-bar {
+  flex: none;
+  width: 58px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 0 14px;
+  background: color-mix(in srgb, var(--surface-solid) 75%, transparent);
+  border-right: 1px solid var(--border);
+}
+
+.activity-spacer {
+  flex: 1;
+}
+
+.activity-item {
+  position: relative;
+  width: 42px;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--secondary-text);
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s, transform 0.2s var(--ease);
+}
+
+.activity-item:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.activity-item:active {
+  transform: scale(0.94);
+}
+
+.activity-item.active {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
+/* Rayita a la izquierda del ícono activo, como en VS Code */
+.activity-item.active::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  top: 9px;
+  bottom: 9px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent);
+}
+
+/* Nombre del ícono al pasar el mouse */
+.activity-item::after {
+  content: attr(data-label);
+  position: absolute;
+  left: calc(100% + 10px);
+  top: 50%;
+  z-index: 1300;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-solid);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-4px, -50%);
+  transition: opacity 0.15s, transform 0.15s var(--ease);
+}
+
+.activity-item:hover::after {
+  opacity: 1;
+  transform: translate(0, -50%);
+}
+
+/* Archivos a la izquierda; a la derecha Consultas arriba y Resultados (y el
+   Plan, si está abierto) abajo. Los tamaños (fr) vienen de los ajustes y se
    cambian arrastrando los divisores (Dashboard.jsx). */
 .dashboard {
-  --splitter: 12px;
-
   flex: 1;
+  min-width: 0;
   min-height: 0;
 
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
 
   padding: 8px 10px 10px;
 }
 
+.dash-col {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .dash-row {
+  min-width: 0;
   min-height: 0;
   display: grid;
   grid-template-rows: minmax(0, 1fr);
+}
+
+/* El plan se abre al costado de Resultados, como una terminal dividida. */
+@keyframes split-in {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.plan-cell > section {
+  animation: split-in 0.3s var(--ease) both;
 }
 
 .dash-cell {
@@ -830,6 +934,31 @@ body.resizing-row * {
   gap: 12px;
 }
 
+/* En paneles angostos (p. ej. Resultados | Plan divididos) los títulos van
+   en una sola línea y se cortan con "…". */
+.file-title,
+.query-title,
+.result-title,
+.execution-title,
+.map-panel-title,
+.file-title > div,
+.query-title > div,
+.result-title > div,
+.execution-title > div,
+.map-panel-title > div {
+  min-width: 0;
+}
+
+.file-title :is(h2, p),
+.query-title :is(h2, p),
+.result-title :is(h2, p),
+.execution-title :is(h2, p),
+.map-panel-title :is(h2, p) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Ícono del panel dentro de una "pastilla" de color. */
 .file-title > svg,
 .query-title > svg,
@@ -878,21 +1007,14 @@ body.resizing-row * {
   overflow: auto;
 }
 
-/* En el panel angosto las tablas se ven como "chips" en fila. */
+/* En el panel angosto el árbol de tablas va arriba (como el explorador de
+   objetos de pgAdmin) y la estructura de la tabla elegida debajo. */
+.file-tree {
+  max-height: 32vh;
+}
+
 .file-tree .tree-section {
   margin-bottom: 0;
-}
-
-.file-tree .tree-items {
-  flex-direction: row;
-  flex-wrap: wrap;
-  max-height: 76px;
-  overflow: auto;
-}
-
-.file-tree .tree-item {
-  width: auto;
-  padding: 6px 10px;
 }
 
 @container files (min-width: 560px) {
@@ -907,18 +1029,12 @@ body.resizing-row * {
     border-right: 1px solid var(--border);
   }
 
-  .file-tree .tree-section {
-    margin-bottom: 12px;
-  }
-
-  .file-tree .tree-items {
-    flex-direction: column;
+  .file-tree {
     max-height: none;
   }
 
-  .file-tree .tree-item {
-    width: 100%;
-    padding: 8px 10px;
+  .file-tree .tree-section {
+    margin-bottom: 12px;
   }
 }
 
@@ -2709,61 +2825,7 @@ div.empty-results::before {
    RESPONSIVE
 ========================= */
 
-/* =================================
-   BARRA SUPERIOR: TRANSACCIÓN Y COMANDOS
-================================= */
-
-@keyframes txn-glow {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.45);
-  }
-  50% {
-    box-shadow: 0 0 0 5px rgba(245, 158, 11, 0);
-  }
-}
-
-.txn-badge {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-left: 10px;
-  padding: 5px 11px;
-  border: 1px solid rgba(245, 158, 11, 0.45);
-  border-radius: 999px;
-  background: rgba(245, 158, 11, 0.12);
-  color: #b45309;
-  font-size: 12px;
-  font-weight: 700;
-  white-space: nowrap;
-  animation: toast-in 0.3s var(--ease), txn-glow 2s infinite;
-}
-
-.app.dark .txn-badge {
-  color: #fbbf24;
-}
-
-.palette-button {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 36px;
-  padding: 0 8px 0 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface-hover);
-  color: var(--secondary-text);
-  font-size: 12.5px;
-  cursor: pointer;
-  transition: border-color 0.2s, color 0.2s;
-}
-
-.palette-button:hover {
-  border-color: var(--accent);
-  color: var(--text);
-}
-
-.palette-button kbd,
+/* Teclas (kbd) de la paleta de comandos */
 .palette-search kbd,
 .palette-item kbd {
   padding: 2px 6px;
@@ -2777,11 +2839,57 @@ div.empty-results::before {
   white-space: nowrap;
 }
 
-@media (max-width: 1360px) {
-  .palette-button span,
-  .connection-status span:last-child {
-    display: none;
-  }
+/* =================================
+   CONSULTA ESPACIAL EN VENTANA EMERGENTE
+================================= */
+
+/* Queda montada aunque esté cerrada (así no se pierde la búsqueda ni el
+   R-Tree): se oculta con opacidad y visibilidad, no se desmonta. */
+.map-window-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 1550;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4vh 4vw;
+  background: rgba(2, 6, 23, 0.55);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.22s, visibility 0.22s;
+}
+
+.app.light .map-window-layer {
+  background: rgba(15, 23, 42, 0.3);
+}
+
+.map-window-layer.open {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.map-window {
+  width: 100%;
+  max-width: 1500px;
+  height: 100%;
+  display: flex;
+  transform: translateY(14px) scale(0.98);
+  transition: transform 0.3s var(--ease);
+}
+
+.map-window-layer.open .map-window {
+  transform: none;
+}
+
+.map-window > .map-panel {
+  flex: 1;
+  animation: none;
+  background: var(--surface-solid);
+  box-shadow: 0 40px 120px -20px rgba(0, 0, 0, 0.55);
 }
 
 /* =================================
@@ -3655,6 +3763,15 @@ div.empty-results::before {
   font-size: 12.5px;
 }
 
+.execution-status,
+.stat-with-spark strong {
+  white-space: nowrap;
+}
+
+.execution-status {
+  flex: none;
+}
+
 .stat-with-spark {
   display: flex;
   align-items: flex-end;
@@ -3817,9 +3934,21 @@ div.empty-results::before {
 }
 
 .cell-pin {
-  margin-right: 4px;
-  vertical-align: -1px;
+  display: inline-flex;
+  margin-right: 5px;
+  padding: 2px;
+  border: none;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--c-map) 14%, transparent);
   color: var(--c-map);
+  vertical-align: -2px;
+  cursor: pointer;
+  transition: transform 0.15s var(--ease), background 0.15s;
+}
+
+.cell-pin:hover {
+  transform: scale(1.2);
+  background: color-mix(in srgb, var(--c-map) 26%, transparent);
 }
 
 .result-table tbody tr.linked,
@@ -4007,7 +4136,34 @@ div.empty-results::before {
     overflow: visible;
   }
 
+  .workbench {
+    flex: none;
+    flex-direction: column;
+  }
+
+  .activity-bar {
+    position: sticky;
+    top: 0;
+    z-index: 900;
+    width: auto;
+    flex-direction: row;
+    justify-content: center;
+    padding: 6px 10px;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .activity-spacer {
+    flex: 0 0 12px;
+  }
+
+  .activity-item::after,
+  .activity-item.active::before {
+    display: none;
+  }
+
   .dashboard,
+  .dash-col,
   .dash-row {
     flex: none;
     display: flex;
@@ -4028,10 +4184,6 @@ div.empty-results::before {
   .result-panel,
   .execution-panel {
     height: 480px;
-  }
-
-  .map-panel {
-    height: 560px;
   }
 }
 
@@ -4072,10 +4224,6 @@ div.empty-results::before {
 }
 
 @media (max-width: 900px) {
-  .toolbar {
-    overflow-x: auto;
-  }
-
   .toolbar-button span {
     display: none;
   }

@@ -392,6 +392,7 @@ func flattenAnd(where ast.ASTNode) ([]ast.BinaryExpr, error) {
 // índices. En una tabla agrupada el índice de clave primaria es quien escribe en
 // el secuencial, porque es el único que puede resolver la fila por su clave.
 func (t *Table) insertRow(row storage.Tuple) (storage.RID, string, error) {
+	t.invalidateText()
 	if err := t.validateTuple(row); err != nil {
 		return storage.RID{}, "", err
 	}
@@ -449,6 +450,7 @@ func (t *Table) insertRow(row storage.Tuple) (storage.RID, string, error) {
 // updateRow aplica el cambio en el almacenamiento y reubica las entradas de
 // los índices que dependan del valor modificado.
 func (t *Table) updateRow(prev, next storage.Tuple) error {
+	t.invalidateText()
 	if err := t.validateTuple(next); err != nil {
 		return err
 	}
@@ -506,6 +508,7 @@ func (t *Table) reindexAfterUpdate(idx Index, rid storage.RID, prev, next storag
 
 // deleteRow borra la fila del almacenamiento y de todos los índices.
 func (t *Table) deleteRow(row storage.Tuple) error {
+	t.invalidateText()
 	if t.Clustered {
 		// El índice de clave primaria es quien borra del secuencial, así que
 		// los índices secundarios solo se despublican.
