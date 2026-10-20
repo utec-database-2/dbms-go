@@ -1,7 +1,9 @@
 package spimi
 
 import (
+	"encoding/binary"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -167,4 +169,47 @@ func sortedKeys(m map[string][]P) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// decodePostings rechaza listas inválidas: docIDs repetidos o no crecientes, TF=0.
+func TestPostingsDecoderRejectsInvalidLists(t *testing.T) {
+	cases := map[string][]P{
+		"docID repetido":      {{DocID: 4, TF: 1}, {DocID: 4, TF: 1}},
+		"docID decreciente":   {{DocID: 9, TF: 1}, {DocID: 3, TF: 1}},
+		"tf cero":             {{DocID: 1, TF: 0}},
+		"tf cero en el medio": {{DocID: 1, TF: 1}, {DocID: 2, TF: 0}, {DocID: 3, TF: 1}},
+	}
+	for name, ps := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := decodePostings(appendPostings(nil, ps), len(ps)); err == nil {
+				t.Fatal("aceptó una lista inválida")
+			}
+		})
+	}
+	t.Run("docID fuera de uint32", func(t *testing.T) {
+		b := binary.AppendUvarint(nil, math.MaxUint32+1)
+		b = binary.AppendUvarint(b, 1)
+		if _, err := decodePostings(b, 1); err == nil {
+			t.Fatal("aceptó un docID mayor que uint32")
+		}
+	})
+}
+
+// El lector de bloques también rechaza listas inválidas: un bloque con
+// posteos que no cumplen el formato se detecta al leerlo, no después.
+func TestBlockCursorRejectsInvalidPostings(t *testing.T) {
+	for name, ps := range map[string][]P{
+		"docID repetido": {{DocID: 4, TF: 1}, {DocID: 4, TF: 1}},
+		"tf cero":        {{DocID: 1, TF: 0}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "b.tmp")
+			if _, err := writeBlock(path, map[string][]P{"a": ps}); err != nil {
+				t.Fatal(err)
+			}
+			if err := drain(t, path); !errors.Is(err, ErrCorruptBlock) {
+				t.Fatalf("error %v, esperaba ErrCorruptBlock", err)
+			}
+		})
+	}
 }
