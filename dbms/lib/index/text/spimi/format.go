@@ -30,6 +30,7 @@ var (
 	ErrClosed       = errors.New("spimi: el builder ya terminó o se cerró")
 	ErrEmptyTerm    = errors.New("spimi: término vacío")
 	ErrTermTooLong  = errors.New("spimi: término demasiado largo")
+	ErrTermWeight   = errors.New("spimi: la función TermWeight devolvió un valor inválido")
 
 	errBadPosting = errors.New("posteo inválido")
 )
