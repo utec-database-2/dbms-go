@@ -212,8 +212,15 @@ func TestNewBuilderCleansStaleTemps(t *testing.T) {
 	dir := t.TempDir()
 	stale := filepath.Join(dir, "spimi-block-000001.tmp")
 	other := filepath.Join(dir, "notas.txt")
-	os.WriteFile(stale, []byte("basura"), 0o644)
-	os.WriteFile(other, []byte("no tocar"), 0o644)
+
+	if err := os.WriteFile(stale, []byte("basura"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(other, []byte("no tocar"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	if _, err := NewBuilder(Options{Dir: dir}); err != nil {
 		t.Fatal(err)
 	}
