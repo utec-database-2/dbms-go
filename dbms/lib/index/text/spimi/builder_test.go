@@ -434,3 +434,38 @@ func TestRebuildOnDirectoryWithExistingIndex(t *testing.T) {
 		t.Fatalf("NumDocs tras reconstruir = %d, esperaba 90", r.NumDocs())
 	}
 }
+
+func TestTermWeightValidation(t *testing.T) {
+	dir := t.TempDir()
+	_, err := build(t, dir, genCorpus(14, 50, 30, 10), Options{TermWeight: func(tf uint32, df, n int) float64 {
+		if tf == 1 && df == 1 && n == 1 {
+			return -1 // inválido
+		}
+		return float64(tf)
+	}})
+	if err == nil {
+		t.Fatal("aceptó un TermWeight que devuelve valor negativo")
+	}
+
+	dir = t.TempDir()
+	_, err = build(t, dir, genCorpus(15, 50, 30, 10), Options{TermWeight: func(tf uint32, df, n int) float64 {
+		if tf == 1 && df == 1 && n == 1 {
+			return math.NaN() // inválido por valor nulo
+		}
+		return float64(tf)
+	}})
+	if err == nil {
+		t.Fatal("aceptó un TermWeight que devuelve NaN")
+	}
+
+	dir = t.TempDir()
+	_, err = build(t, dir, genCorpus(16, 50, 30, 10), Options{TermWeight: func(tf uint32, df, n int) float64 {
+		if tf == 1 && df == 1 && n == 1 {
+			return math.Inf(1) // inválido por valor infinito
+		}
+		return float64(tf)
+	}})
+	if err == nil {
+		t.Fatal("aceptó un TermWeight que devuelve Inf")
+	}
+}
