@@ -1,0 +1,10 @@
+{
+  "total_documents": 3,
+  "doc_ids": ["1", "2", "3"],
+  "postings": {
+    "base": {"1": 1, "2": 1},
+    "datos": {"1": 2, "2": 1},
+    "vectorial": {"2": 1},
+    "busqueda": {"3": 1}
+  }
+}
