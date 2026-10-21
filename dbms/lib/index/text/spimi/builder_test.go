@@ -402,3 +402,20 @@ func TestOpenDetectsCorruptIndex(t *testing.T) {
 		}
 	})
 }
+
+func TestAtomicPublication(t *testing.T) {
+	dir := t.TempDir()
+	build(t, dir, genCorpus(10, 100, 50, 15), Options{MaxBlockPostings: 20})
+	// simular que otro proceso está leyendo el índice mientras se publica uno nuevo
+	r, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	// publicar un nuevo índice
+	build(t, dir, genCorpus(11, 120, 60, 15), Options{MaxBlockPostings: 20})
+	// el reader viejo sigue viendo el índice viejo
+	if r.NumDocs() != 100 {
+		t.Fatalf("NumDocs tras publicar un nuevo índice = %d, esperaba 100", r.NumDocs())
+	}
+}
