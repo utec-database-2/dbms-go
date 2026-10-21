@@ -188,7 +188,9 @@ func TestCloseWithoutFinishRemovesTemps(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, d := range genCorpus(5, 100, 50, 15) {
-		b.AddDocument(d)
+		if _, err := b.AddDocument(d); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if m, _ := filepath.Glob(filepath.Join(dir, "spimi-*.tmp")); len(m) == 0 {
 		t.Fatal("la prueba necesita bloques volcados")
