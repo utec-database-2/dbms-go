@@ -426,17 +426,19 @@ func TestReaderKeepsPreviousGeneration(t *testing.T) {
 
 func TestRebuildOnDirectoryWithExistingIndex(t *testing.T) {
 	dir := t.TempDir()
-	build(t, dir, genCorpus(12, 80, 40, 10), Options{MaxBlockPostings: 20})
-	// reconstruir el índice en el mismo directorio
-	build(t, dir, genCorpus(13, 90, 50, 10), Options{MaxBlockPostings: 20})
+	first := genCorpus(12, 80, 40, 10)
+	second := genCorpus(13, 90, 50, 10)
+
+	build(t, dir, first, Options{MaxBlockPostings: 20})
+	_, want := build(t, dir, second, Options{MaxBlockPostings: 20})
+
 	r, err := Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer r.Close()
-	if r.NumDocs() != 90 {
-		t.Fatalf("NumDocs tras reconstruir = %d, esperaba 90", r.NumDocs())
-	}
+
+	assertSameIndex(t, r, want)
 }
 
 func TestTermWeightValidation(t *testing.T) {
