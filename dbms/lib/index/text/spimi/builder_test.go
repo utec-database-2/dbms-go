@@ -403,7 +403,7 @@ func TestOpenDetectsCorruptIndex(t *testing.T) {
 	})
 }
 
-func TestAtomicPublication(t *testing.T) {
+func TestReaderKeepsPreviousGeneration(t *testing.T) {
 	dir := t.TempDir()
 	build(t, dir, genCorpus(10, 100, 50, 15), Options{MaxBlockPostings: 20})
 	// simular que otro proceso está leyendo el índice mientras se publica uno nuevo
@@ -436,36 +436,34 @@ func TestRebuildOnDirectoryWithExistingIndex(t *testing.T) {
 }
 
 func TestTermWeightValidation(t *testing.T) {
-	dir := t.TempDir()
-	_, err := build(t, dir, genCorpus(14, 50, 30, 10), Options{TermWeight: func(tf uint32, df, n int) float64 {
-		if tf == 1 && df == 1 && n == 1 {
-			return -1 // inválido
-		}
-		return float64(tf)
-	}})
-	if err == nil {
-		t.Fatal("aceptó un TermWeight que devuelve valor negativo")
+	cases := []struct {
+		name   string
+		weight float64
+	}{
+		{"negativo", -1},
+		{"nan", math.NaN()},
+		{"infinito", math.Inf(1)},
 	}
 
-	dir = t.TempDir()
-	_, err = build(t, dir, genCorpus(15, 50, 30, 10), Options{TermWeight: func(tf uint32, df, n int) float64 {
-		if tf == 1 && df == 1 && n == 1 {
-			return math.NaN() // inválido por valor nulo
-		}
-		return float64(tf)
-	}})
-	if err == nil {
-		t.Fatal("aceptó un TermWeight que devuelve NaN")
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b, err := NewBuilder(Options{
+				Dir: t.TempDir(),
+				TermWeight: func(uint32, int, int) float64 {
+					return tc.weight
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	dir = t.TempDir()
-	_, err = build(t, dir, genCorpus(16, 50, 30, 10), Options{TermWeight: func(tf uint32, df, n int) float64 {
-		if tf == 1 && df == 1 && n == 1 {
-			return math.Inf(1) // inválido por valor infinito
-		}
-		return float64(tf)
-	}})
-	if err == nil {
-		t.Fatal("aceptó un TermWeight que devuelve Inf")
+			if _, err := b.AddDocument([]string{"term"}); err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := b.Finish(); err == nil {
+				t.Fatal("aceptó un peso inválido")
+			}
+		})
 	}
 }
