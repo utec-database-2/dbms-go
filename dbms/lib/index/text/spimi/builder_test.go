@@ -419,3 +419,18 @@ func TestAtomicPublication(t *testing.T) {
 		t.Fatalf("NumDocs tras publicar un nuevo índice = %d, esperaba 100", r.NumDocs())
 	}
 }
+
+func TestRebuildOnDirectoryWithExistingIndex(t *testing.T) {
+	dir := t.TempDir()
+	build(t, dir, genCorpus(12, 80, 40, 10), Options{MaxBlockPostings: 20})
+	// reconstruir el índice en el mismo directorio
+	build(t, dir, genCorpus(13, 90, 50, 10), Options{MaxBlockPostings: 20})
+	r, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if r.NumDocs() != 90 {
+		t.Fatalf("NumDocs tras reconstruir = %d, esperaba 90", r.NumDocs())
+	}
+}
