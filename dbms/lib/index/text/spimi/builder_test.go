@@ -382,14 +382,18 @@ func TestOpenDetectsCorruptIndex(t *testing.T) {
 	}
 	t.Run("falta un archivo", func(t *testing.T) {
 		dir := newIndex(t)
-		os.Remove(filepath.Join(dir, dictFile))
+		if err := os.Remove(filepath.Join(dir, dictFile)); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := Open(dir); err == nil {
 			t.Fatal("abrió un índice sin dict.dat")
 		}
 	})
 	t.Run("magic del diccionario", func(t *testing.T) {
 		dir := newIndex(t)
-		os.WriteFile(filepath.Join(dir, dictFile), []byte("XXXXXXXXXXXX"), 0o644)
+		if err := os.WriteFile(filepath.Join(dir, dictFile), []byte("XXXXXXXXXXXX"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := Open(dir); !errors.Is(err, ErrCorruptIndex) {
 			t.Fatalf("error %v, esperaba ErrCorruptIndex", err)
 		}
@@ -398,7 +402,9 @@ func TestOpenDetectsCorruptIndex(t *testing.T) {
 		dir := newIndex(t)
 		p := filepath.Join(dir, postingsFile)
 		st, _ := os.Stat(p)
-		os.Truncate(p, st.Size()/2)
+		if err := os.Truncate(p, st.Size()/2); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := Open(dir); !errors.Is(err, ErrCorruptIndex) {
 			t.Fatalf("error %v, esperaba ErrCorruptIndex", err)
 		}
@@ -407,7 +413,9 @@ func TestOpenDetectsCorruptIndex(t *testing.T) {
 		dir := newIndex(t)
 		p := filepath.Join(dir, docsFile)
 		st, _ := os.Stat(p)
-		os.Truncate(p, st.Size()-3)
+		if err := os.Truncate(p, st.Size()-3); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := Open(dir); !errors.Is(err, ErrCorruptIndex) {
 			t.Fatalf("error %v, esperaba ErrCorruptIndex", err)
 		}
