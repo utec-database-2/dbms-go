@@ -69,7 +69,7 @@ func assertSameIndex(t *testing.T, got *Reader, want *textindex.MemIndex) {
 	wantTerms := want.Terms()
 	gotTerms := got.Terms()
 	if !reflect.DeepEqual(gotTerms, append([]string(nil), wantTerms...)) && len(wantTerms) != 0 {
-		t.Fatalf("el vocabulario no coincide (%d vs %d términos)", got.NumTerms(), len(wantTerms))
+		t.Fatalf("el vocabulario no coincide: got %v vs want %v (%d vs %d términos)", gotTerms, wantTerms, got.NumTerms(), len(wantTerms))
 	}
 	for d := 0; d < want.NumDocs(); d++ {
 		if got.DocLen(uint32(d)) != want.DocLen(uint32(d)) {
