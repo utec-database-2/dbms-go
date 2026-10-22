@@ -68,7 +68,7 @@ func assertSameIndex(t *testing.T, got *Reader, want *textindex.MemIndex) {
 	}
 	wantTerms := want.Terms()
 	gotTerms := got.Terms()
-	if !reflect.DeepEqual(gotTerms, append([]string(nil), wantTerms...)) && len(wantTerms) != 0 {
+	if !reflect.DeepEqual(gotTerms, wantTerms) {
 		t.Fatalf("el vocabulario no coincide: got %v vs want %v (%d vs %d términos)", gotTerms, wantTerms, got.NumTerms(), len(wantTerms))
 	}
 	for d := 0; d < want.NumDocs(); d++ {
@@ -76,7 +76,7 @@ func assertSameIndex(t *testing.T, got *Reader, want *textindex.MemIndex) {
 			t.Fatalf("DocLen(%d) = %d, esperaba %d", d, got.DocLen(uint32(d)), want.DocLen(uint32(d)))
 		}
 	}
-	for _, term := range want.Terms() {
+	for _, term := range wantTerms {
 		gp, err := got.Postings(term)
 		if err != nil {
 			t.Fatalf("Postings(%q): %v", term, err)
@@ -138,8 +138,14 @@ func TestBlockSizeDoesNotChangeFinalFiles(t *testing.T) {
 	build(t, dirA, corpus, Options{MaxBlockPostings: 1 << 30})
 	build(t, dirB, corpus, Options{MaxBlockPostings: 40, MaxFanIn: 2})
 	for _, name := range []string{postingsFile, dictFile, docsFile} {
-		a, _ := os.ReadFile(filepath.Join(dirA, name))
-		b, _ := os.ReadFile(filepath.Join(dirB, name))
+		a, err := os.ReadFile(filepath.Join(dirA, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := os.ReadFile(filepath.Join(dirB, name))
+		if err != nil {
+			t.Fatal(err)
+		}
 		if len(a) == 0 || !bytes.Equal(a, b) {
 			t.Fatalf("%s difiere entre configuraciones (%d vs %d bytes)", name, len(a), len(b))
 		}
@@ -172,7 +178,10 @@ func TestBuilderStatsReflectConfiguration(t *testing.T) {
 func TestBuilderLeavesOnlyFinalFiles(t *testing.T) {
 	dir := t.TempDir()
 	build(t, dir, genCorpus(4, 200, 100, 20), Options{MaxBlockPostings: 30, MaxFanIn: 2})
-	entries, _ := os.ReadDir(dir)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var names []string
 	for _, e := range entries {
 		names = append(names, e.Name())
@@ -200,7 +209,9 @@ func TestCloseWithoutFinishRemovesTemps(t *testing.T) {
 	if err := b.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+	if entries, err := os.ReadDir(dir); err != nil {
+		t.Fatal(err)
+	} else if len(entries) != 0 {
 		t.Fatalf("quedaron archivos: %v", entries)
 	}
 	if _, err := b.AddDocument([]string{"a"}); !errors.Is(err, ErrClosed) {
@@ -401,7 +412,10 @@ func TestOpenDetectsCorruptIndex(t *testing.T) {
 	t.Run("postings truncado", func(t *testing.T) {
 		dir := newIndex(t)
 		p := filepath.Join(dir, postingsFile)
-		st, _ := os.Stat(p)
+		st, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if err := os.Truncate(p, st.Size()/2); err != nil {
 			t.Fatal(err)
 		}
@@ -412,7 +426,10 @@ func TestOpenDetectsCorruptIndex(t *testing.T) {
 	t.Run("tabla de documentos truncada", func(t *testing.T) {
 		dir := newIndex(t)
 		p := filepath.Join(dir, docsFile)
-		st, _ := os.Stat(p)
+		st, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if err := os.Truncate(p, st.Size()-3); err != nil {
 			t.Fatal(err)
 		}
@@ -484,8 +501,8 @@ func TestTermWeightValidation(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if _, err := b.Finish(); err == nil {
-				t.Fatal("aceptó un peso inválido")
+			if _, err := b.Finish(); !errors.Is(err, ErrTermWeight) {
+				t.Fatalf("error = %v, esperaba ErrTermWeight", err)
 			}
 		})
 	}
