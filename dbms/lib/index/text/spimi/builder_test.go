@@ -455,7 +455,8 @@ func TestTermWeightValidation(t *testing.T) {
 	}{
 		{"negativo", -1},
 		{"nan", math.NaN()},
-		{"infinito", math.Inf(1)},
+		{"infinito positivo", math.Inf(1)},
+		{"infinito negativo", math.Inf(-1)},
 	}
 
 	for _, tc := range cases {
