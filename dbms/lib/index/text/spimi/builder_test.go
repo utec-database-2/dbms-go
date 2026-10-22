@@ -426,13 +426,18 @@ func TestReaderKeepsPreviousGeneration(t *testing.T) {
 	dir := t.TempDir()
 	first := genCorpus(10, 100, 50, 15)
 	second := genCorpus(11, 120, 60, 15)
+
 	_, want := build(t, dir, first, Options{MaxBlockPostings: 20})
+
+	r, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
 	// simular que otro proceso está leyendo el índice mientras se publica uno nuevo
 	build(t, dir, second, Options{MaxBlockPostings: 20})
-	// el reader viejo sigue viendo el índice viejo
-	if want.NumDocs() != 100 {
-		t.Fatalf("NumDocs tras publicar un nuevo índice = %d, esperaba 100", want.NumDocs())
-	}
+
+	assertSameIndex(t, r, want)
 }
 
 func TestRebuildOnDirectoryWithExistingIndex(t *testing.T) {
