@@ -15,6 +15,21 @@ func init() {
 	stopWords = loadStopWords("stoplist.txt")
 }
 
+func punctuationRemover(text string) string {
+	// Remove punctuation from the text
+	return strings.Map(func(r rune) rune {
+		if strings.ContainsRune(".,;:¡!¿?\"'()[]{}", r) {
+			return -1
+		}
+		return r
+	}, text)
+}
+
+func word_tokenize(text string) []string {
+	// Split the text into words based on whitespace
+	return strings.Fields(text)
+}
+
 func loadStopWords(filename string) map[string]bool {
 	// Load stop words from a file and return them as a map for quick lookup
 	sw := make(map[string]bool)
@@ -45,59 +60,49 @@ func removeAccents(text string) string {
 	return text
 }
 
-func removeStopWords(text string) string {
-	// Load stop words from stoplist.txt
-	words := strings.Fields(text)
-	var filteredWords []string
-	for _, word := range words {
-		if !stopWords[word] {
-			filteredWords = append(filteredWords, word)
+func removeStopWords(tokens []string) []string {
+	// Remove stop words from the list of tokens
+	filtered := []string{}
+	for _, token := range tokens {
+		if !stopWords[token] {
+			filtered = append(filtered, token)
 		}
 	}
-	return strings.Join(filteredWords, " ")
+	return filtered
 }
 
-func stemText(text string) (string, error) {
-	// Implement a simple stemming algorithm or use an existing library
-	// For demonstration, we'll just return the text as is
-	var result strings.Builder
-	words := strings.Fields(text)
-	for i, word := range words {
-		root, err := snowball.Stem(word, "spanish", true)
+func stemTokens(tokens []string) ([]string, error) {
+	stemmed := []string{}
+	for _, token := range tokens {
+		root, err := snowball.Stem(token, "spanish", true)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
-		result.WriteString(root)
-		if i < len(words)-1 {
-			result.WriteString(" ")
-		}
+		stemmed = append(stemmed, root)
 	}
-	return result.String(), nil
+	return stemmed, nil
 }
 
 // PreprocessText normaliza un texto de entrada para que sea más fácil de indexar y buscar.
-func PreprocessText(text string) string {
+func PreprocessText(text string) []string {
 	// lower case
 	text = strings.ToLower(text)
 	// remove punctuation
-	text = strings.Map(func(r rune) rune {
-		if strings.ContainsRune(".,;:¡!¿?\"'()[]{}", r) {
-			return -1
-		}
-		return r
-	}, text)
-	// remove extra whitespace
-	text = strings.TrimSpace(text)
+	text = punctuationRemover(text)
+	// tokenizacion
+	tokens := word_tokenize(text)
 	// remove stop words using stoplist.txt
-	text = removeStopWords(text)
+	tokens = removeStopWords(tokens)
 	// stem words
-	text, err := stemText(text)
+	tokens, err := stemTokens(tokens)
 	if err != nil {
 		// Handle the error, e.g., log it or return an error
-		return err.Error()
+		fmt.Printf("Error stemming tokens: %v\n", err)
 	}
 	// remove accents (El stemmer de Snowball necesita los acentos para funcionar correctamente, pero después de hacer el stemming, podemos eliminarlos)
-	text = removeAccents(text)
+	for i, token := range tokens {
+		tokens[i] = removeAccents(token)
+	}
 
-	return text
+	return tokens
 }
