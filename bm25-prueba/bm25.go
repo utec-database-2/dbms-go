@@ -2,6 +2,7 @@ package main
 
 import (
 	"math"
+	"sort"
 	"strings"
 	"unicode"
 )
@@ -62,5 +63,105 @@ type documentStats struct {
 	doc    Document
 	length int
 	tf     map[string]int
+}
+
+// BM25Search busca documentos y los ordena por relevancia.
+
+func BM25Search(
+	docs []Document,
+	query string,
+	k1, b float64,
+)[]SearchResult {
+	if len(docs) == 0 || k1 < 0 || b < 0 || b > 1 {
+		return nil
+	}
+
+	queryTokens := tokenize(query)
+	if len(queryTokens) == 0 {
+		return nil;
+	}
+
+	// Evitar contar 2 veces
+	seen := make(map[string]bool)
+	var terms []string
+
+	for _, term := range queryTokens{
+		if !seen[term]{
+			seen[term]=true
+			terms = append(terms,term)
+		}
+	}
+
+	// Calcula la frecuencia de cada término en cada documento
+	// y la frecuencia documental de cada término.
+	stats := make([]documentStats, 0, len(docs))
+	df := make(map[string]int)
+	totalLength := 0
+
+	for _, doc := range docs {
+		tokens := tokenize(doc.Text)
+		tf := make(map[string]int)
+
+		for _, token := range tokens {
+			tf[token]++
+		}
+
+		for term := range tf {
+			df[term]++
+		}
+
+		totalLength += len(tokens)
+
+		stats = append(stats, documentStats{
+			doc:    doc,
+			length: len(tokens),
+			tf:     tf,
+		})
+	}
+
+	nDocs := len(docs)
+	avgdl := float64(totalLength) / float64(nDocs)
+
+	var results []SearchResult
+
+	for _,stat := range stats{
+		var score float64
+
+		for _, term := range terms{
+			freq := stat.tf[term]
+			if freq == 0{
+				continue
+			}
+
+			score += bm25TermScore(
+				freq,
+				stat.length,
+				nDocs,
+				df[term],
+				avgdl,
+				k1,
+				b,
+			)
+		}
+
+		// No devolvemos documentos sin coincidencias.
+		if score > 0 {
+			results = append(results, SearchResult{
+				DocID: stat.doc.ID,
+				Score: score,
+			})
+		}
+	}
+
+	// Ordenar mayor a menor
+	// Si hay empate, menor ID primero para hacerlo determinista.
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].Score == results[j].Score {
+			return results[i].DocID < results[j].DocID
+		}
+		return results[i].Score > results[j].Score
+	})
+
+	return results
 }
 
