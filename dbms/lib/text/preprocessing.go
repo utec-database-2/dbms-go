@@ -3,6 +3,8 @@ package text
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/kljensen/snowball"
@@ -12,7 +14,12 @@ var stopWords map[string]bool
 
 func init() {
 	// Load stop words from stoplist.txt
-	stopWords = loadStopWords("stoplist.txt")
+	_, sourceFile, _, ok := runtime.Caller(0)
+	if !ok {
+		stopWords = make(map[string]bool)
+		return
+	}
+	stopWords = loadStopWords(filepath.Join(filepath.Dir(sourceFile), "stoplist.txt"))
 }
 
 func punctuationRemover(text string) string {
