@@ -74,6 +74,9 @@ type Result struct {
 	Plan []Step
 	// Message describe el efecto de sentencias sin conjunto de resultados.
 	Message string
+	// ElapsedMs es cuánto tardó la sentencia en ejecutarse, esperas de
+	// bloqueo incluidas (el parseo no).
+	ElapsedMs float64
 }
 
 // Options configura el motor al abrirse.
@@ -266,7 +269,41 @@ func (e *Engine) Exec(sql string) (*Result, error) {
 	return e.def.Exec(sql)
 }
 
-// parse convierte el texto SQL en el nodo raíz del AST.
+// ExecScript parsea y ejecuta un script con varias sentencias separadas por
+// ";" en la sesión por defecto y devuelve un resultado por sentencia. Si una
+// sentencia falla, devuelve los resultados parciales junto con un *StmtError
+// que dice en cuál; si el script no parsea, no se ejecuta ninguna.
+func (e *Engine) ExecScript(script string) ([]*Result, error) {
+	return e.def.ExecScript(script)
+}
+
+// ScriptTouches informa si alguna sentencia del script escribe en la tabla
+// indicada (INSERT/UPDATE/DELETE/DDL) o cierra una transacción
+// (COMMIT/ROLLBACK, que confirma o deshace cambios pendientes): en cualquiera
+// de esos casos el contenido visible de la tabla puede haber cambiado.
+// Usa el mismo parser que ExecScript.
+func (e *Engine) ScriptTouches(script, table string) (bool, error) {
+	stmts, err := e.parseAll(script)
+	if err != nil {
+		return false, err
+	}
+	for _, root := range stmts {
+		switch root.(type) {
+		case *ast.Commit, *ast.Rollback:
+			return true, nil
+		}
+		for _, l := range statementLocks(root) {
+			if l.mode == lockmanager.Exclusive && strings.EqualFold(l.table, table) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// parse convierte el texto SQL en el nodo raíz del AST. Solo acepta una
+// sentencia: para un script completo (varias sentencias separadas por ";")
+// está parseAll.
 func (e *Engine) parse(sql string) (ast.ASTNode, error) {
 	lex := lexer.Tokenize(sql, e.opt.Newline)
 	if err := lex.Err(); err != nil {
@@ -277,6 +314,21 @@ func (e *Engine) parse(sql string) (ast.ASTNode, error) {
 		return nil, fmt.Errorf("sql: error de sintaxis: %w", err)
 	}
 	return p.Parent(), nil
+}
+
+// parseAll convierte el texto de un script en la lista de sentencias AST.
+// Parsea el script completo antes de devolver: si alguna sentencia tiene
+// error de sintaxis, no se devuelve ninguna y no se ejecuta nada.
+func (e *Engine) parseAll(script string) ([]ast.ASTNode, error) {
+	lex := lexer.Tokenize(script, e.opt.Newline)
+	if err := lex.Err(); err != nil {
+		return nil, fmt.Errorf("sql: error léxico: %w", err)
+	}
+	stmts, err := parser.ParseAll(lex)
+	if err != nil {
+		return nil, fmt.Errorf("sql: error de sintaxis: %w", err)
+	}
+	return stmts, nil
 }
 
 // execNode ejecuta una sentencia ya parseada. Se llama con stmtMu tomado y con

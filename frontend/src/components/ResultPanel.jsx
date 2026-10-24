@@ -8,11 +8,42 @@ import {
   ChevronRight,
   CheckCircle2,
   AlertCircle,
+  MapPin,
 } from "lucide-react";
+import { ExpandBackdrop, ExpandButton } from "./Expandable";
+import { useExpandable } from "./useExpandable";
+import { parsePoint } from "../lib/sql";
 
-function ResultPanel({ result, error, loading, onShowExecutionPlan }) {
+// Primera palabra de la sentencia (SELECT, INSERT…), para las pestañas.
+function verbOf(sql) {
+  return /^\s*(?:--[^\n]*\n\s*)*([A-Za-z]+)/.exec(sql)?.[1]?.toUpperCase() ?? "SQL";
+}
+
+// Resumen de la sentencia para su pestaña: filas del SELECT, filas afectadas
+// o el mensaje (idea de describeResult en main).
+function describeResult(r) {
+  if (r?.Columns?.length) return `${r.Rows?.length ?? 0} filas`;
+  if (r?.Affected > 0) return `${r.Affected} afectadas`;
+  return "";
+}
+
+const rowKey = (row) => row.map(String).join("\u241f");
+
+function ResultPanel({
+  result,
+  error,
+  loading,
+  runs = [],
+  activeRun = 0,
+  onSelectRun,
+  rowsPerPage: baseRowsPerPage = 5,
+  linked,
+  onLink,
+  onShowOnMap,
+}) {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
+  const [expanded, setExpanded] = useExpandable();
 
   const [shownResult, setShownResult] = useState(result);
   if (result !== shownResult) {
@@ -22,16 +53,58 @@ function ResultPanel({ result, error, loading, onShowExecutionPlan }) {
 
   const columns = result?.Columns || [];
   const rows = result?.Rows || [];
-  const rowsPerPage = 5;
+  // En la ventana grande caben más filas por página.
+  const rowsPerPage = expanded ? Math.max(20, baseRowsPerPage) : baseRowsPerPage;
 
   const filteredRows = rows.filter((row) =>
-    row.some((value) =>
-      String(value).toLowerCase().includes(search.toLowerCase()),
-    ),
+    row.some((value) => String(value).toLowerCase().includes(search.toLowerCase())),
   );
 
+  // Enlace con el mapa: la fila del punto elegido en el mapa (o la fila que
+  // se eligió aquí) se resalta.
+  const lowerColumns = columns.map((c) => String(c).toLowerCase());
+  const idCol = lowerColumns.indexOf("id");
+  const nameCol = lowerColumns.findIndex((c) => c === "nombre" || c === "name");
+  const isLinked = (row) => {
+    if (!linked) return false;
+    if (linked.source === "table") return linked.key === rowKey(row);
+    return (
+      (idCol >= 0 && String(row[idCol]) === String(linked.id)) ||
+      (nameCol >= 0 && row[nameCol] === linked.name)
+    );
+  };
+
+  // Si el punto se eligió en el mapa, se salta a la página donde está su fila.
+  const [shownLinked, setShownLinked] = useState(linked);
+  if (linked !== shownLinked) {
+    setShownLinked(linked);
+    if (linked?.source === "map") {
+      const index = filteredRows.findIndex(isLinked);
+      if (index >= 0) setPage(Math.floor(index / rowsPerPage) + 1);
+    }
+  }
+
+  const handleRowClick = (row) => {
+    if (!onLink) return;
+    const key = rowKey(row);
+    if (linked?.source === "table" && linked.key === key) {
+      onLink(null);
+      return;
+    }
+    const point = row.map(parsePoint).find(Boolean);
+    const firstText = row.find((v) => typeof v === "string" && !parsePoint(v));
+    onLink({
+      source: "table",
+      key,
+      id: idCol >= 0 ? row[idCol] : undefined,
+      name: String(nameCol >= 0 ? row[nameCol] : (firstText ?? row[0])),
+      ...(point || {}),
+    });
+  };
+
   const totalPages = Math.max(1, Math.ceil(filteredRows.length / rowsPerPage));
-  const startIndex = (page - 1) * rowsPerPage;
+  const currentPage = Math.min(page, totalPages);
+  const startIndex = (currentPage - 1) * rowsPerPage;
   const currentRows = filteredRows.slice(startIndex, startIndex + rowsPerPage);
 
   const handleSearch = (value) => {
@@ -50,9 +123,7 @@ function ResultPanel({ result, error, loading, onShowExecutionPlan }) {
   const handleExport = () => {
     if (columns.length === 0) return;
     const csvHeader = columns.join(",");
-    const csvRows = filteredRows.map((row) =>
-      row.map((v) => `"${v}"`).join(","),
-    );
+    const csvRows = filteredRows.map((row) => row.map((v) => `"${v}"`).join(","));
     const csvContent = [csvHeader, ...csvRows].join("\n");
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -73,32 +144,50 @@ function ResultPanel({ result, error, loading, onShowExecutionPlan }) {
         : "Sin consultas aún";
 
   return (
-    <section className="result-panel">
+    <>
+    <ExpandBackdrop expanded={expanded} onClose={() => setExpanded(false)} />
+    <section className={expanded ? "result-panel panel-expanded" : "result-panel"}>
       <div className="result-header">
         <div className="result-title">
           <Table2 size={19} />
           <div>
             <h2>Panel de Resultados</h2>
-            {/* <p>Resultado de la consulta</p> */}
+            <p>Resultado de la consulta</p>
           </div>
-          <button
-            type="button"
-            onClick={onShowExecutionPlan}
-            className="panel-switch-button"
-          >
-            Ver plan de ejecución
-          </button>
         </div>
 
-        <div className={`result-status${error ? " error" : ""}`}>
+        <div className={`result-status${error ? " error" : !result ? " idle" : ""}`}>
           {error ? <AlertCircle size={15} /> : <CheckCircle2 size={15} />}
           <span>{statusText}</span>
         </div>
+        <ExpandButton expanded={expanded} onToggle={setExpanded} />
       </div>
+
+      {runs.length > 1 && (
+        <div className="run-tabs" role="tablist">
+          {runs.map((run, i) => (
+            <button
+              key={i}
+              role="tab"
+              aria-selected={i === activeRun}
+              className={`run-tab${i === activeRun ? " active" : ""}${run.error ? " failed" : ""}`}
+              onClick={() => onSelectRun(i)}
+              title={run.sql}
+            >
+              {run.error ? <AlertCircle size={13} /> : <CheckCircle2 size={13} />}
+              <b>{i + 1}</b>
+              {verbOf(run.sql)}
+              {run.result && describeResult(run.result) && (
+                <small>· {describeResult(run.result)}</small>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
 
       {error && <div className="result-error">{error}</div>}
 
-      {/* <div className="result-toolbar">
+      <div className="result-toolbar">
         <div className="result-search">
           <Search size={15} />
           <input
@@ -116,7 +205,7 @@ function ResultPanel({ result, error, loading, onShowExecutionPlan }) {
             Exportar CSV
           </button>
         </div>
-      </div> */}
+      </div>
 
       <div className="result-info">
         <span>
@@ -129,10 +218,7 @@ function ResultPanel({ result, error, loading, onShowExecutionPlan }) {
         </span>
         <span>
           Tiempo:
-          <strong>
-            {" "}
-            {result ? `${result.ElapsedMs?.toFixed(2)} ms` : "—"}
-          </strong>
+          <strong> {result ? `${result.ElapsedMs?.toFixed(2)} ms` : "—"}</strong>
         </span>
         {result?.Affected > 0 && (
           <span>
@@ -153,7 +239,8 @@ function ResultPanel({ result, error, loading, onShowExecutionPlan }) {
                 <th className="actions-column">Acción</th>
               </tr>
             </thead>
-            <tbody>
+            {/* La key cambia con la página o el resultado para repetir la animación de las filas. */}
+            <tbody key={`${currentPage}-${rowsPerPage}-${search}-${rows.length}-${result?.ElapsedMs}`}>
               {currentRows.length === 0 ? (
                 <tr>
                   <td colSpan={columns.length + 1} className="empty-results">
@@ -161,22 +248,58 @@ function ResultPanel({ result, error, loading, onShowExecutionPlan }) {
                   </td>
                 </tr>
               ) : (
-                currentRows.map((row, rowIndex) => (
-                  <tr key={rowIndex}>
+                currentRows.map((row, rowIndex) => {
+                  const hasPoint = row.some((v) => parsePoint(v));
+                  return (
+                  <tr
+                    key={rowIndex}
+                    className={[isLinked(row) && "linked", hasPoint && "has-point"]
+                      .filter(Boolean)
+                      .join(" ")}
+                    onClick={() => handleRowClick(row)}
+                    title={hasPoint ? "Clic para resaltar la fila · 📍 para verla en el mapa" : "Clic para resaltar la fila"}
+                  >
                     {row.map((value, columnIndex) => (
-                      <td key={columnIndex}>{String(value)}</td>
+                      <td key={columnIndex}>
+                        {parsePoint(value) && (
+                          <button
+                            className="cell-pin"
+                            title="Ver en la consulta espacial"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              const point = parsePoint(value);
+                              const link = {
+                                source: "table",
+                                key: rowKey(row),
+                                id: idCol >= 0 ? row[idCol] : undefined,
+                                name: String(nameCol >= 0 ? row[nameCol] : value),
+                                ...point,
+                              };
+                              onLink?.(link);
+                              onShowOnMap?.();
+                            }}
+                          >
+                            <MapPin size={12} />
+                          </button>
+                        )}
+                        {String(value)}
+                      </td>
                     ))}
                     <td className="row-action-cell">
                       <button
                         className="copy-row-button"
                         title="Copiar fila"
-                        onClick={() => handleCopy(row)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          handleCopy(row);
+                        }}
                       >
                         <Copy size={14} />
                       </button>
                     </td>
                   </tr>
-                ))
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -191,30 +314,29 @@ function ResultPanel({ result, error, loading, onShowExecutionPlan }) {
 
       <div className="result-footer">
         <span className="page-info">
-          Página {page} de {totalPages}
+          Página {currentPage} de {totalPages}
         </span>
 
         <div className="pagination">
           <button
             className="pagination-button"
-            disabled={page === 1}
-            onClick={() => setPage((previous) => Math.max(1, previous - 1))}
+            disabled={currentPage === 1}
+            onClick={() => setPage(Math.max(1, currentPage - 1))}
           >
             <ChevronLeft size={15} />
           </button>
 
           <button
             className="pagination-button"
-            disabled={page === totalPages}
-            onClick={() =>
-              setPage((previous) => Math.min(totalPages, previous + 1))
-            }
+            disabled={currentPage === totalPages}
+            onClick={() => setPage(Math.min(totalPages, currentPage + 1))}
           >
             <ChevronRight size={15} />
           </button>
         </div>
       </div>
     </section>
+    </>
   );
 }
 
