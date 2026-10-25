@@ -789,3 +789,91 @@ func TestPreprocessedCorpusIsIndependentOfBlockSize(t *testing.T) {
 		}
 	}
 }
+
+func TestPreprocessEmptyDocumentsKeepDocIDs(t *testing.T) {
+	documents := []string{
+		"el gato y el perro corre", // "el" y "y" son stop words
+		"   ",                      // documento vacío
+		"el perro duerme",          // "el" es stop word
+		"el la de y",               // solo stopwords
+	}
+	corpus := make([][]string, len(documents))
+
+	for i, doc := range documents {
+		corpus[i], _ = text.PreprocessText(doc)
+	}
+
+	builder, err := NewBuilder(Options{Dir: t.TempDir(), MaxBlockPostings: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i, tokens := range corpus {
+		docID, err := builder.AddDocument(tokens)
+		if err != nil {
+			t.Fatalf("AddDocument(%q): %v", documents[i], err)
+		}
+		if docID != uint32(i) {
+			t.Fatalf("docID %d inesperado para el documento %d", docID, i)
+		}
+	}
+
+	stats, err := builder.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.NumDocs != len(documents) || stats.NumTerms != 4 { // Solo "gato", "perro", "duerme" y "corre" deberían ser indexados en el vocabulario
+		t.Fatalf("estadísticas incompletas: %+v", stats)
+	}
+
+	reader, err := Open(builder.opts.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+
+	termGato, err := text.PreprocessOneWord("gato")
+	if err != nil {
+		t.Fatalf("PreprocessOneWord(\"gato\"): %v", err)
+	}
+	postingsGato, err := reader.Postings(termGato)
+	if err != nil {
+		t.Fatalf("Postings(\"término de gato\"): %v", err)
+	}
+	if len(postingsGato) != 1 || postingsGato[0].DocID != 0 || postingsGato[0].TF != 1 {
+		t.Fatalf("Postings(\"término de gato\") = %v, esperaba DocID 0 con TF 1", postingsGato)
+
+	}
+
+	termPerro, err := text.PreprocessOneWord("perro")
+	if err != nil {
+		t.Fatalf("PreprocessOneWord(\"perro\"): %v", err)
+	}
+	postingsPerro, err := reader.Postings(termPerro)
+	if err != nil {
+		t.Fatalf("Postings(\"término de perro\"): %v", err)
+	}
+	if len(postingsPerro) != 2 || postingsPerro[0].DocID != 0 || postingsPerro[0].TF != 1 || postingsPerro[1].DocID != 2 || postingsPerro[1].TF != 1 {
+		t.Fatalf("Postings(\"término de perro\") = %v, esperaba DocID 0 y 2 con TF 1", postingsPerro)
+	}
+
+	termDuerme, err := text.PreprocessOneWord("duerme")
+	if err != nil {
+		t.Fatalf("PreprocessOneWord(\"duerme\"): %v", err)
+	}
+	postingsDuerme, err := reader.Postings(termDuerme)
+	if err != nil {
+		t.Fatalf("Postings(\"término de duerme\"): %v", err)
+	}
+	if len(postingsDuerme) != 1 || postingsDuerme[0].DocID != 2 || postingsDuerme[0].TF != 1 {
+		t.Fatalf("Postings(\"término de duerme\") = %v, esperaba DocID 2 con TF 1", postingsDuerme)
+	}
+
+	if reader.DocLen(1) != 0 || reader.DocNorm(1) != 0 {
+		t.Fatalf("Documento 1 (vacío) tiene DocLen %d y DocNorm %v, esperaba 0 y 0", reader.DocLen(1), reader.DocNorm(1))
+	}
+
+	if reader.DocLen(3) != 0 || reader.DocNorm(3) != 0 {
+		t.Fatalf("Documento 3 (solo stopwords) tiene DocLen %d y DocNorm %v, esperaba 0 y 0", reader.DocLen(3), reader.DocNorm(3))
+	}
+}
