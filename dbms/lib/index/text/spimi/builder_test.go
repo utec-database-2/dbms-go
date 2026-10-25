@@ -564,3 +564,55 @@ func TestPreprocessTextAndBuilder(t *testing.T) {
 	defer r.Close()
 	assertSameIndex(t, r, want)
 }
+
+func TestBuilderPreservesTermFrequency(t *testing.T) {
+	// asume que estos ya estan procesados como terminos (generalmente deben estas palabras ser
+	// procesadas pero esta es prueba de frecuencia de terminos)
+	corpus := [][]string{
+		{"gato", "gato", "corre"}, // Document 0: "gato" aparece dos veces, "corre" solo una vez
+	}
+
+	// Crear Builder, agregar tokens, finalizar y consultar postings.
+	builder, err := NewBuilder(Options{Dir: t.TempDir(), MaxBlockPostings: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	docID, err := builder.AddDocument(corpus[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if docID != 0 {
+		t.Fatalf("docID %d inesperado, esperaba 0", docID)
+	}
+
+	stats, err := builder.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.NumDocs != 1 || stats.NumTerms != 2 {
+		t.Fatalf("estadísticas incompletas: %+v", stats)
+	}
+
+	reader, err := Open(builder.opts.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+
+	postingsGato, err := reader.Postings("gato")
+	if err != nil {
+		t.Fatalf("Postings(\"término de gato\"): %v", err)
+	}
+	if len(postingsGato) != 1 || postingsGato[0].DocID != 0 || postingsGato[0].TF != 2 {
+		t.Fatalf("Postings(\"término de gato\") = %v, esperaba DocID 0 con TF 2", postingsGato)
+	}
+
+	postingsCorre, err := reader.Postings("corre")
+	if err != nil {
+		t.Fatalf("Postings(\"término de corre\"): %v", err)
+	}
+	if len(postingsCorre) != 1 || postingsCorre[0].DocID != 0 || postingsCorre[0].TF != 1 {
+		t.Fatalf("Postings(\"término de corre\") = %v, esperaba DocID 0 con TF 1", postingsCorre)
+	}
+}
