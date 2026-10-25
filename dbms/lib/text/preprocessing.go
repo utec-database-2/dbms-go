@@ -25,7 +25,7 @@ func init() {
 func punctuationRemover(text string) string {
 	// Remove punctuation from the text
 	return strings.Map(func(r rune) rune {
-		if strings.ContainsRune(".,;:¡!¿?\"'()[]{}", r) {
+		if strings.ContainsRune(".,;:¡!¿?\"'()[]{}--_/", r) {
 			return -1
 		}
 		return r
@@ -56,7 +56,7 @@ func removeAccents(text string) string {
 	accentMap := map[rune]rune{
 		'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u',
 		'Á': 'A', 'É': 'E', 'Í': 'I', 'Ó': 'O', 'Ú': 'U',
-		'ñ': 'n', 'Ñ': 'N',
+		'ñ': 'n', 'Ñ': 'N', 'ü': 'u', 'Ü': 'U',
 	}
 	text = strings.Map(func(r rune) rune {
 		if replacement, ok := accentMap[r]; ok {
