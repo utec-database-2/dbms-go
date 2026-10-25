@@ -26,7 +26,7 @@ func punctuationRemover(text string) string {
 	// Remove punctuation from the text
 	return strings.Map(func(r rune) rune {
 		if strings.ContainsRune(".,;:¡!¿?\"'()[]{}--_/", r) {
-			return -1
+			return ' '
 		}
 		return r
 	}, text)
@@ -67,11 +67,16 @@ func removeAccents(text string) string {
 	return text
 }
 
+func IsStopWord(token string) bool {
+	// Check if a token is a stop word
+	return stopWords[token]
+}
+
 func removeStopWords(tokens []string) []string {
 	// Remove stop words from the list of tokens
 	filtered := []string{}
 	for _, token := range tokens {
-		if !stopWords[token] {
+		if !IsStopWord(token) {
 			filtered = append(filtered, token)
 		}
 	}
@@ -91,7 +96,7 @@ func stemTokens(tokens []string) ([]string, error) {
 }
 
 // PreprocessText normaliza un texto de entrada para que sea más fácil de indexar y buscar.
-func PreprocessText(text string) []string {
+func PreprocessText(text string) ([]string, error) {
 	// lower case
 	text = strings.ToLower(text)
 	// remove punctuation
@@ -103,13 +108,23 @@ func PreprocessText(text string) []string {
 	// stem words
 	tokens, err := stemTokens(tokens)
 	if err != nil {
-		// Handle the error, e.g., log it or return an error
-		fmt.Printf("Error stemming tokens: %v\n", err)
+		return nil, err
 	}
 	// remove accents (El stemmer de Snowball necesita los acentos para funcionar correctamente, pero después de hacer el stemming, podemos eliminarlos)
 	for i, token := range tokens {
 		tokens[i] = removeAccents(token)
 	}
 
-	return tokens
+	return tokens, err
+}
+
+func PreprocessOneWord(word string) (string, error) {
+	preprocessed, err := PreprocessText(word)
+	if err != nil {
+		return "", err
+	}
+	if len(preprocessed) == 0 {
+		return "", fmt.Errorf("no se pudo preprocesar la palabra: %s", word)
+	}
+	return preprocessed[0], nil
 }
