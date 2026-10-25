@@ -530,7 +530,10 @@ func TestPreprocessTextAndBuilder(t *testing.T) {
 	}
 	want := textindex.NewMemIndex()
 	for i, input := range inputs {
-		tokens := text.PreprocessText(input)
+		tokens, err := text.PreprocessText(input)
+		if err != nil {
+			t.Fatalf("PreprocessText(%q): %v", input, err)
+		}
 		if !reflect.DeepEqual(tokens, expected[i]) {
 			t.Fatalf("PreprocessText(%q) = %q, esperaba %q", input, tokens, expected[i])
 		}
