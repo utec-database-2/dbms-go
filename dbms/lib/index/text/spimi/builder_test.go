@@ -730,3 +730,62 @@ func TestPreprocessedStopWordsAreNotIndexed(t *testing.T) {
 		t.Fatalf("Postings(\"término de perro\") = %v, esperaba DocID 0 con TF 1", postingsPerro)
 	}
 }
+
+func TestPreprocessedCorpusIsIndependentOfBlockSize(t *testing.T) {
+	corpus := []string{
+		"el gato y el perro corre", // "el" y "y" son stop words
+		"el perro duerme",          // "el" es stop word
+		"gato duerme y corre",      // "y" es stop word
+	}
+
+	corpusTokens := make([][]string, len(corpus))
+	for i, doc := range corpus {
+		corpusTokens[i], _ = text.PreprocessText(doc)
+	}
+
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	dirC := t.TempDir()
+
+	_, memA := build(t, dirA, corpusTokens, Options{MaxBlockPostings: 1})
+	_, memB := build(t, dirB, corpusTokens, Options{MaxBlockPostings: 10})
+	_, memC := build(t, dirC, corpusTokens, Options{MaxBlockPostings: 1 << 30})
+
+	rA, err := Open(dirA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rA.Close()
+
+	rB, err := Open(dirB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rB.Close()
+	rC, err := Open(dirC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rC.Close()
+
+	assertSameIndex(t, rA, memA)
+	assertSameIndex(t, rB, memB)
+	assertSameIndex(t, rC, memC)
+
+	if !reflect.DeepEqual(memA.Terms(), memB.Terms()) {
+		t.Fatalf("los términos indexados difieren entre configuraciones: %v vs %v", memA.Terms(), memB.Terms())
+	}
+
+	for _, term := range memA.Terms() {
+		postingsA, _ := memA.Postings(term)
+		postingsB, _ := memB.Postings(term)
+		postingsC, _ := memC.Postings(term)
+
+		if !reflect.DeepEqual(postingsA, postingsB) {
+			t.Fatalf("los postings para el término %q difieren entre configuraciones: %v vs %v", term, postingsA, postingsB)
+		}
+		if !reflect.DeepEqual(postingsB, postingsC) {
+			t.Fatalf("los postings para el término %q difieren entre configuraciones: %v vs %v", term, postingsB, postingsC)
+		}
+	}
+}
