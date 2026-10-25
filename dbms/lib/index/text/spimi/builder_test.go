@@ -623,7 +623,11 @@ func TestPreprocessedTermFrequency(t *testing.T) {
 	}
 	corpus := make([][]string, len(documents))
 
-	corpus[0], _ = text.PreprocessText(documents[0])
+	var err error
+	corpus[0], err = text.PreprocessText(documents[0])
+	if err != nil {
+		t.Fatalf("PreprocessText(%q): %v", documents[0], err)
+	}
 
 	builder, err := NewBuilder(Options{Dir: t.TempDir(), MaxBlockPostings: 10})
 	if err != nil {
@@ -672,7 +676,11 @@ func TestPreprocessedStopWordsAreNotIndexed(t *testing.T) {
 	}
 	corpus := make([][]string, len(documents))
 
-	corpus[0], _ = text.PreprocessText(documents[0])
+	var err error
+	corpus[0], err = text.PreprocessText(documents[0])
+	if err != nil {
+		t.Fatalf("PreprocessText(%q): %v", documents[0], err)
+	}
 
 	builder, err := NewBuilder(Options{Dir: t.TempDir(), MaxBlockPostings: 10})
 	if err != nil {
@@ -739,8 +747,13 @@ func TestPreprocessedCorpusIsIndependentOfBlockSize(t *testing.T) {
 	}
 
 	corpusTokens := make([][]string, len(corpus))
+
+	var err error
 	for i, doc := range corpus {
-		corpusTokens[i], _ = text.PreprocessText(doc)
+		corpusTokens[i], err = text.PreprocessText(doc)
+		if err != nil {
+			t.Fatalf("PreprocessText(%q): %v", doc, err)
+		}
 	}
 
 	dirA := t.TempDir()
