@@ -665,3 +665,68 @@ func TestPreprocessedTermFrequency(t *testing.T) {
 		t.Fatalf("Postings(\"término de corre\") = %v, esperaba DocID 0 con TF 2", postingsCorre)
 	}
 }
+
+func TestPreprocessedStopWordsAreNotIndexed(t *testing.T) {
+	documents := []string{
+		"el gato y el perro corre", // "el" y "y" son stop words
+	}
+	corpus := make([][]string, len(documents))
+
+	corpus[0], _ = text.PreprocessText(documents[0])
+
+	builder, err := NewBuilder(Options{Dir: t.TempDir(), MaxBlockPostings: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// como solo tenemos un caso solo usaremos el primer documento para verificar que las stop words no se indexaron
+	docID, err := builder.AddDocument(corpus[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if docID != 0 {
+		t.Fatalf("docID %d inesperado, esperaba 0", docID)
+	}
+
+	stats, err := builder.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.NumDocs != 1 || stats.NumTerms != 3 { // Solo "gato", "perro" y "corre" deberían ser indexados
+		t.Fatalf("estadísticas incompletas: %+v", stats)
+	}
+
+	reader, err := Open(builder.opts.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+
+	if reader.DF("el") != 0 || reader.DF("y") != 0 {
+		t.Fatal("\"el\" o \"y\" estan en el vocabulario")
+	}
+
+	termGato, err := text.PreprocessOneWord("gato")
+	if err != nil {
+		t.Fatalf("PreprocessOneWord(\"gato\"): %v", err)
+	}
+	postingsGato, err := reader.Postings(termGato)
+	if err != nil {
+		t.Fatalf("Postings(\"término de gato\"): %v", err)
+	}
+	if len(postingsGato) != 1 || postingsGato[0].DocID != 0 || postingsGato[0].TF != 1 {
+		t.Fatalf("Postings(\"término de gato\") = %v, esperaba DocID 0 con TF 1", postingsGato)
+	}
+
+	termPerro, err := text.PreprocessOneWord("perro")
+	if err != nil {
+		t.Fatalf("PreprocessOneWord(\"perro\"): %v", err)
+	}
+	postingsPerro, err := reader.Postings(termPerro)
+	if err != nil {
+		t.Fatalf("Postings(\"término de perro\"): %v", err)
+	}
+	if len(postingsPerro) != 1 || postingsPerro[0].DocID != 0 || postingsPerro[0].TF != 1 {
+		t.Fatalf("Postings(\"término de perro\") = %v, esperaba DocID 0 con TF 1", postingsPerro)
+	}
+}
