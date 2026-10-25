@@ -799,8 +799,13 @@ func TestPreprocessEmptyDocumentsKeepDocIDs(t *testing.T) {
 	}
 	corpus := make([][]string, len(documents))
 
+	var err error
+
 	for i, doc := range documents {
-		corpus[i], _ = text.PreprocessText(doc)
+		corpus[i], err = text.PreprocessText(doc)
+		if err != nil {
+			t.Fatalf("PreprocessText(%q): %v", doc, err)
+		}
 	}
 
 	builder, err := NewBuilder(Options{Dir: t.TempDir(), MaxBlockPostings: 10})
