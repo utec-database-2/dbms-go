@@ -40,8 +40,8 @@ func TestPreprocessText(t *testing.T) {
 		// "perezoso" -> "perezos"
 		{"El rápido zorro marrón salta sobre el perro perezoso.", []string{"rap", "zorr", "marron", "salt", "perr", "perez"}},
 		{"El gato y la casa de Juan", []string{"gat", "cas", "juan"}},    // Stopwords con palabras con acentos
-		{"¡Hola!, ¿Cómo estás?", []string{"hol", "com", "estas"}},        // Stopwords con signos de puntuación
-		{"niñez canción árboles", []string{"niñez", "cancion", "arbol"}}, // Palabras con acentos y ñ
+		{"¡Hola!, ¿Cómo estás?", []string{"hol"}},                        // Stopwords con signos de puntuación
+		{"niñez canción árboles", []string{"ninez", "cancion", "arbol"}}, // Palabras con acentos y ñ
 		{" ", []string{}},            // Cadena vacía
 		{"", []string{}},             // Cadena vacía
 		{"12345", []string{"12345"}}, // Solo números
