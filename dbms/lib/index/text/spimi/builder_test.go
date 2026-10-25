@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/dbms-go/v2/dbms/lib/index/text/textindex"
+	"github.com/dbms-go/v2/dbms/lib/text"
 )
 
 // genCorpus genera documentos tokenizados con vocabulario sesgado (unos pocos
@@ -506,4 +507,57 @@ func TestTermWeightValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPreprocessTextAndBuilder(t *testing.T) {
+	inputs := []string{
+		"Hola, la programación.",
+		"Bienvenido al mundo de la programación.",
+		"El rápido zorro marrón salta sobre el perro perezoso.",
+		"El zorro rápido salta y salta.",
+	}
+	expected := [][]string{
+		{"hol", "program"},
+		{"bienven", "mund", "program"},
+		{"rap", "zorr", "marron", "salt", "perr", "perez"},
+		{"zorr", "rap", "salt", "salt"},
+	}
+
+	dir := t.TempDir()
+	b, err := NewBuilder(Options{Dir: dir, MaxBlockPostings: 2, MaxFanIn: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := textindex.NewMemIndex()
+	for i, input := range inputs {
+		tokens := text.PreprocessText(input)
+		if !reflect.DeepEqual(tokens, expected[i]) {
+			t.Fatalf("PreprocessText(%q) = %q, esperaba %q", input, tokens, expected[i])
+		}
+		id, err := b.AddDocument(tokens)
+		if err != nil {
+			t.Fatalf("AddDocument(%q): %v", input, err)
+		}
+		if id != want.AddDocument(tokens) {
+			t.Fatalf("docID %d inesperado para el documento %d", id, i)
+		}
+	}
+
+	stats, err := b.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.NumDocs != len(inputs) || stats.NumTerms != len(want.Terms()) {
+		t.Fatalf("estadísticas incompletas: %+v", stats)
+	}
+	if stats.Blocks < 2 || stats.MergeRounds == 0 {
+		t.Fatalf("el flujo no ejercitó SPIMI y merge: %+v", stats)
+	}
+
+	r, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	assertSameIndex(t, r, want)
 }
