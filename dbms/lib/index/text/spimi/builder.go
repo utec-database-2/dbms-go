@@ -43,7 +43,7 @@ type Options struct {
 	// spimi-*.tmp que haya.
 	Dir string
 	// MaxBlockPostings: <= 0 usa DefaultMaxBlockPostings.
-	MaxBlockPostings int
+	MaxBlockPostings int // MaxBlockPostings es un limite aproximado: el builder puede volcar un bloque con más posteos si un término grande lo requiere.
 	// MaxFanIn: <= 0 usa DefaultMaxFanIn; 1 se trata como 2.
 	MaxFanIn int
 	// TermWeight pesa un término en un documento para la norma. nil usa
@@ -242,6 +242,10 @@ func (b *Builder) writeFinal(blocks []string) error {
 				return fmt.Errorf("%w: docID %d fuera de rango (%d documentos)", ErrCorruptBlock, p.DocID, n)
 			}
 			w := b.opts.TermWeight(p.TF, df, n)
+			if w < 0 || math.IsNaN(w) || math.IsInf(w, 0) {
+				return fmt.Errorf(
+					"%w: TermWeight devolvio un peso inválido para término %q en docID %d: %v", ErrTermWeight, term, p.DocID, w)
+			}
 			norm2[p.DocID] += w * w
 		}
 		buf = appendPostings(buf[:0], ps)
