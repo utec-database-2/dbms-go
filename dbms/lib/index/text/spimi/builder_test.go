@@ -131,6 +131,16 @@ func TestBuilderMatchesOracle(t *testing.T) {
 	}
 }
 
+// publishedDir ubica los archivos de la generación publicada.
+func publishedDir(t *testing.T, root string) string {
+	t.Helper()
+	path, err := activeIndexDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 // El tamaño de bloque y el fan-in son detalles de construcción: los archivos
 // finales tienen que ser idénticos byte a byte.
 func TestBlockSizeDoesNotChangeFinalFiles(t *testing.T) {
@@ -139,11 +149,11 @@ func TestBlockSizeDoesNotChangeFinalFiles(t *testing.T) {
 	build(t, dirA, corpus, Options{MaxBlockPostings: 1 << 30})
 	build(t, dirB, corpus, Options{MaxBlockPostings: 40, MaxFanIn: 2})
 	for _, name := range []string{postingsFile, dictFile, docsFile} {
-		a, err := os.ReadFile(filepath.Join(dirA, name))
+		a, err := os.ReadFile(filepath.Join(publishedDir(t, dirA), name))
 		if err != nil {
 			t.Fatal(err)
 		}
-		b, err := os.ReadFile(filepath.Join(dirB, name))
+		b, err := os.ReadFile(filepath.Join(publishedDir(t, dirB), name))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -179,7 +189,7 @@ func TestBuilderStatsReflectConfiguration(t *testing.T) {
 func TestBuilderLeavesOnlyFinalFiles(t *testing.T) {
 	dir := t.TempDir()
 	build(t, dir, genCorpus(4, 200, 100, 20), Options{MaxBlockPostings: 30, MaxFanIn: 2})
-	entries, err := os.ReadDir(dir)
+	entries, err := os.ReadDir(publishedDir(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +214,7 @@ func TestCloseWithoutFinishRemovesTemps(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if m, _ := filepath.Glob(filepath.Join(dir, "spimi-*.tmp")); len(m) == 0 {
+	if m, _ := filepath.Glob(filepath.Join(b.generationDir, "spimi-*.tmp")); len(m) == 0 {
 		t.Fatal("la prueba necesita bloques volcados")
 	}
 	if err := b.Close(); err != nil {
@@ -394,7 +404,7 @@ func TestOpenDetectsCorruptIndex(t *testing.T) {
 	}
 	t.Run("falta un archivo", func(t *testing.T) {
 		dir := newIndex(t)
-		if err := os.Remove(filepath.Join(dir, dictFile)); err != nil {
+		if err := os.Remove(filepath.Join(publishedDir(t, dir), dictFile)); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := Open(dir); err == nil {
@@ -403,7 +413,7 @@ func TestOpenDetectsCorruptIndex(t *testing.T) {
 	})
 	t.Run("magic del diccionario", func(t *testing.T) {
 		dir := newIndex(t)
-		if err := os.WriteFile(filepath.Join(dir, dictFile), []byte("XXXXXXXXXXXX"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(publishedDir(t, dir), dictFile), []byte("XXXXXXXXXXXX"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := Open(dir); !errors.Is(err, ErrCorruptIndex) {
@@ -412,7 +422,7 @@ func TestOpenDetectsCorruptIndex(t *testing.T) {
 	})
 	t.Run("postings truncado", func(t *testing.T) {
 		dir := newIndex(t)
-		p := filepath.Join(dir, postingsFile)
+		p := filepath.Join(publishedDir(t, dir), postingsFile)
 		st, err := os.Stat(p)
 		if err != nil {
 			t.Fatal(err)
@@ -426,7 +436,7 @@ func TestOpenDetectsCorruptIndex(t *testing.T) {
 	})
 	t.Run("tabla de documentos truncada", func(t *testing.T) {
 		dir := newIndex(t)
-		p := filepath.Join(dir, docsFile)
+		p := filepath.Join(publishedDir(t, dir), docsFile)
 		st, err := os.Stat(p)
 		if err != nil {
 			t.Fatal(err)
@@ -455,6 +465,76 @@ func TestReaderKeepsPreviousGeneration(t *testing.T) {
 	// simular que otro proceso está leyendo el índice mientras se publica uno nuevo
 	build(t, dir, second, Options{MaxBlockPostings: 20})
 
+	assertSameIndex(t, r, want)
+	// Un lector nuevo sí debe observar la segunda generación.
+	newReader, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer newReader.Close()
+	newExpected := textindex.NewMemIndex()
+	for _, doc := range second {
+		newExpected.AddDocument(doc)
+	}
+	assertSameIndex(t, newReader, newExpected)
+}
+
+func TestFailedBuildKeepsPublishedGeneration(t *testing.T) {
+	dir := t.TempDir()
+	first := [][]string{{"gato", "gato"}, {"perro"}}
+	_, want := build(t, dir, first, Options{})
+	before, err := os.ReadFile(filepath.Join(dir, currentFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b, err := NewBuilder(Options{Dir: dir, TermWeight: func(uint32, int, int) float64 { return -1 }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.AddDocument([]string{"otro"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Finish(); !errors.Is(err, ErrTermWeight) {
+		t.Fatalf("esperaba ErrTermWeight, tengo: %v", err)
+	}
+	after, err := os.ReadFile(filepath.Join(dir, currentFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("cambió CURRENT tras fallo")
+	}
+	r, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	assertSameIndex(t, r, want)
+}
+
+func TestLegacyRootIndexCanBeOpened(t *testing.T) {
+	root := t.TempDir()
+	corpus := [][]string{{"gato", "gato"}, {"perro"}}
+	_, want := build(t, root, corpus, Options{})
+	active := publishedDir(t, root)
+	for _, name := range []string{postingsFile, dictFile, docsFile} {
+		data, err := os.ReadFile(filepath.Join(active, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, name), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Remove(filepath.Join(root, currentFile)); err != nil {
+		t.Fatal(err)
+	}
+	r, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
 	assertSameIndex(t, r, want)
 }
 

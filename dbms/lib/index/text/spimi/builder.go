@@ -65,15 +65,17 @@ type BuildStats struct {
 
 // Builder construye el índice. No es seguro para uso concurrente.
 type Builder struct {
-	opts    Options
-	dict    map[string][]textindex.Posting
-	pending int
-	blocks  []string
-	docLens []uint32
-	seq     int
-	stats   BuildStats
-	busy    time.Duration
-	done    bool
+	opts          Options
+	dict          map[string][]textindex.Posting
+	pending       int
+	blocks        []string
+	docLens       []uint32
+	seq           int
+	stats         BuildStats
+	busy          time.Duration
+	done          bool
+	generationDir string // directorio privado de construcción y publicación
+	published     bool   // Close no elimina una generación publicada
 }
 
 func NewBuilder(opts Options) (*Builder, error) {
@@ -98,7 +100,11 @@ func NewBuilder(opts Options) (*Builder, error) {
 	if err := removeTemps(opts.Dir); err != nil {
 		return nil, err
 	}
-	return &Builder{opts: opts, dict: make(map[string][]textindex.Posting)}, nil
+	genDir, err := os.MkdirTemp(opts.Dir, generationPrefix)
+	if err != nil {
+		return nil, err
+	}
+	return &Builder{opts: opts, dict: make(map[string][]textindex.Posting), generationDir: genDir}, nil
 }
 
 // AddDocument agrega un documento ya tokenizado y devuelve su docID
@@ -147,7 +153,7 @@ func (b *Builder) AddDocument(tokens []string) (uint32, error) {
 
 func (b *Builder) tempPath(prefix string) string {
 	b.seq++
-	return filepath.Join(b.opts.Dir, fmt.Sprintf("%s-%06d.tmp", prefix, b.seq))
+	return filepath.Join(b.generationDir, fmt.Sprintf("%s-%06d.tmp", prefix, b.seq))
 }
 
 func (b *Builder) flushBlock() error {
@@ -179,8 +185,8 @@ func (b *Builder) Finish() (stats BuildStats, err error) {
 	defer func() {
 		b.busy += time.Since(t0)
 		b.dict = nil
-		removeTemps(b.opts.Dir) // bloques y temporales finales, haya ido bien o mal
 		if err != nil {
+			_ = os.RemoveAll(b.generationDir) // nunca se publica si falla
 			return
 		}
 		b.stats.Elapsed = b.busy
@@ -198,7 +204,16 @@ func (b *Builder) Finish() (stats BuildStats, err error) {
 	if err != nil {
 		return
 	}
-	err = b.writeFinal(blocks)
+	if err = b.writeFinal(blocks); err != nil {
+		return
+	}
+	if err = removeTemps(b.generationDir); err != nil {
+		return
+	}
+	if err = publishGeneration(b.opts.Dir, filepath.Base(b.generationDir)); err != nil {
+		return
+	}
+	b.published = true
 	return
 }
 
@@ -206,14 +221,17 @@ func (b *Builder) Finish() (stats BuildStats, err error) {
 func (b *Builder) Close() error {
 	b.done = true
 	b.dict = nil
-	return removeTemps(b.opts.Dir)
+	if b.published {
+		return nil // el índice publicado debe sobrevivir al Builder
+	}
+	return os.RemoveAll(b.generationDir)
 }
 
 // writeFinal hace el merge final y escribe los tres archivos del índice.
 // Calcula en la misma pasada la norma de cada documento: en este punto cada
 // término ya tiene su lista completa, así que df y N son los definitivos.
 func (b *Builder) writeFinal(blocks []string) error {
-	dir := b.opts.Dir
+	dir := b.generationDir
 	n := len(b.docLens)
 	norm2 := make([]float64, n)
 

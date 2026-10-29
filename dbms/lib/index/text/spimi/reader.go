@@ -24,6 +24,11 @@ type Reader struct {
 }
 
 func Open(dir string) (*Reader, error) {
+	indexDir, err := activeIndexDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	dir = indexDir
 	dictB, err := os.ReadFile(filepath.Join(dir, dictFile))
 	if err != nil {
 		return nil, err
