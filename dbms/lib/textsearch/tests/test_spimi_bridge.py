@@ -1,8 +1,4 @@
-"""Prueba E2E: Go PreprocessText -> SPIMI persistido -> export -> TF-IDF Python.
-
-Debe ejecutarse desde dbms/lib mediante:
-  py -B -m unittest discover -s textsearch/tests -v
-Necesita Go disponible en el PATH (igual que las pruebas SPIMI).
+"""Prueba -> Go PreprocessText -> SPIMI persistido -> export -> TF-IDF Python.
 """
 import json
 from pathlib import Path
@@ -68,3 +64,17 @@ class TestSpimiTFIDFIntegration(unittest.TestCase):
             self.assertEqual([hit.doc_id for hit in hits], ["1", "0"])
             self.assertAlmostEqual(hits[0].score, 1.0)
             self.assertLess(hits[1].score, 1.0)
+
+            # Comparacion numérica entre Go y Python sobre el MISMO SPIMI.
+            # Go lee postings directamente; Python usa export solo como oraculo.
+            for query in ("gato", "gato casa", "gato gato", "casa"):
+                terms = json.loads(self.go_run("preprocess", "--text", query))
+                py_hits = ranker.search_tokens(terms)
+                go_hits = json.loads(self.go_run(
+                    "search", "--index", str(index), "--query", query,
+                    "--top-k", "10",
+                ))
+                self.assertEqual([h["doc_id"] for h in go_hits],
+                                 [int(h.doc_id) for h in py_hits])
+                for go_hit, py_hit in zip(go_hits, py_hits):
+                    self.assertAlmostEqual(go_hit["score"], py_hit.score, places=11)

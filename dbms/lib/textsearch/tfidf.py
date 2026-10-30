@@ -28,14 +28,18 @@ class SearchHit:
 def tf_weight(freq):
     if freq <= 0:
         return 0.0
-    return 1.0 + math.log10(freq)
+    # Variante anterior //: return 1.0 + math.log10(freq)
+    # Variante actual, igual que Go / SPIMI:
+    return 1.0 + math.log(freq)
 
 
 # IDF - 47
 def idf_weight(total_docs, doc_frequency):
     if doc_frequency <= 0 or total_docs <= 0:
         return 0.0
-    return math.log10(total_docs / doc_frequency)
+    # Variante anterior // return math.log10(total_docs / doc_frequency)
+    # IDF clasico sin suavizado (cuando df == N, IDF == 0):
+    return math.log(total_docs / doc_frequency)
 
 
 # TF-IDF

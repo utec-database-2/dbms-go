@@ -24,7 +24,7 @@ class TestTFIDF(unittest.TestCase):
     def test_tf_idf(self):
         self.assertAlmostEqual(
             self.ranker.idf("gato"),
-            math.log10(4 / 2)
+            math.log(4 / 2)
         )
         self.assertAlmostEqual(
             self.ranker.idf("ausente"),
@@ -41,7 +41,7 @@ class TestTFIDF(unittest.TestCase):
         idf_g = self.ranker.idf("gato")
         idf_p = self.ranker.idf("perro")
         
-        wg = (1 + math.log10(2)) * idf_g
+        wg = (1 + math.log(2)) * idf_g
         expected = wg / math.hypot(wg, idf_p)
         
         actual = next(

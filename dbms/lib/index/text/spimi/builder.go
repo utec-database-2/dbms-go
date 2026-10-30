@@ -29,13 +29,14 @@ const (
 // DefaultTermWeight es el peso TF-IDF con el que se calcula la norma de cada
 // documento: (1 + ln tf) * ln(N/df).
 //
-// TODO(ranking): tiene que coincidir con el peso que use el coseno en el
-// frente de ranking; si cambia allá, pasarlo por Options.TermWeight.
+// Esta formula se comparte con el ranking mediante textindex.TFIDFWeight.
+// Alternativa anterior de Python, NO activa: (1+log10(tf))*log10(N/df).
+// Si se usa Options.TermWeight personalizada, el coseno debe usar normas compatibles.
 func DefaultTermWeight(tf uint32, df, numDocs int) float64 {
 	if tf == 0 || df == 0 || numDocs == 0 {
 		return 0
 	}
-	return (1 + math.Log(float64(tf))) * math.Log(float64(numDocs)/float64(df))
+	return textindex.TFIDFWeight(tf, df, numDocs)
 }
 
 type Options struct {
