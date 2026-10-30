@@ -128,11 +128,6 @@ class TFIDFRanker:
     def from_tokenized_documents(
         cls, documents: Iterable[tuple[str, Iterable[str]]]
     ) -> "TFIDFRanker":
-        """Construye el modelo con tokens preparados externamente (p. ej., por Go).
-
-        No aplica tokenización ni stemming; los documentos vacíos conservan docID.
-        Este método todavía no lee el índice binario SPIMI.
-        """
         postings: dict[str, dict[str, int]] = defaultdict(dict)
         ids: list[str] = []
         seen: set[str] = set()
@@ -159,7 +154,6 @@ class TFIDFRanker:
     )
     
     def search(self, query: str, top_k: int = 10) -> list[SearchHit]:
-        """Compatibilidad: conserva la tokenización original del modo demo."""
         return self.search_tokens(tokenize(query), top_k)
 
     def search_tokens(
