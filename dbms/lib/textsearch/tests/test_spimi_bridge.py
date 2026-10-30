@@ -78,3 +78,23 @@ class TestSpimiTFIDFIntegration(unittest.TestCase):
                                  [int(h.doc_id) for h in py_hits])
                 for go_hit, py_hit in zip(go_hits, py_hits):
                     self.assertAlmostEqual(go_hit["score"], py_hit.score, places=11)
+
+            # Compatibilidad: TF-IDF sigue siendo el metodo predeterminado.
+            default_tfidf = json.loads(self.go_run(
+                "search", "--index", str(index), "--query", "gato", "--top-k", "10",
+            ))
+            explicit_tfidf = json.loads(self.go_run(
+                "search", "--index", str(index), "--query", "gato",
+                "--top-k", "10", "--method", "tfidf",
+            ))
+            self.assertEqual(default_tfidf, explicit_tfidf)
+
+            # BM25 lee el mismo SPIMI; no necesita exportacion JSON.
+            bm25_hits = json.loads(self.go_run(
+                "search", "--index", str(index), "--query", "gato",
+                "--top-k", "10", "--method", "bm25",
+                "--bm25-k1", "1.2", "--bm25-b", "0.75",
+            ))
+            self.assertEqual([hit["doc_id"] for hit in bm25_hits], [1, 0])
+            self.assertTrue(all(hit["score"] > 0 for hit in bm25_hits))
+            self.assertNotEqual(bm25_hits[0]["score"], explicit_tfidf[0]["score"])

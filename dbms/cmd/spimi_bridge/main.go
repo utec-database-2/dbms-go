@@ -26,7 +26,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("uso: spimi_bridge build|export|preprocess [opciones]")
+		return errors.New("uso: spimi_bridge build|export|preprocess|search [opciones]")
 	}
 	switch args[0] {
 	case "build":
@@ -70,11 +70,14 @@ func run(args []string) error {
 		index := fs.String("index", "", "directorio del índice SPIMI")
 		query := fs.String("query", "", "consulta en lenguaje natural")
 		topK := fs.Int("top-k", 10, "cantidad de resultados")
+		method := fs.String("method", "tfidf", "ranking: tfidf o bm25")
+		k1 := fs.Float64("bm25-k1", ranking.DefaultBM25K1, "parámetro k1 de BM25")
+		b := fs.Float64("bm25-b", ranking.DefaultBM25B, "parámetro b de BM25")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
 		if *index == "" || fs.NArg() != 0 {
-			return errors.New("search requiere --index directorio --query texto [--top-k 10]")
+			return errors.New("search requiere --index directorio --query texto [--method tfidf|bm25] [--top-k 10]")
 		}
 		reader, err := spimi.Open(*index)
 		if err != nil {
@@ -85,7 +88,8 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		hits, err := ranking.SearchTFIDF(reader, tokens, *topK)
+		opts := ranking.SearchOptions{TopK: *topK, BM25K1: *k1, BM25B: *b}
+		hits, err := ranking.Search(reader, ranking.Method(*method), tokens, opts)
 		if err != nil {
 			return err
 		}
