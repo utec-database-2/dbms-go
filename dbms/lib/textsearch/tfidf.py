@@ -124,6 +124,34 @@ class TFIDFRanker:
                 postings[term][doc_id] = tf
         return cls(postings, doc_ids=ids)
 
+    @classmethod
+    def from_tokenized_documents(
+        cls, documents: Iterable[tuple[str, Iterable[str]]]
+    ) -> "TFIDFRanker":
+        """Construye el modelo con tokens preparados externamente (p. ej., por Go).
+
+        No aplica tokenización ni stemming; los documentos vacíos conservan docID.
+        Este método todavía no lee el índice binario SPIMI.
+        """
+        postings: dict[str, dict[str, int]] = defaultdict(dict)
+        ids: list[str] = []
+        seen: set[str] = set()
+        for raw_id, tokens in documents:
+            doc_id = str(raw_id)
+            if doc_id in seen:
+                raise ValueError(f"ID repetido: {doc_id}")
+            if isinstance(tokens, (str, bytes)):
+                raise TypeError("tokens debe ser una secuencia de términos, no texto")
+            terms = list(tokens)
+            for term in terms:
+                if not isinstance(term, str) or tokenize(term) != [term]:
+                    raise ValueError(f"token no normalizado: {term!r}")
+            seen.add(doc_id)
+            ids.append(doc_id)
+            for term, tf in Counter(terms).items():
+                postings[term][doc_id] = tf
+        return cls(postings, doc_ids=ids)
+
     def idf(self, term: str) -> float:
         return idf_weight(
             self.total_documents,
@@ -131,11 +159,24 @@ class TFIDFRanker:
     )
     
     def search(self, query: str, top_k: int = 10) -> list[SearchHit]:
+        """Compatibilidad: conserva la tokenización original del modo demo."""
+        return self.search_tokens(tokenize(query), top_k)
+
+    def search_tokens(
+        self, query_tokens: Iterable[str], top_k: int = 10
+    ) -> list[SearchHit]:
+        """Consulta usando exactamente los términos normalizados recibidos."""
         if top_k < 0:
             raise ValueError("top_k no puede ser negativo")
-        if top_k == 0 or not query.strip() or not self.total_documents:
+        if top_k == 0 or not self.total_documents:
             return []
-        query_tf = Counter(tokenize(query))
+        if isinstance(query_tokens, (str, bytes)):
+            raise TypeError("query_tokens debe ser una secuencia de términos")
+        terms = list(query_tokens)
+        for term in terms:
+            if not isinstance(term, str) or tokenize(term) != [term]:
+                raise ValueError(f"token de consulta no normalizado: {term!r}")
+        query_tf = Counter(terms)
         query_weights: dict[str, float] = {}
         for term, tf in query_tf.items():
             # palabras desconocidas no forman parte del vocabulario entrenado.
