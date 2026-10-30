@@ -16,8 +16,7 @@ const (
 )
 
 // SearchOptions configura una consulta. Para parámetros habituales de BM25,
-// usar DefaultSearchOptions. BM25K1=0 y BM25B=0 son valores matemáticamente
-// válidos, por lo que NO se reemplazan de manera implícita.
+// usar DefaultSearchOptions. BM25K1=0 y BM25B=0 
 type SearchOptions struct {
 	TopK   int
 	BM25K1 float64
@@ -28,7 +27,6 @@ func DefaultSearchOptions(topK int) SearchOptions {
 	return SearchOptions{TopK: topK, BM25K1: DefaultBM25K1, BM25B: DefaultBM25B}
 }
 
-// SearchResult es el resultado común utilizado por la CLI y la evaluación.
 // Score representa coseno [0,1] en TF-IDF; en BM25 no está normalizado.
 type SearchResult struct {
 	DocID uint32  `json:"doc_id"`
@@ -36,9 +34,7 @@ type SearchResult struct {
 }
 
 // Search ejecuta uno de los dos rankings SIN copiar el índice invertido.
-// queryTerms debe venir ya normalizado por text.PreprocessText.
 // BM25 requiere InvertedIndex; TF-IDF exige además DocNorm, almacenado por SPIMI.
-// No mide tiempos: la instrumentación experimental se añadirá por separado.
 func Search(index textindex.InvertedIndex, method Method, queryTerms []string, opts SearchOptions) ([]SearchResult, error) {
 	if index == nil {
 		return nil, fmt.Errorf("ranking: indice nil")
