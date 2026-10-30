@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/dbms-go/v2/dbms/lib/index/text/ranking"
 	"github.com/dbms-go/v2/dbms/lib/index/text/spimi"
 	text "github.com/dbms-go/v2/dbms/lib/text"
 )
@@ -64,6 +65,31 @@ func run(args []string) error {
 			return err
 		}
 		return json.NewEncoder(os.Stdout).Encode(tokens)
+	case "search":
+		fs := flag.NewFlagSet("search", flag.ContinueOnError)
+		index := fs.String("index", "", "directorio del índice SPIMI")
+		query := fs.String("query", "", "consulta en lenguaje natural")
+		topK := fs.Int("top-k", 10, "cantidad de resultados")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *index == "" || fs.NArg() != 0 {
+			return errors.New("search requiere --index directorio --query texto [--top-k 10]")
+		}
+		reader, err := spimi.Open(*index)
+		if err != nil {
+			return err
+		}
+		defer reader.Close()
+		tokens, err := text.PreprocessText(*query)
+		if err != nil {
+			return err
+		}
+		hits, err := ranking.SearchTFIDF(reader, tokens, *topK)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(hits)
 	default:
 		return fmt.Errorf("comando desconocido: %s", args[0])
 	}
