@@ -1,4 +1,4 @@
-"""Pruebas locales sin conexión PostgreSQL; para Go+PostgreSQL usar pg_loader.py."""
+"""Pruebas locales sin conexión PostgreSQL;"""
 import csv
 import json
 import tempfile
