@@ -24,24 +24,32 @@ func readCSV(t *testing.T, p string) [][]string {
 	return rows
 }
 
-func TestPGPrepORQueryAndValidation(t *testing.T) {
-	if got, want := queryExpression([]string{"gat", "gat", "perr"}), "'gat' | 'perr'"; got != want {
-		t.Fatalf("OR: %q != %q", got, want)
+func TestPGPrepOriginalTextAndUnicode(t *testing.T) {
+	root := t.TempDir()
+	docs := filepath.Join(root, "docs.jsonl")
+	queries := filepath.Join(root, "queries.json")
+	original := "mæsəˈtʃusɪts jē₁ran 𐌾𐌴𐍂 – no tokenizar"
+	if err := os.WriteFile(docs, []byte(`{"id":"d0","text":`+mustJSON(original)+`}`+"\n"), 0600); err != nil {
+		t.Fatal(err)
 	}
-	if got := queryExpression(nil); got != "" {
-		t.Fatalf("vacia: %q", got)
+	if err := os.WriteFile(queries, []byte(`[{"id":"q1","text":"gato perro"}]`), 0600); err != nil {
+		t.Fatal(err)
 	}
-	for _, token := range []string{"gat", "2026", "informacion"} {
-		if err := validateToken(token); err != nil {
-			t.Fatal(err)
-		}
+	dir := filepath.Join(root, "export")
+	if err := run(options{documents: docs, queries: queries, outputDir: dir, maxDocs: 1}); err != nil {
+		t.Fatal(err)
 	}
-	for _, token := range []string{"a+b", "hola.mundo", "", "a b", "a'b"} {
-		if err := validateToken(token); err == nil {
-			t.Fatalf("aceptó token %q", token)
-		}
+	dr := readCSV(t, filepath.Join(dir, "docs.csv"))
+	if len(dr) != 2 || dr[0][2] != "raw_text" || dr[1][2] != original {
+		t.Fatalf("texto alterado: %q", dr)
+	}
+	qr := readCSV(t, filepath.Join(dir, "queries.csv"))
+	if len(qr) != 2 || !reflect.DeepEqual(qr[1], []string{"q1", "gato perro", "2"}) {
+		t.Fatalf("consulta alterada: %q", qr)
 	}
 }
+
+func mustJSON(s string) string { b, _ := json.Marshal(s); return string(b) }
 
 func TestPGPrepRealPreprocessingAndIDs(t *testing.T) {
 	root := t.TempDir()
@@ -65,11 +73,11 @@ func TestPGPrepRealPreprocessingAndIDs(t *testing.T) {
 	if len(dr) != 4 || !reflect.DeepEqual(dr[1][:2], []string{"0", "d0"}) {
 		t.Fatalf("docs: %v", dr)
 	}
-	if dr[1][2] != "gat gat perr" || dr[2][2] != "" || dr[3][2] != "cas" {
+	if dr[1][2] != "El gato gato y perro" || dr[2][2] != "el y la" || dr[3][2] != "Casa" {
 		t.Fatalf("tokens Go inesperados: %v", dr)
 	}
 	qr := readCSV(t, filepath.Join(dest, "queries.csv"))
-	if len(qr) != 3 || qr[1][3] != "'gat' | 'perr'" || qr[2][3] != "" {
+	if len(qr) != 3 || qr[1][1] != "gato gato perro" || qr[1][2] != "3" || qr[2][1] != "el y la" {
 		t.Fatalf("queries: %v", qr)
 	}
 	var manifest manifest
@@ -80,7 +88,7 @@ func TestPGPrepRealPreprocessingAndIDs(t *testing.T) {
 	if err := json.Unmarshal(payload, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Documents != 3 || manifest.Queries != 2 || len(manifest.CorpusSHA256) != 64 {
+	if manifest.SchemaVersion != "pgtextprep-native-v2" || manifest.PostgreSQLTextConfig != "spanish" || manifest.Documents != 3 || manifest.Queries != 2 || len(manifest.CorpusSHA256) != 64 {
 		t.Fatalf("manifest: %+v", manifest)
 	}
 	if err := run(options{documents: docs, queries: qs, outputDir: dest, maxDocs: 3}); err == nil {

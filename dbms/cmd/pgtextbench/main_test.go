@@ -15,7 +15,7 @@ import (
 func fixture(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	m := manifest{SchemaVersion: "pgtextprep-v1", Documents: 12, Queries: 3, CorpusSHA256: strings.Repeat("a", 64)}
+	m := manifest{SchemaVersion: "pgtextprep-native-v2", Documents: 12, Queries: 3, CorpusSHA256: strings.Repeat("a", 64), PostgreSQLTextConfig: "spanish"}
 	content, err := json.Marshal(m)
 	if err != nil {
 		t.Fatal(err)
@@ -29,10 +29,10 @@ func fixture(t *testing.T) string {
 	}
 	w := csv.NewWriter(f)
 	for _, r := range [][]string{
-		{"query_id", "raw_text", "normalized_tokens", "or_tsquery", "raw_words"},
-		{"q1", "gato", "gat", "'gat'", "1"},
-		{"q3", "gato casa perro", "gat cas perr", "'cas' | 'gat' | 'perr'", "3"},
-		{"q5", "un perro corre por la casa grande", "perr corr cas grand", "'cas' | 'corr' | 'grand' | 'perr'", "7"},
+		{"query_id", "raw_text", "raw_words"},
+		{"q1", "gato", "1"},
+		{"q3", "gato casa perro", "3"},
+		{"q5", "un perro corre por la casa grande", "7"},
 	} {
 		if err = w.Write(r); err != nil {
 			t.Fatal(err)
@@ -57,7 +57,7 @@ func TestPGTextbenchManifestQueriesAndBuckets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.Documents != 12 || len(qs) != 3 || qs[1].NTokens != 3 || qs[2].RawWords != 7 {
+	if m.Documents != 12 || len(qs) != 3 || qs[1].Expression != "gato OR casa OR perro" || qs[2].RawWords != 7 {
 		t.Fatalf("manifest/queries: %+v %+v", m, qs)
 	}
 	got := []string{queryBucket(qs[0].RawWords), queryBucket(qs[1].RawWords), queryBucket(qs[2].RawWords)}
@@ -103,15 +103,12 @@ func TestPGTextbenchPlanGINSemantics(t *testing.T) {
 	}
 }
 func TestPGTextbenchBatchPrecisionAndError(t *testing.T) {
-	// Una llamada simulada muy rápida puede tomar 0s en algunos relojes,
-	// especialmente en Windows. No es un error del contador de llamadas.
 	calls := 0
 	call := func() ([]hit, error) { calls++; return []hit{{ID: 3, Score: 0.25}}, nil }
 	out, elapsed, err := batch(call, 5)
 	if err != nil || calls != 5 || len(out) != 1 || out[0].ID != 3 {
 		t.Fatalf("lote %+v %v %d %s", out, err, calls, elapsed)
 	}
-
 	delayedCalls := 0
 	delayed := func() ([]hit, error) {
 		delayedCalls++
@@ -122,7 +119,6 @@ func TestPGTextbenchBatchPrecisionAndError(t *testing.T) {
 	if err != nil || delayedCalls != 2 || len(out) != 1 || out[0].ID != 3 || elapsed <= 0 {
 		t.Fatalf("lote medible %+v %v llamadas=%d duracion=%s", out, err, delayedCalls, elapsed)
 	}
-
 	n, err := calibrate(delayed, time.Millisecond, 16)
 	if err != nil || n < 1 || n > 16 {
 		t.Fatalf("calibración n=%d %v", n, err)
@@ -133,7 +129,7 @@ func TestPGTextbenchBatchPrecisionAndError(t *testing.T) {
 	}
 }
 func TestPGTextbenchCSVHeader(t *testing.T) {
-	if len(header) != 44 {
+	if len(header) != 46 {
 		t.Fatalf("cabecera inesperada %d", len(header))
 	}
 	required := map[string]bool{"n_documents": true, "corpus_sha256": true, "method": true, "query_id": true, "query_median_us": true, "postgres_gin_bytes": true, "gin_used": true}
@@ -142,5 +138,25 @@ func TestPGTextbenchCSVHeader(t *testing.T) {
 	}
 	if len(required) != 0 {
 		t.Fatalf("faltan columnas: %v", required)
+	}
+}
+
+// La consulta debe recibir texto original. PostgreSQL hace stemming nativo.
+func TestPGTextbenchNativeSQLAndCorpus(t *testing.T) {
+	if !strings.Contains(querySQL, "websearch_to_tsquery('spanish'") ||
+		strings.Contains(querySQL, "to_tsquery('simple'") ||
+		!strings.Contains(querySQL, "search_vector @@") {
+		t.Fatalf("SQL no utiliza el analizador spanish nativo: %s", querySQL)
+	}
+	dir := fixture(t)
+	qs, err := readQueries(dir, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if qs[0].Expression != "gato" || qs[1].Expression != "gato OR casa OR perro" || qs[2].RawWords != 7 {
+		t.Fatalf("expresiones originales: %+v", qs)
+	}
+	if !strings.Contains(strings.Join(header, "|"), "postgres_fts_config") {
+		t.Fatal("falta configuración FTS")
 	}
 }

@@ -1,4 +1,6 @@
-// pgtextprep prepara documentos y consultas para PostgreSQL GIN con el MISMO
+// pgtextprep exporta el mismo corpus ORIGINAL para PostgreSQL GIN nativo.
+// No preprocesa textos para PostgreSQL: to_tsvector('spanish') lo hará.
+// preprocesamiento Go usado por SPIMI. No realiza benchmarks ni usa PostgreSQL.
 package main
 
 import (
@@ -13,12 +15,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
-	"unicode"
-
-	text "github.com/dbms-go/v2/dbms/lib/text"
 )
 
 type options struct {
@@ -83,10 +81,10 @@ func run(opts options) error {
 	if err != nil {
 		return err
 	}
-	m := manifest{SchemaVersion: "pgtextprep-v1", Documents: n, Queries: queries,
+	m := manifest{SchemaVersion: "pgtextprep-native-v2", Documents: n, Queries: queries,
 		CorpusSHA256: digest, GoVersion: runtime.Version(),
-		TextPreprocessor:     "github.com/dbms-go/v2/dbms/lib/text.PreprocessText",
-		PostgreSQLTextConfig: "simple", SearchSemantics: "OR (union of term postings)"}
+		TextPreprocessor:     "PostgreSQL nativo: to_tsvector(spanish)",
+		PostgreSQLTextConfig: "spanish", SearchSemantics: "OR de palabras originales; websearch_to_tsquery(spanish)"}
 	raw, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err
@@ -120,34 +118,6 @@ func docID(raw json.RawMessage, fallback int) (string, error) {
 	return "", errors.New("id debe ser string o número")
 }
 
-// PostgreSQL 'simple' debe reconocer cada token Go sin volver a dividirlo.
-// Rechazamos caracteres ambiguos en lugar de comparar vocabularios distintos.
-// Los documentos de texto normalizados preservan repetición y orden.
-func validateToken(token string) error {
-	if token == "" || len(token) > 2000 {
-		return fmt.Errorf("token vacío o demasiado largo: %q", token)
-	}
-	for _, r := range token {
-		if !unicode.IsLetter(r) && !unicode.IsNumber(r) {
-			return fmt.Errorf("token no compatible con configuración simple: %q", token)
-		}
-	}
-	return nil
-}
-
-func normalize(input string) ([]string, error) {
-	toks, err := text.PreprocessText(input)
-	if err != nil {
-		return nil, err
-	}
-	for _, tok := range toks {
-		if err := validateToken(tok); err != nil {
-			return nil, err
-		}
-	}
-	return toks, nil
-}
-
 func newCSV(path string) (*os.File, *csv.Writer, error) {
 	f, err := os.Create(path)
 	if err != nil {
@@ -179,7 +149,7 @@ func writeDocuments(src, dst string, limit int) (int, string, error) {
 	if err != nil {
 		return 0, "", err
 	}
-	if err := w.Write([]string{"doc_id", "external_id", "normalized_text"}); err != nil {
+	if err := w.Write([]string{"doc_id", "external_id", "raw_text"}); err != nil {
 		f.Close()
 		return 0, "", err
 	}
@@ -215,12 +185,7 @@ func writeDocuments(src, dst string, limit int) (int, string, error) {
 			f.Close()
 			return 0, "", fmt.Errorf("id duplicado: %q", id)
 		}
-		toks, err := normalize(*row.Text)
-		if err != nil {
-			f.Close()
-			return 0, "", fmt.Errorf("documento %q: %w", id, err)
-		}
-		if err := w.Write([]string{strconv.Itoa(count), id, strings.Join(toks, " ")}); err != nil {
+		if err := w.Write([]string{strconv.Itoa(count), id, *row.Text}); err != nil {
 			f.Close()
 			return 0, "", err
 		}
@@ -243,19 +208,8 @@ func writeDocuments(src, dst string, limit int) (int, string, error) {
 	return count, hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func queryExpression(tokens []string) string {
-	seen := make(map[string]bool)
-	unique := make([]string, 0, len(tokens))
-	for _, t := range tokens {
-		if !seen[t] {
-			unique = append(unique, "'"+t+"'")
-			seen[t] = true
-		}
-	}
-	sort.Strings(unique)
-	return strings.Join(unique, " | ")
-}
-
+// queryExpression genera un OR explícito sobre términos previamente normalizados.
+// El validador restringe los lexemas a letras y números, evitando inyección.
 func writeQueries(src, dst string) (int, error) {
 	raw, err := os.ReadFile(src)
 	if err != nil {
@@ -275,7 +229,7 @@ func writeQueries(src, dst string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if err := w.Write([]string{"query_id", "raw_text", "normalized_tokens", "or_tsquery", "raw_words"}); err != nil {
+	if err := w.Write([]string{"query_id", "raw_text", "raw_words"}); err != nil {
 		f.Close()
 		return 0, err
 	}
@@ -285,12 +239,7 @@ func writeQueries(src, dst string) (int, error) {
 			f.Close()
 			return 0, fmt.Errorf("query_id duplicado/vacío o texto vacío: %q", q.ID)
 		}
-		toks, err := normalize(q.Text)
-		if err != nil {
-			f.Close()
-			return 0, fmt.Errorf("consulta %q: %w", q.ID, err)
-		}
-		if err := w.Write([]string{q.ID, q.Text, strings.Join(toks, " "), queryExpression(toks), strconv.Itoa(len(strings.Fields(q.Text)))}); err != nil {
+		if err := w.Write([]string{q.ID, q.Text, strconv.Itoa(len(strings.Fields(q.Text)))}); err != nil {
 			f.Close()
 			return 0, err
 		}

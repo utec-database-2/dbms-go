@@ -1,3 +1,4 @@
+// pgtextbench mide PostgreSQL GIN + ts_rank_cd
 package main
 
 import (
@@ -26,14 +27,15 @@ type settings struct {
 	topK, repeats, warmup, targetMS, maxBatch int
 }
 type manifest struct {
-	SchemaVersion string `json:"schema_version"`
-	Documents     int    `json:"documents"`
-	Queries       int    `json:"queries"`
-	CorpusSHA256  string `json:"corpus_sha256"`
+	SchemaVersion        string `json:"schema_version"`
+	Documents            int    `json:"documents"`
+	Queries              int    `json:"queries"`
+	CorpusSHA256         string `json:"corpus_sha256"`
+	PostgreSQLTextConfig string `json:"postgresql_text_config"`
 }
 type query struct {
-	ID, Raw, Tokens, Expression string
-	RawWords, NTokens           int
+	ID, Raw, Expression string
+	RawWords            int
 }
 type hit struct {
 	ID    int
@@ -41,9 +43,9 @@ type hit struct {
 }
 type sampleFunc func() ([]hit, error)
 
-const querySQL = `SELECT doc_id, ts_rank_cd(search_vector, to_tsquery('simple'::regconfig, $1))::double precision AS score
+const querySQL = `SELECT doc_id, ts_rank_cd(search_vector, websearch_to_tsquery('spanish'::regconfig, $1))::double precision AS score
 FROM bd2_textbench.documents
-WHERE search_vector @@ to_tsquery('simple'::regconfig, $1)
+WHERE search_vector @@ websearch_to_tsquery('spanish'::regconfig, $1)
 ORDER BY score DESC, doc_id ASC LIMIT $2`
 
 const planSQL = `EXPLAIN (FORMAT JSON) ` + querySQL
@@ -78,8 +80,8 @@ func readManifest(dir string) (manifest, error) {
 	if err = json.Unmarshal(raw, &m); err != nil {
 		return m, err
 	}
-	if m.SchemaVersion != "pgtextprep-v1" || m.Documents <= 0 || m.Queries <= 0 || len(m.CorpusSHA256) != 64 {
-		return m, errors.New("manifest pgtextprep-v1 incompleto o inválido")
+	if m.SchemaVersion != "pgtextprep-native-v2" || m.PostgreSQLTextConfig != "spanish" || m.Documents <= 0 || m.Queries <= 0 || len(m.CorpusSHA256) != 64 {
+		return m, errors.New("manifest pgtextprep-native-v2 incompleto o inválido")
 	}
 	return m, nil
 }
@@ -94,26 +96,25 @@ func readQueries(dir string, expected int) ([]query, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(rows) == 0 || strings.Join(rows[0], "|") != "query_id|raw_text|normalized_tokens|or_tsquery|raw_words" {
+	if len(rows) == 0 || strings.Join(rows[0], "|") != "query_id|raw_text|raw_words" {
 		return nil, errors.New("cabecera de queries.csv inválida")
 	}
 	qs := make([]query, 0, len(rows)-1)
 	seen := map[string]bool{}
 	for _, row := range rows[1:] {
-		if len(row) != 5 || row[0] == "" || seen[row[0]] {
+		if len(row) != 3 || row[0] == "" || seen[row[0]] {
 			return nil, errors.New("consulta duplicada o inválida")
 		}
-		words, err := strconv.Atoi(row[4])
+		words, err := strconv.Atoi(row[2])
 		if err != nil || words <= 0 {
 			return nil, fmt.Errorf("raw_words inválido para %q", row[0])
 		}
-		q := query{ID: row[0], Raw: row[1], Tokens: row[2], Expression: row[3], RawWords: words, NTokens: len(strings.Fields(row[2]))}
-		if q.Expression == "" || q.NTokens == 0 {
-			return nil, fmt.Errorf("consulta %q sin términos normalizados: no es medible con PostgreSQL", q.ID)
+		if strings.TrimSpace(row[1]) == "" || len(strings.Fields(row[1])) != words {
+			return nil, fmt.Errorf("consulta %q incompleta o raw_words incorrecto", row[0])
 		}
-		if q.Raw == "" || strings.TrimSpace(q.Expression) == "" {
-			return nil, fmt.Errorf("consulta %q incompleta", q.ID)
-		}
+		// OR es el operador booleano común. La tokenización, stopwords y
+		// stemming se realizan EXCLUSIVAMENTE en PostgreSQL mediante spanish.
+		q := query{ID: row[0], Raw: row[1], Expression: strings.Join(strings.Fields(row[1]), " OR "), RawWords: words}
 		seen[q.ID] = true
 		qs = append(qs, q)
 	}
@@ -233,7 +234,6 @@ func calibrate(call sampleFunc, target time.Duration, maxBatch int) (int, error)
 	}
 }
 func openDB(ctx context.Context) (*sql.DB, error) {
-	// pgx acepta PGPASSWORD o PGPASSFILE. Nunca se registra la contraseña.
 	// Una sola conexion persistente: no hay coste de conexion en las muestras.
 	db, err := sql.Open("pgx", "host=127.0.0.1 port=5432 user=postgres dbname=postgres sslmode=disable application_name=bd2_pgtextbench")
 	if err != nil {
@@ -259,11 +259,11 @@ func verifyData(ctx context.Context, db *sql.DB, dir string, expected int) (map[
 	if err != nil {
 		return nil, nil, err
 	}
-	if strings.Join(header, "|") != "doc_id|external_id|normalized_text" {
+	if strings.Join(header, "|") != "doc_id|external_id|raw_text" {
 		return nil, nil, errors.New("cabecera docs.csv inválida")
 	}
 	// Verificacion de datos fuera del cronometro: cuenta, DocID, IDs externos y texto.
-	rows, err := db.QueryContext(ctx, `SELECT doc_id,external_id,normalized_text FROM bd2_textbench.documents ORDER BY doc_id`)
+	rows, err := db.QueryContext(ctx, `SELECT doc_id,external_id,raw_text FROM bd2_textbench.documents ORDER BY doc_id`)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -285,11 +285,11 @@ func verifyData(ctx context.Context, db *sql.DB, dir string, expected int) (map[
 			return nil, nil, fmt.Errorf("PostgreSQL tiene menos de %d documentos", expected)
 		}
 		var id int
-		var external, normalized string
-		if e = rows.Scan(&id, &external, &normalized); e != nil {
+		var external, rawText string
+		if e = rows.Scan(&id, &external, &rawText); e != nil {
 			return nil, nil, e
 		}
-		if id != i || external != rec[1] || normalized != rec[2] {
+		if id != i || external != rec[1] || rawText != rec[2] {
 			return nil, nil, fmt.Errorf("PostgreSQL no coincide con docs.csv en docID=%d (repetir pg_loader.py load --reset para este corpus)", i)
 		}
 		ids[i] = external
@@ -393,15 +393,13 @@ func doSearch(ctx context.Context, stmt *sql.Stmt, expression string, k int) ([]
 	return hits, nil
 }
 
-// Primeras 38 columnas compatibles por nombre con textbench v2 (CSV puede
-// concatenarse tras normalizar columnas; los valores SPIMI no se inventan).
 var header = []string{
 	"n_documents", "corpus_sha256", "method", "query_id", "query_text", "raw_query_terms", "normalized_query_terms", "query_bucket", "top_k", "warmup", "repeats",
 	"preprocess_documents_ms", "spimi_build_ms", "spimi_open_ms", "spimi_index_bytes", "index_terms", "index_postings",
 	"query_median_ms", "query_p95_ms", "query_mean_ms", "retrieved_ids", "relevant_in_subset", "precision_at_k", "recall_at_k", "latencies_ms",
 	"go_version", "goos", "num_cpu", "gomaxprocs", "bm25_k1", "bm25_b", "timing_scope", "index_source",
 	"batch_size", "target_sample_ms", "query_median_us", "query_p95_us", "batch_durations_ms",
-	"postgres_gin_bytes", "postgres_table_bytes", "postgres_total_bytes", "postgres_version", "plan_nodes", "gin_used",
+	"postgres_gin_bytes", "postgres_table_bytes", "postgres_total_bytes", "postgres_version", "plan_nodes", "gin_used", "postgres_fts_config", "postgres_query_semantics",
 }
 
 func run(cfg settings) error {
@@ -519,14 +517,14 @@ func run(cfg settings) error {
 			sum += v
 		}
 		row := []string{
-			strconv.Itoa(m.Documents), m.CorpusSHA256, "pg_gin", q.ID, q.Raw, strconv.Itoa(q.RawWords), strconv.Itoa(q.NTokens), queryBucket(q.RawWords),
+			strconv.Itoa(m.Documents), m.CorpusSHA256, "pg_gin", q.ID, q.Raw, strconv.Itoa(q.RawWords), "", queryBucket(q.RawWords),
 			strconv.Itoa(cfg.topK), strconv.Itoa(cfg.warmup), strconv.Itoa(cfg.repeats),
 			"", "", "", "", "", "", // SPIMI metadata no aplica a PostgreSQL
 			fmt.Sprintf("%.9f", median(times)), fmt.Sprintf("%.9f", p95(times)), fmt.Sprintf("%.9f", sum/float64(len(times))),
 			strings.Join(retrieved, "|"), countText, p, r, string(latJSON), runtime.Version(), runtime.GOOS, strconv.Itoa(runtime.NumCPU()), strconv.Itoa(runtime.GOMAXPROCS(0)),
-			"", "", "hot_batched_postgres_round_trip_go", "postgres_gin", strconv.Itoa(size), strconv.Itoa(cfg.targetMS),
+			"", "", "hot_batched_postgres_round_trip_go", "postgres_gin_spanish", strconv.Itoa(size), strconv.Itoa(cfg.targetMS),
 			fmt.Sprintf("%.6f", median(times)*1000), fmt.Sprintf("%.6f", p95(times)*1000), string(batchJSON),
-			strconv.FormatInt(ginBytes, 10), strconv.FormatInt(tableBytes, 10), strconv.FormatInt(totalBytes, 10), pgVersion, plan, strconv.FormatBool(ginUsed),
+			strconv.FormatInt(ginBytes, 10), strconv.FormatInt(tableBytes, 10), strconv.FormatInt(totalBytes, 10), pgVersion, plan, strconv.FormatBool(ginUsed), "spanish", "OR websearch_to_tsquery sobre texto original",
 		}
 		if len(row) != len(header) {
 			out.Close()

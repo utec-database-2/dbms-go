@@ -1,11 +1,14 @@
-"""Cargar y validar PostgreSQL GIN:
+"""Carga y valida PostgreSQL GIN directamente desde pgtextprep (Psycopg 3).
 
-Ejemplos:
+Ejemplos desde la raíz del repositorio:
   py -B dbms/cmd/pgtextprep/pg_loader.py check
   py -B dbms/cmd/pgtextprep/pg_loader.py load --input-dir "$env:TEMP\bd2_pgprep_12"
   py -B dbms/cmd/pgtextprep/pg_loader.py search --input-dir "$env:TEMP\bd2_pgprep_12" --query-id q1
   py -B dbms/cmd/pgtextprep/pg_loader.py explain --input-dir "$env:TEMP\bd2_pgprep_12" --query-id q1
 
+Usa una tabla propia bd2_textbench.documents DENTRO de la base postgres.
+No altera public ni borra tablas de terceros. --reset sólo borra la tabla propia.
+La contraseña se solicita sin mostrarla, salvo que exista PGPASSWORD en el entorno.
 """
 from __future__ import annotations
 
@@ -26,16 +29,18 @@ GIN_INDEX = "documents_search_vector_gin_idx"
 def read_manifest(folder: Path) -> dict:
     with (folder / "manifest.json").open("r", encoding="utf-8") as f:
         obj = json.load(f)
-    if (not isinstance(obj, dict) or obj.get("schema_version") != "pgtextprep-v1"
+    if (not isinstance(obj, dict) or obj.get("schema_version") != "pgtextprep-native-v2"
             or not isinstance(obj.get("documents"), int) or obj["documents"] <= 0):
-        raise ValueError("manifest.json no es un export válido de pgtextprep-v1")
+        raise ValueError("manifest.json no es un export válido de pgtextprep-native-v2")
+    if obj.get("postgresql_text_config") != "spanish":
+        raise ValueError("Se requiere un export nativo con configuración spanish")
     return obj
 
 
 def iter_document_rows(path: Path):
     with path.open("r", encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
-        if reader.fieldnames != ["doc_id", "external_id", "normalized_text"]:
+        if reader.fieldnames != ["doc_id", "external_id", "raw_text"]:
             raise ValueError(f"Cabecera incorrecta en {path}: {reader.fieldnames}")
         for position, row in enumerate(reader):
             if None in row or any(v is None for v in row.values()):
@@ -44,13 +49,13 @@ def iter_document_rows(path: Path):
             ext = row["external_id"]
             if docid != position or not ext:
                 raise ValueError(f"DocID o external_id inválido en fila {position + 2}")
-            yield docid, ext, row["normalized_text"]
+            yield docid, ext, row["raw_text"]
 
 
 def lookup_query(path: Path, query_id: str) -> dict:
     with path.open("r", encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
-        expected = ["query_id", "raw_text", "normalized_tokens", "or_tsquery", "raw_words"]
+        expected = ["query_id", "raw_text", "raw_words"]
         if reader.fieldnames != expected:
             raise ValueError(f"Cabecera incorrecta en {path}: {reader.fieldnames}")
         found = None
@@ -109,14 +114,14 @@ def load(conn, folder: Path, reset: bool):
             CREATE TABLE {} (
                 doc_id integer PRIMARY KEY CHECK (doc_id >= 0),
                 external_id text NOT NULL UNIQUE,
-                normalized_text text NOT NULL,
+                raw_text text NOT NULL,
                 search_vector tsvector GENERATED ALWAYS AS
-                   (to_tsvector('simple'::regconfig, normalized_text)) STORED
+                   (to_tsvector('spanish'::regconfig, raw_text)) STORED
             )
         """).format(table))
         count = 0
         start = time.perf_counter()
-        with cur.copy(sql.SQL("COPY {} (doc_id, external_id, normalized_text) FROM STDIN").format(table)) as cp:
+        with cur.copy(sql.SQL("COPY {} (doc_id, external_id, raw_text) FROM STDIN").format(table)) as cp:
             for row in iter_document_rows(docs):
                 cp.write_row(row)
                 count += 1
@@ -131,15 +136,13 @@ def load(conn, folder: Path, reset: bool):
         cur.execute(sql.SQL("CREATE INDEX {} ON {} USING GIN (search_vector)").format(index, table))
         gin_build_ms = (time.perf_counter() - start) * 1000.0
         cur.execute(sql.SQL("ANALYZE {}").format(table))
-        mismatch = cur.execute(sql.SQL("""
+        # PostgreSQL aplica su tokenización nativa. NO se exige vocabulario Go idéntico.
+        vector_check = cur.execute(sql.SQL("""
             SELECT count(*) FROM {} AS d
-            WHERE ARRAY(SELECT unnest(tsvector_to_array(d.search_vector)) ORDER BY 1)
-                  IS DISTINCT FROM
-                  ARRAY(SELECT DISTINCT term FROM unnest(string_to_array(d.normalized_text, ' ')) AS term
-                        WHERE term <> '' ORDER BY term)
+            WHERE d.search_vector IS DISTINCT FROM to_tsvector('spanish'::regconfig, d.raw_text)
         """).format(table)).fetchone()[0]
-        if mismatch:
-            raise RuntimeError(f"¡Se encontraron {mismatch} documentos con vocabulario diferente en PostgreSQL!")
+        if vector_check:
+            raise RuntimeError(f"{vector_check} vectores distintos de to_tsvector(spanish,raw_text)")
         relation = f"{SCHEMA}.{TABLE}"
         index_name = f"{SCHEMA}.{GIN_INDEX}"
         index_bytes, table_bytes, total_bytes = cur.execute(
@@ -149,24 +152,33 @@ def load(conn, folder: Path, reset: bool):
         print(f"Carga OK: {count} documentos | COPY={load_ms:.3f} ms | "
               f"CREATE GIN={gin_build_ms:.3f} ms")
         print(f"GIN={index_bytes} bytes | tabla={table_bytes} bytes | total={total_bytes} bytes")
-        print(f"Vocabulario: {mismatch} discrepancias (esperado: 0)")
+        print(f"FTS nativo: spanish; vectores inconsistentes: {vector_check} (esperado: 0)")
     # conn context manager hace commit al salir de main() si no hubo errores.
+
+
+def native_or_expression(raw_text: str) -> str:
+    """OR a nivel de palabras originales; el análisis léxico es 100% PostgreSQL.
+
+    No se reemplazan tokens por stems de Go. Usamos el operador websearch OR
+    para mantener la recuperación disyuntiva de los rankers SPIMI.
+    """
+    return " OR ".join(raw_text.split())
 
 
 def search(conn, folder: Path, query_id: str, top_k: int, explain: bool):
     if top_k < 0:
         raise ValueError("top-k debe ser >= 0")
     q = lookup_query(folder / "queries.csv", query_id)
-    expression = q["or_tsquery"]
+    expression = native_or_expression(q["raw_text"])
     if not expression or top_k == 0:
-        print("Sin resultados: consulta normalizada vacía o top-k=0")
+        print("Sin resultados: consulta vacía o top-k=0")
         return
     sql, table, _ = sql_objects()
     query = sql.SQL("""
         SELECT doc_id, external_id,
-               ts_rank_cd(search_vector, to_tsquery('simple'::regconfig, %s)) AS score
+               ts_rank_cd(search_vector, websearch_to_tsquery('spanish'::regconfig, %s)) AS score
         FROM {}
-        WHERE search_vector @@ to_tsquery('simple'::regconfig, %s)
+        WHERE search_vector @@ websearch_to_tsquery('spanish'::regconfig, %s)
         ORDER BY score DESC, doc_id ASC
         LIMIT %s
     """).format(table)
@@ -190,7 +202,7 @@ def main(argv=None):
     load_parser.add_argument("--input-dir", type=Path, required=True)
     load_parser.add_argument("--reset", action="store_true", help="Reemplazar SOLO la tabla de ensayo")
     for name in ("search", "explain"):
-        p = sub.add_parser(name, help=f"Ejecutar {name} con consultas normalizadas")
+        p = sub.add_parser(name, help=f"Ejecutar {name} con consultas originales y FTS nativo")
         p.add_argument("--input-dir", type=Path, required=True)
         p.add_argument("--query-id", required=True)
         p.add_argument("--top-k", type=int, default=10)
