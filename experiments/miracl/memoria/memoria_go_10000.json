@@ -1,0 +1,22 @@
+{
+  "metodo": "SPIMI + TF-IDF/BM25",
+  "documentos": 10000,
+  "alcance": "Pico del proceso Go durante construcción del índice Y consultas",
+  "unidad": "MiB",
+  "instrumento": "psutil: RSS/USS muestreados",
+  "intervalo_muestreo_s": 0.02,
+  "medicion": {
+    "duracion_observacion_s": 9.438,
+    "cliente": {
+      "pid": 21984,
+      "muestras": 419,
+      "rss_inicial_mib": 2.43,
+      "rss_pico_mib": 28.406,
+      "uss_inicial_mib": 0.066,
+      "uss_pico_mib": 22.242,
+      "aviso": null
+    },
+    "backend_postgresql": null,
+    "backend_encontrado": false
+  }
+}
