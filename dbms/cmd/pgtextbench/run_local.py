@@ -1,5 +1,4 @@
-r"""ejecuta pgtextbench sin guardar la contraseña ni abrir pgAdmin.
-
+r"""
 Ejemplo:
  py -B dbms/cmd/pgtextbench/run_local.py --input-dir "$env:TEMP\bd2_pgprep_12" --qrels dbms/cmd/textbench/testdata/qrels.json --output "$env:TEMP\bd2_postgres_12.csv"
 """
