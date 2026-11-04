@@ -1,6 +1,9 @@
 package mfcc
 
 import (
+	"fmt"
+	"os/exec"
+
 	external "github.com/zrma/go-mfcc/mfcc"
 )
 
@@ -56,4 +59,42 @@ func flatten(frames [][]float64, err error) ([]float64, error) {
 		features = append(features, frame...)
 	}
 	return features, nil
+}
+
+func convertToWav(inputFile, outputFileName string) error {
+	// Comando: ffmpeg -i input.mp3 -c:a pcm_s16le output.wav
+	outputFile := outputFileName + ".wav"
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		return fmt.Errorf("ffmpeg no está instalado o no se encuentra en el PATH: %w", err)
+	}
+	// chequear si los nombres de archivo de entrada y salida son válidos
+	if inputFile == "" || outputFile == "" {
+		return fmt.Errorf("los nombres de archivo de entrada y salida no pueden estar vacíos")
+	}
+	// chequear si el inputFile ya es un archivo WAV
+	if len(inputFile) >= 4 && inputFile[len(inputFile)-4:] == ".wav" {
+		return fmt.Errorf("el archivo de entrada ya es un archivo WAV")
+	}
+	// chequear si el archivo de entrada y salida son iguales
+	if inputFile == outputFile {
+		return fmt.Errorf("los nombres de archivo de entrada y salida no pueden ser iguales")
+	}
+	// chequear si el archivo de entreada existe
+	if _, err := exec.Command("test", "-f", inputFile).Output(); err != nil {
+		return fmt.Errorf("el archivo de entrada no existe: %w", err)
+	}
+	// chequear si el archivo de salida ya existe
+	if _, err := exec.Command("test", "-f", outputFile).Output(); err == nil {
+		return fmt.Errorf("el archivo de salida ya existe")
+	}
+	// Chequear si el archivo de entrada es un archivo de audio válido (mp3, wav, etc.)
+	if _, err := exec.Command("file", "--mime-type", inputFile).Output(); err != nil {
+		return fmt.Errorf("no se pudo determinar el tipo de archivo de entrada: %w", err)
+	}
+	cmd := exec.Command("ffmpeg", "-i", inputFile, "-c:a", "pcm_s16le", outputFile)
+	err := cmd.Run()
+	if err != nil {
+		return fmt.Errorf("error al convertir el archivo: %w", err)
+	}
+	return nil
 }
