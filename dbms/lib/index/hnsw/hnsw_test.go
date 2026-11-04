@@ -1,6 +1,9 @@
 package hnsw
 
-import "testing"
+import (
+	"strconv"
+	"testing"
+)
 
 func TestIndexPersistsAndSearches(t *testing.T) {
 	path := t.TempDir() + "/vectors.graph"
@@ -63,6 +66,34 @@ func TestIndexConfiguresEfConstruction(t *testing.T) {
 	}
 	if err := idx.Add(2, []float32{1, 1}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestIndexEfConstructionValues(t *testing.T) {
+	for _, efConstruction := range []int{32, 64, 128} {
+		t.Run("ef_construction="+strconv.Itoa(efConstruction), func(t *testing.T) {
+			idx, err := Open(t.TempDir()+"/vectors.graph", Euclidean, efConstruction)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := idx.EfConstruction(); got != efConstruction {
+				t.Fatalf("ef_constructor inesperado: got %d, want %d", got, efConstruction)
+			}
+			for id, vector := range map[uint64][]float32{
+				1: {0, 0},
+				2: {1, 1},
+				3: {2, 2},
+			} {
+				if err := idx.Add(id, vector); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got, err := idx.Search([]float32{0.1, 0.1}, 2, efConstruction); err != nil {
+				t.Fatal(err)
+			} else if len(got) != 2 {
+				t.Fatalf("se esperaban 2 vecinos, se obtuvieron %d", len(got))
+			}
+		})
 	}
 }
 
