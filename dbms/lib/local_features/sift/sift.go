@@ -7,6 +7,14 @@ import (
 	"gocv.io/x/gocv"
 )
 
+func ReadImage(path string) (gocv.Mat, error) {
+	img := gocv.IMRead(path, gocv.IMReadColor)
+	if img.Empty() {
+		return gocv.NewMat(), fmt.Errorf("error reading image file: %s", path)
+	}
+	return img, nil
+}
+
 func SIFT(img gocv.Mat) (gocv.Mat, error) {
 	if img.Empty() {
 		return gocv.NewMat(), fmt.Errorf("input image is empty")
