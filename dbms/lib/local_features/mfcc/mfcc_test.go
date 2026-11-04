@@ -2,6 +2,8 @@ package mfcc
 
 import (
 	"math"
+	"os"
+	"os/exec"
 	"testing"
 	"time"
 )
@@ -92,4 +94,40 @@ func TestMFCCRejectsInvalidInput(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConvertToWav(t *testing.T) {
+	// crear un archivo de prueba WAV a partir de un archivo MP3 de prueba
+
+	// Nota: Este test requiere que ffmpeg esté instalado y disponible en el PATH.
+	// buscar alternativas si ffmpeg no está disponible en el entorno de prueba.
+	inputFile := "testdata/test.mp3"
+	outputFileName := "testdata/test"
+
+	if _, err := os.Stat(inputFile); os.IsNotExist(err) {
+		t.Skipf("test fixture does not exist: %s", inputFile)
+	}
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg is not installed")
+	}
+
+	err := convertToWav(inputFile, outputFileName)
+	if err != nil {
+		t.Fatalf("convertToWav returned error: %v", err)
+	}
+	// verify that the output file exists and is a valid WAV file.
+	outputFile := outputFileName + ".wav"
+	if _, err := os.Stat(outputFile); os.IsNotExist(err) {
+		t.Fatalf("output WAV file does not exist: %s", outputFile)
+	}
+	outputFileInfo, err := os.Stat(outputFile)
+	if err != nil {
+		t.Fatalf("error stating output WAV file: %v", err)
+	}
+	if outputFileInfo.Size() == 0 {
+		t.Fatalf("output WAV file is empty: %s", outputFile)
+	}
+
+	// Clean up the output file after the test.
+	defer os.Remove(outputFile)
 }
