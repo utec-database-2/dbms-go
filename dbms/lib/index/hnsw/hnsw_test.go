@@ -108,11 +108,15 @@ func TestProductDotSimilarityRanksHigherProductsFirst(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for id, vector := range map[uint64][]float32{
-		1: {1, 0},
-		2: {0.5, 0},
-		3: {0, 1},
+	for _, entry := range []struct {
+		id     uint64
+		vector []float32
+	}{
+		{id: 1, vector: []float32{1, 0}},
+		{id: 2, vector: []float32{0.5, 0}},
+		{id: 3, vector: []float32{0, 1}},
 	} {
+		id, vector := entry.id, entry.vector
 		if err := idx.Add(id, vector); err != nil {
 			t.Fatal(err)
 		}
@@ -127,4 +131,69 @@ func TestProductDotSimilarityRanksHigherProductsFirst(t *testing.T) {
 	if got[0].Similarity <= got[1].Similarity || got[1].Similarity <= got[2].Similarity {
 		t.Fatalf("similitudes inesperadas: %+v", got)
 	}
+}
+
+func TestProductDotPersistsAndSearches(t *testing.T) {
+	path := t.TempDir() + "/vectors.graph"
+	idx, err := Open(path, ProductDot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add(1, []float32{1, 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add(2, []float32{0.5, 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Save(); err != nil {
+		t.Fatalf("guardar producto punto: %v", err)
+	}
+
+	reopened, err := Open(path, ProductDot)
+	if err != nil {
+		t.Fatalf("reabrir producto punto: %v", err)
+	}
+	got, err := reopened.Search([]float32{1, 0}, 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].ID != 1 || got[1].ID != 2 {
+		t.Fatalf("vecinos persistidos inesperados: %+v", got)
+	}
+}
+
+func TestProductDotDistance(t *testing.T) {
+	a := []float32{1, 0}
+	b := []float32{0.5, 0}
+	c := []float32{0, 1}
+
+	if got := DotProductSimilarity(a, b); got != 0.5 {
+		t.Fatalf("producto punto inesperado: got %f, want 0.5", got)
+	}
+	if got := ProductDotDistance(a, b); got != 0.5 {
+		t.Fatalf("distancia inesperada: got %f, want 0.5", got)
+	}
+	if got := ProductDotDistance(a, c); got != 1 {
+		t.Fatalf("distancia ortogonal inesperada: got %f, want 1", got)
+	}
+}
+
+func TestDotProductSimilarityPanicsOnDifferentLengths(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("se esperaba un panic por vectores de diferente longitud")
+		}
+	}()
+
+	DotProductSimilarity([]float32{1, 0}, []float32{1, 0, 0})
+}
+
+func TestProductDotDistancePanicsOnDifferentLengths(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("se esperaba un panic por vectores de diferente longitud")
+		}
+	}()
+
+	ProductDotDistance([]float32{1, 0}, []float32{1, 0, 0})
 }
