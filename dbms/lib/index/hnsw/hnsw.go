@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 
 	graph "github.com/coder/hnsw"
@@ -106,7 +107,6 @@ func (idx *HNSWIndex) Delete(id uint64) bool {
 // Search devuelve hasta k vecinos más cercanos al vector. (ef_search: parametro para controlar la calidad de la búsqueda, mayor es mejor pero más lento)
 func (idx *HNSWIndex) Search(vector []float32, k int, ef_search int) ([]Result, error) {
 	if ef_search < k {
-		fmt.Print("ef_search menor a k, igualando ef_search a k")
 		ef_search = k
 	}
 	idx.mu.Lock()
@@ -130,6 +130,9 @@ func (idx *HNSWIndex) Search(vector []float32, k int, ef_search int) ([]Result, 
 			Similarity: similarity(idx.metric, distance),
 		})
 	}
+	sort.SliceStable(results, func(i, j int) bool {
+		return results[i].Distance < results[j].Distance
+	})
 	return results, nil
 }
 
@@ -197,6 +200,10 @@ func DotProductSimilarity(a, b []float32) float32 {
 // valores menores representan vectores más cercanos.
 func ProductDotDistance(a, b []float32) float32 {
 	return 1 - DotProductSimilarity(a, b)
+}
+
+func init() {
+	graph.RegisterDistanceFunc("product_dot", ProductDotDistance)
 }
 
 // distance devuelve la función de distancia correspondiente a la métrica.
