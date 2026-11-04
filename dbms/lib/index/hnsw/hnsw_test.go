@@ -8,7 +8,7 @@ func TestIndexPersistsAndSearches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for id, vector := range map[int64][]float32{
+	for id, vector := range map[uint64][]float32{
 		1: {0, 0},
 		2: {1, 1},
 		3: {10, 10},
@@ -25,7 +25,7 @@ func TestIndexPersistsAndSearches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := reopened.Search([]float32{0.1, 0.1}, 2)
+	got, err := reopened.Search([]float32{0.1, 0.1}, 2, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,12 +47,37 @@ func TestIndexRejectsDimensionChanges(t *testing.T) {
 	}
 }
 
+func TestIndexConfiguresEfConstruction(t *testing.T) {
+	idx, err := Open(t.TempDir()+"/vectors.graph", Euclidean, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := idx.EfConstruction(); got != 64 {
+		t.Fatalf("ef_constructor inesperado: got %d, want 64", got)
+	}
+	if err := idx.Add(1, []float32{0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.Search([]float32{0, 0}, 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add(2, []float32{1, 1}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIndexRejectsInvalidEfConstruction(t *testing.T) {
+	if _, err := Open(t.TempDir()+"/vectors.graph", Euclidean, 0); err == nil {
+		t.Fatal("se esperaba rechazar ef_constructor cero")
+	}
+}
+
 func TestProductDotSimilarityRanksHigherProductsFirst(t *testing.T) {
 	idx, err := Open(t.TempDir()+"/vectors.graph", ProductDot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for id, vector := range map[int64][]float32{
+	for id, vector := range map[uint64][]float32{
 		1: {1, 0},
 		2: {0.5, 0},
 		3: {0, 1},
@@ -61,7 +86,7 @@ func TestProductDotSimilarityRanksHigherProductsFirst(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := idx.Search([]float32{1, 0}, 3)
+	got, err := idx.Search([]float32{1, 0}, 3, 3)
 	if err != nil {
 		t.Fatal(err)
 	}

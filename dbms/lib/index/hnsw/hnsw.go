@@ -20,7 +20,7 @@ const (
 
 // Result es un vecino más cercano. Similarity es mayor para vectores más cercanos.
 type Result struct {
-	ID         int64
+	ID         uint64
 	Similarity float32
 	Distance   float32
 }
@@ -28,37 +28,59 @@ type Result struct {
 // Index es una grafo HNSW cuyos contenidos pueden guardarse en un solo archivo.
 // Las mutaciones se mantienen en memoria hasta que se llama a Save, lo que permite a los llamadores agrupar
 // escrituras mientras que aún hace que reabrir el índice sea económico.
-type Index struct {
-	mu     sync.RWMutex
-	graph  *graph.SavedGraph[int64]
-	path   string
-	metric Metric
-	dims   int
+type HNSWIndex struct {
+	mu              sync.RWMutex
+	graph           *graph.SavedGraph[uint64]
+	path            string
+	metric          Metric
+	dims            int
+	ef_construction int
 }
 
+const defaultEfConstruction = 64
+
+var (
+	errInvalidMetric = fmt.Errorf("hnsw: métrica no soportada")
+	errInvalidVector = fmt.Errorf("hnsw: vector inválido")
+)
+
 // Open carga un indice existente o crea uno nuevo. La ruta debe ser un archivo, no un directorio.
-func Open(path string, metric Metric) (*Index, error) {
+func Open(path string, metric Metric, efConstruction ...int) (*HNSWIndex, error) {
 	if path == "" {
 		return nil, fmt.Errorf("hnsw: la ruta no puede estar vacía")
 	}
 	if metric != Cosine && metric != Euclidean && metric != ProductDot {
-		return nil, fmt.Errorf("hnsw: métrica no soportada %q", metric)
+		return nil, errInvalidMetric
+	}
+	ef := defaultEfConstruction
+	if len(efConstruction) > 0 {
+		ef = efConstruction[0]
+	}
+	if ef < 1 {
+		return nil, fmt.Errorf("hnsw: ef_constructor debe ser mayor que cero")
 	}
 	if dir := filepath.Dir(path); dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, fmt.Errorf("hnsw: crear directorio: %w", err)
 		}
 	}
-	g, err := graph.LoadSavedGraph[int64](path)
+	g, err := graph.LoadSavedGraph[uint64](path)
 	if err != nil {
 		return nil, fmt.Errorf("hnsw: abrir %s: %w", path, err)
 	}
 	g.Distance = distance(metric)
-	return &Index{graph: g, path: path, metric: metric, dims: g.Dims()}, nil
+	g.EfSearch = ef
+	return &HNSWIndex{
+		graph:           g,
+		path:            path,
+		metric:          metric,
+		dims:            g.Dims(),
+		ef_construction: ef,
+	}, nil
 }
 
 // Add inserta o reemplaza el vector asociado con id.
-func (idx *Index) Add(id int64, vector []float32) error {
+func (idx *HNSWIndex) Add(id uint64, vector []float32) error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 	if err := idx.validateVector(vector); err != nil {
@@ -67,27 +89,37 @@ func (idx *Index) Add(id int64, vector []float32) error {
 	if idx.dims == 0 {
 		idx.dims = len(vector)
 	}
+	// coder/hnsw usa EfSearch también durante Add para explorar candidatos de
+	// construcción; se restaura aquí después de cualquier búsqueda.
+	idx.graph.EfSearch = idx.ef_construction
 	idx.graph.Add(graph.MakeNode(id, append([]float32(nil), vector...)))
 	return nil
 }
 
 // Delete elimina el vector asociado con id y reporta si existía.
-func (idx *Index) Delete(id int64) bool {
+func (idx *HNSWIndex) Delete(id uint64) bool {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 	return idx.graph.Delete(id)
 }
 
-// Search devuelve hasta k vecinos más cercanos al vector.
-func (idx *Index) Search(vector []float32, k int) ([]Result, error) {
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
+// Search devuelve hasta k vecinos más cercanos al vector. (ef_search: parametro para controlar la calidad de la búsqueda, mayor es mejor pero más lento)
+func (idx *HNSWIndex) Search(vector []float32, k int, ef_search int) ([]Result, error) {
+	if ef_search < k {
+		fmt.Print("ef_search menor a k, igualando ef_search a k")
+		ef_search = k
+	}
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
 	if err := idx.validateVector(vector); err != nil {
 		return nil, err
 	}
 	if k <= 0 {
 		return []Result{}, nil
 	}
+	previousEf := idx.graph.EfSearch
+	idx.graph.EfSearch = ef_search
+	defer func() { idx.graph.EfSearch = previousEf }()
 	neighbors := idx.graph.Search(vector, k)
 	results := make([]Result, 0, len(neighbors))
 	for _, neighbor := range neighbors {
@@ -102,7 +134,7 @@ func (idx *Index) Search(vector []float32, k int) ([]Result, error) {
 }
 
 // Save persiste la gráfica actual usando el formato de archivo de la biblioteca.
-func (idx *Index) Save() error {
+func (idx *HNSWIndex) Save() error {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 	if err := idx.graph.Save(); err != nil {
@@ -112,22 +144,22 @@ func (idx *Index) Save() error {
 }
 
 // Len devuelve el número de vectores indexados.
-func (idx *Index) Len() int {
+func (idx *HNSWIndex) Len() int {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 	return idx.graph.Len()
 }
 
 // Dims devuelve el vector dimension, o cero para un índice vacío.
-func (idx *Index) Dims() int {
+func (idx *HNSWIndex) Dims() int {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 	return idx.dims
 }
 
-func (idx *Index) validateVector(vector []float32) error {
+func (idx *HNSWIndex) validateVector(vector []float32) error {
 	if len(vector) == 0 {
-		return fmt.Errorf("hnsw: el vector no puede estar vacío")
+		return errInvalidVector
 	}
 	if idx.dims != 0 && len(vector) != idx.dims {
 		return fmt.Errorf("hnsw: dimensión %d, se esperaba %d", len(vector), idx.dims)
@@ -136,10 +168,17 @@ func (idx *Index) validateVector(vector []float32) error {
 }
 
 // Metric devuelve la métrica usada por el índice.
-func (idx *Index) Metric() Metric {
+func (idx *HNSWIndex) Metric() Metric {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 	return idx.metric
+}
+
+// EfConstruction devuelve el esfuerzo usado al construir nuevos nodos.
+func (idx *HNSWIndex) EfConstruction() int {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.ef_construction
 }
 
 // DotProductSimilarity calcula el producto punto entre dos vectores.
