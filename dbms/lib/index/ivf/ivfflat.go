@@ -5,20 +5,24 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/rand"
 	"slices"
 	"sync"
+
+	metricpkg "github.com/dbms-go/v2/dbms/lib/vector/metric"
 )
 
-// MetricType selecciona la métrica de distancia del índice.
-type MetricType uint8
+// MetricType selecciona la métrica de distancia del índice. Es un alias del
+// tipo compartido con los extractores de features.
+type MetricType = metricpkg.Metric
 
 const (
 	// MetricEuclidean ordena por distancia euclidiana: menor es más cercano.
-	MetricEuclidean MetricType = iota
+	MetricEuclidean = metricpkg.Euclidean
 	// MetricCosine ordena por 1 - similitud coseno: menor es más cercano.
-	MetricCosine
+	MetricCosine = metricpkg.Cosine
 	// MetricDotProduct ordena por -producto punto: menor es mayor similitud.
-	MetricDotProduct
+	MetricDotProduct = metricpkg.DotProduct
 )
 
 var (
@@ -31,9 +35,11 @@ var (
 	ErrInvalidCentroids = errors.New("ivf: centroides inválidos")
 	ErrInvalidState     = errors.New("ivf: estado interno inconsistente")
 	ErrNotInitialized   = errors.New("ivf: índice no inicializado")
-	ErrNotTrained       = errors.New("ivf: índice sin centroides (use SetCentroids)")
+	ErrNotTrained       = errors.New("ivf: índice sin centroides (use SetCentroids o Train)")
 	ErrDuplicateID      = errors.New("ivf: ID duplicado")
 	ErrIDNotFound       = errors.New("ivf: ID no encontrado")
+	ErrNotEnoughData    = errors.New("ivf: datos de entrenamiento insuficientes")
+	ErrUnsupportedTrain = errors.New("ivf: métrica no soportada para entrenamiento")
 )
 
 // invertedList guarda los vectores de forma plana continua para evitar el
@@ -47,6 +53,11 @@ type invertedList struct {
 type Candidate struct {
 	ID   uint64
 	Dist float32
+}
+
+type TrainingData struct {
+	maxIters int
+	tol      float64
 }
 
 // IVFFlatIndex es un índice IVF-Flat. Después de llamar a SetCentroids, las
@@ -84,6 +95,229 @@ func NewIVFFlatIndex(dim, nlist int, metric MetricType) (*IVFFlatIndex, error) {
 	}, nil
 }
 
+// Train entrena los centroides gruesos con k-means sobre vectores ya
+// extraídos. No conoce imágenes ni audio: el llamador debe convertir cada
+// objeto a un []float32 de dimensión Dim().
+//
+// La métrica Euclidiana usa k-means clásico. Cosine usa k-means esférico
+// (normaliza vectores y centroides). DotProduct no define un k-means estable:
+// para esa métrica hay que cargar centroides con SetCentroids.
+//
+// Train reinicia las listas y el mapeo de IDs, igual que SetCentroids.
+func (idx *IVFFlatIndex) Train(vectors [][]float32) error {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	if idx.dim <= 0 || idx.nlist <= 0 {
+		return fmt.Errorf("%w: dim=%d nlist=%d", ErrNotInitialized, idx.dim, idx.nlist)
+	}
+	if err := metricpkg.Validate(idx.metric); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidMetric, err)
+	}
+	if idx.metric == MetricDotProduct {
+		return fmt.Errorf("%w: use SetCentroids para dot product", ErrUnsupportedTrain)
+	}
+	if len(vectors) < idx.nlist {
+		return fmt.Errorf("%w: %d vectores para nlist=%d", ErrNotEnoughData, len(vectors), idx.nlist)
+	}
+
+	for i, vec := range vectors {
+		if len(vec) != idx.dim {
+			return fmt.Errorf("%w: vector %d tiene %d dimensiones, se esperaban %d",
+				ErrInvalidDimension, i, len(vec), idx.dim)
+		}
+		if err := validateComponents(vec); err != nil {
+			return fmt.Errorf("%w: vector %d", err, i)
+		}
+	}
+
+	// Para Euclidiana kmeans solo lee los vectores, así que no hace falta
+	// copiarlos. Para coseno sí necesitamos una copia normalizada porque
+	// kmeans esférico normaliza los datos de entrada.
+	data := vectors
+	if idx.metric == MetricCosine {
+		data = make([][]float32, len(vectors))
+		for i, vec := range vectors {
+			data[i] = append([]float32(nil), vec...)
+			normalize32(data[i])
+		}
+	}
+
+	centroids := kmeans(data, idx.nlist, idx.metric)
+	flat := make([]float32, 0, idx.nlist*idx.dim)
+	for _, centroid := range centroids {
+		flat = append(flat, centroid...)
+	}
+	return idx.setCentroidsLocked(flat)
+}
+
+// kmeans agrupa data en k centroides. Es determinista (semilla fija) para que
+// los tests y una reconstrucción del índice den el mismo resultado.
+func kmeans(data [][]float32, k int, m MetricType) [][]float32 {
+	rng := rand.New(rand.NewSource(1))
+	dim := len(data[0])
+
+	centroids := make([][]float32, 0, k)
+	centroids = append(centroids, cloneVector(data[rng.Intn(len(data))]))
+
+	// Inicialización k-means++
+	dists := make([]float64, len(data))
+	for i := range dists {
+		dists[i] = math.Inf(1)
+	}
+
+	// Generando k centroides
+	for len(centroids) < k {
+		last := centroids[len(centroids)-1]
+		total := 0.0
+		for i, vec := range data {
+			d := metricpkg.RankingDistance(vec, last, m)
+			if d < dists[i] {
+				dists[i] = d
+			}
+			total += dists[i]
+		}
+
+		pick := rng.Intn(len(data))
+		if total > 0 {
+			target := rng.Float64() * total
+			for i, d := range dists {
+				target -= d
+				if target <= 0 {
+					pick = i
+					break
+				}
+			}
+		}
+		centroids = append(centroids, cloneVector(data[pick]))
+	}
+
+	labels := make([]int, len(data))
+	for i := range labels {
+		labels[i] = -1
+	}
+
+	// Entrenando data a los k centroides
+	trainingData(k, dim, labels, data, centroids, TrainingData{maxIters: 100, tol: 1e-4}, m)
+
+	return centroids
+}
+
+func trainingData(k int, dim int, labels []int, data [][]float32, centroids [][]float32, trData TrainingData, m MetricType) {
+	for iter := 0; iter < trData.maxIters; iter++ {
+		changed := 0
+		for i, vec := range data {
+			best := 0
+			bestDist := metricpkg.RankingDistance(vec, centroids[0], m)
+			for c := 1; c < k; c++ {
+				d := metricpkg.RankingDistance(vec, centroids[c], m)
+				if d < bestDist {
+					bestDist = d
+					best = c
+				}
+			}
+			if labels[i] != best {
+				labels[i] = best
+				changed++
+			}
+		}
+
+		sums := make([][]float64, k)
+		counts := make([]int, k)
+		for c := range sums {
+			sums[c] = make([]float64, dim)
+		}
+		for i, vec := range data {
+			c := labels[i]
+			counts[c]++
+			for j, value := range vec {
+				sums[c][j] += float64(value)
+			}
+		}
+
+		// Un cluster vacío se re-siembra con el punto más lejano a su centroide.
+		// Cada punto se usa como máximo una vez por iteración y se descuenta
+		// del cluster anterior para no desviar su media.
+		reseeded := make([]bool, len(data))
+		for c := 0; c < k; c++ {
+			if counts[c] > 0 {
+				continue
+			}
+			far := -1
+			farDist := -1.0
+			for i, vec := range data {
+				if reseeded[i] {
+					continue
+				}
+				d := metricpkg.RankingDistance(vec, centroids[labels[i]], m)
+				if d > farDist {
+					farDist = d
+					far = i
+				}
+			}
+			if far < 0 {
+				continue
+			}
+
+			old := labels[far]
+			labels[far] = c
+			reseeded[far] = true
+			counts[c] = 1
+			for j := range sums[c] {
+				sums[c][j] = float64(data[far][j])
+			}
+			if counts[old] > 0 {
+				counts[old]--
+				for j := range sums[old] {
+					sums[old][j] -= float64(data[far][j])
+				}
+			}
+		}
+
+		maxShift := 0.0
+		for c := 0; c < k; c++ {
+			if counts[c] == 0 {
+				continue
+			}
+			for j := 0; j < dim; j++ {
+				next := float32(sums[c][j] / float64(counts[c]))
+				shift := math.Abs(float64(next - centroids[c][j]))
+				if shift > maxShift {
+					maxShift = shift
+				}
+				centroids[c][j] = next
+			}
+			if m == MetricCosine {
+				normalize32(centroids[c])
+			}
+		}
+
+		if changed == 0 && maxShift < trData.tol {
+			break
+		}
+	}
+}
+
+func cloneVector(vec []float32) []float32 {
+	return append([]float32(nil), vec...)
+}
+
+func normalize32(vec []float32) {
+	var norm float64
+	for _, value := range vec {
+		norm += float64(value) * float64(value)
+	}
+	if norm == 0 {
+		return
+	}
+
+	// Calcular v / |v| de manera eficiente
+	scale := float32(1 / math.Sqrt(norm))
+	for i := range vec {
+		vec[i] *= scale
+	}
+}
+
 func (idx *IVFFlatIndex) Dim() int { return idx.dim }
 
 func (idx *IVFFlatIndex) NList() int { return idx.nlist }
@@ -93,7 +327,11 @@ func (idx *IVFFlatIndex) Metric() MetricType { return idx.metric }
 func (idx *IVFFlatIndex) SetCentroids(centroids []float32) error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
+	return idx.setCentroidsLocked(centroids)
+}
 
+// setCentroidsLocked aplica los centroides. El llamador debe tener idx.mu.
+func (idx *IVFFlatIndex) setCentroidsLocked(centroids []float32) error {
 	if idx.dim <= 0 || idx.nlist <= 0 {
 		return fmt.Errorf("%w: dim=%d nlist=%d", ErrNotInitialized, idx.dim, idx.nlist)
 	}
@@ -325,13 +563,11 @@ func validateComponents(vec []float32) error {
 	return nil
 }
 
-func validateMetric(metric MetricType) error {
-	switch metric {
-	case MetricEuclidean, MetricCosine, MetricDotProduct:
-		return nil
-	default:
-		return fmt.Errorf("%w: %d", ErrInvalidMetric, metric)
+func validateMetric(m MetricType) error {
+	if err := metricpkg.Validate(m); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidMetric, err)
 	}
+	return nil
 }
 
 type centroidDist struct {
@@ -418,64 +654,22 @@ func (h *maxCandidateHeap) Pop() any {
 	return value
 }
 
-func distance64(a, b []float32, metric MetricType) float64 {
-	switch metric {
-	case MetricEuclidean:
-		return math.Sqrt(squaredEuclidean64(a, b))
-
-	case MetricCosine:
-		var dot, normA, normB float64
-		for i := range a {
-			ai := float64(a[i])
-			bi := float64(b[i])
-			dot += ai * bi
-			normA += ai * ai
-			normB += bi * bi
-		}
-		if normA == 0 || normB == 0 {
-			return 1
-		}
-		return 1 - dot/(math.Sqrt(normA)*math.Sqrt(normB))
-
-	case MetricDotProduct:
-		var dot float64
-		for i := range a {
-			dot += float64(a[i]) * float64(b[i])
-		}
-		return -dot
-
-	default:
-		panic("ivf: métrica inválida")
-	}
-}
-
-func squaredEuclidean64(a, b []float32) float64 {
-	var sum float64
-	for i := range a {
-		diff := float64(a[i]) - float64(b[i])
-		sum += diff * diff
-	}
-	return sum
+func distance64(a, b []float32, m MetricType) float64 {
+	return metricpkg.Distance(a, b, m)
 }
 
 // rankingDistance64 usa distancia al cuadrado para Euclidiana: es monótona y
 // evita un sqrt por cada vector candidato.
-func rankingDistance64(a, b []float32, metric MetricType) float64 {
-	if metric == MetricEuclidean {
-		return squaredEuclidean64(a, b)
-	}
-	return distance64(a, b, metric)
+func rankingDistance64(a, b []float32, m MetricType) float64 {
+	return metricpkg.RankingDistance(a, b, m)
 }
 
-func finalDistance64(dist float64, metric MetricType) float64 {
-	if metric == MetricEuclidean {
-		return math.Sqrt(dist)
-	}
-	return dist
+func finalDistance64(dist float64, m MetricType) float64 {
+	return metricpkg.FinalDistance(dist, m)
 }
 
 // computeDistance se conserva como utilidad para pruebas y usos internos que
 // necesiten la distancia final en float32.
-func computeDistance(a, b []float32, metric MetricType) float32 {
-	return float32(distance64(a, b, metric))
+func computeDistance(a, b []float32, m MetricType) float32 {
+	return float32(distance64(a, b, m))
 }
