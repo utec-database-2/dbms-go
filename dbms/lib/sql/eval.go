@@ -74,6 +74,21 @@ func compareAny(a, b any) int {
 		if y, ok := b.([]byte); ok {
 			return strings.Compare(string(x), string(y))
 		}
+	case []float32:
+		if y, ok := b.([]float32); ok {
+			for i := 0; i < len(x) && i < len(y); i++ {
+				if cmp := cmpFloat(float64(x[i]), float64(y[i])); cmp != 0 {
+					return cmp
+				}
+			}
+			switch {
+			case len(x) < len(y):
+				return -1
+			case len(x) > len(y):
+				return 1
+			}
+			return 0
+		}
 	}
 	return strings.Compare(fmt.Sprint(a), fmt.Sprint(b))
 }
@@ -205,6 +220,9 @@ func (ec *evalContext) eval(node ast.ASTNode) (any, error) {
 		if v, ok, err := ec.evalSpatialFunc(n); ok {
 			return v, err
 		}
+		if v, ok, err := ec.evalVectorFunc(n); ok {
+			return v, err
+		}
 		if v, ok, err := ec.evalMatchFunc(n); ok {
 			return v, err
 		}
@@ -319,6 +337,8 @@ func truthy(v any) bool {
 	case string:
 		return x != ""
 	case []byte:
+		return len(x) > 0
+	case []float32:
 		return len(x) > 0
 	}
 	if i, ok := asInt64(v); ok {

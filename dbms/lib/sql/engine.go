@@ -1,6 +1,6 @@
 // Package sql es el motor del DBMS: une el DSL (lexer, parser y AST), la capa
 // de almacenamiento (heap file y archivo secuencial paginado), los índices
-// (B+ agrupado, B+ no agrupado y hash dinámico) y los algoritmos externos
+// (B+ agrupado, B+ no agrupado, hash dinámico, R-Tree e IVF) y los algoritmos externos
 // (external sorting con k-way merge) para ejecutar consultas SQL completas.
 //
 // Cada consulta devuelve, además del resultado, el Plan de ejecución que
@@ -484,9 +484,11 @@ func (e *Engine) execCreateTable(n *ast.CreateTable) (*Result, error) {
 	}, nil
 }
 
-// execCreateIndex crea un índice sobre una tabla existente. El tipo depende del
-// nombre: pk_<tabla> agrupa (solo válido en tablas agrupadas), hash_<col> usa
-// extendible hashing y cualquier otro nombre crea un B+ no agrupado.
+// execCreateIndex crea un índice sobre una tabla existente. USING IVF elige el
+// índice vectorial; sin USING el tipo depende del nombre: pk_<tabla> agrupa
+// (solo válido en tablas agrupadas), hash_<col> usa extendible hashing y
+// cualquier otro nombre crea un B+ no agrupado. Una columna VECTOR sin USING
+// usa IVF por defecto.
 func (e *Engine) execCreateIndex(n *ast.CreateIndex) (*Result, error) {
 	tbl, err := e.requireTable(n.Table)
 	if err != nil {
@@ -496,7 +498,8 @@ func (e *Engine) execCreateIndex(n *ast.CreateIndex) (*Result, error) {
 		return nil, fmt.Errorf("sql: CREATE INDEX requiere exactamente una columna (recibidas %d)", len(n.Columns))
 	}
 	col := n.Columns[0].Name
-	if _, ok := tbl.ColumnIndex(col); !ok {
+	colPos, ok := tbl.ColumnIndex(col)
+	if !ok {
 		return nil, fmt.Errorf("sql: la columna %s no existe en %s", col, tbl.Name())
 	}
 	if _, exists := tbl.Index(n.Name); exists {
@@ -506,9 +509,34 @@ func (e *Engine) execCreateIndex(n *ast.CreateIndex) (*Result, error) {
 		return nil, fmt.Errorf("sql: el índice %s ya existe en %s", n.Name, tbl.Name())
 	}
 
-	idx, err := e.createIndex(tbl, n.Name, col, n.Unique)
-	if err != nil {
-		return nil, err
+	kind := strings.ToLower(strings.TrimSpace(n.Using))
+	// Una columna VECTOR sin USING usa IVF: un B+ sobre un vector no aporta
+	// nada y el usuario casi siempre quiere búsqueda por similitud.
+	if kind == "" && tbl.Schema.Types[colPos] == storage.TypeVector {
+		kind = "ivf"
+	}
+
+	var idx Index
+	switch kind {
+	case "ivf":
+		if n.Unique {
+			return nil, fmt.Errorf("sql: un índice IVF no puede ser UNIQUE")
+		}
+		cfg, err := parseIVFConfig(n)
+		if err != nil {
+			return nil, err
+		}
+		idx, err = e.createIVFIndex(tbl, n.Name, col, cfg)
+		if err != nil {
+			return nil, err
+		}
+	case "":
+		idx, err = e.createIndex(tbl, n.Name, col, n.Unique)
+		if err != nil {
+			return nil, err
+		}
+	default:
+		return nil, fmt.Errorf("sql: tipo de índice %q no soportado (use IVF)", n.Using)
 	}
 	if err := e.saveCatalog(); err != nil {
 		tbl.dropIndex(idx.Name())
@@ -636,6 +664,12 @@ func sqlType(col ast.ColumnExpr) (storage.Type, int, error) {
 	case pointTypeName:
 		// Se guarda como texto canónico "POINT(lat lon)" y lleva un R-Tree.
 		return storage.TypeString, pointMaxLen, nil
+	case "VECTOR", "VECTOR32", "EMBEDDING":
+		// VECTOR(K): K componentes float32. La dimensión va en MaxLen.
+		if col.Length <= 0 {
+			return storage.TypeVector, 0, fmt.Errorf("sql: %s necesita una dimensión, por ejemplo VECTOR(128)", name)
+		}
+		return storage.TypeVector, col.Length, nil
 	}
 	// VARCHAR(n) / VARBINARY(n): el tamaño viene en col.Length.
 	up := strings.ToUpper(strings.TrimSpace(name))

@@ -9,7 +9,7 @@ import (
 	"github.com/dbms-go/v2/dbms/lib/storage"
 )
 
-// IndexKind distingue los tres esquemas de indexación que expone el motor.
+// IndexKind distingue los esquemas de indexación que expone el motor.
 type IndexKind int
 
 const (
@@ -24,6 +24,8 @@ const (
 	HashIndexKind
 	// RTreeIndexKind: R-Tree sobre una columna POINT (consultas espaciales).
 	RTreeIndexKind
+	// IVFIndexKind: IVF-Flat sobre una columna VECTOR(K) (búsqueda k-NN).
+	IVFIndexKind
 )
 
 func (k IndexKind) String() string {
@@ -36,6 +38,8 @@ func (k IndexKind) String() string {
 		return "extendible-hash"
 	case RTreeIndexKind:
 		return "r-tree"
+	case IVFIndexKind:
+		return "ivf"
 	}
 	return "unknown"
 }
