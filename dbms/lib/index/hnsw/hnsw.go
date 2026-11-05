@@ -36,6 +36,7 @@ type HNSWIndex struct {
 	metric          Metric
 	dims            int
 	ef_construction int
+	ef_search       int
 }
 
 const defaultEfConstruction = 64
@@ -77,6 +78,7 @@ func Open(path string, metric Metric, efConstruction ...int) (*HNSWIndex, error)
 		metric:          metric,
 		dims:            g.Dims(),
 		ef_construction: ef,
+		ef_search:       ef,
 	}, nil
 }
 
@@ -104,8 +106,8 @@ func (idx *HNSWIndex) Delete(id uint64) bool {
 	return idx.graph.Delete(id)
 }
 
-// Search devuelve hasta k vecinos más cercanos al vector. (ef_search: parametro para controlar la calidad de la búsqueda, mayor es mejor pero más lento)
-func (idx *HNSWIndex) Search(vector []float32, k int, ef_search int) ([]Result, error) {
+// KNNSearch devuelve hasta k vecinos más cercanos al vector. (ef_search: parametro para controlar la calidad de la búsqueda, mayor es mejor pero más lento)
+func (idx *HNSWIndex) KNNSearch(vector []float32, k int, ef_search int) ([]Result, error) {
 	if ef_search < k {
 		ef_search = k
 	}
@@ -144,6 +146,13 @@ func (idx *HNSWIndex) Save() error {
 		return fmt.Errorf("hnsw: guardar %s: %w", idx.path, err)
 	}
 	return nil
+}
+
+// Path devuelve la ruta del archivo de índice.
+func (idx *HNSWIndex) Path() string {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.path
 }
 
 // Len devuelve el número de vectores indexados.

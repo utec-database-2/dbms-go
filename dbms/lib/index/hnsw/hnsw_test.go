@@ -28,7 +28,7 @@ func TestIndexPersistsAndSearches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := reopened.Search([]float32{0.1, 0.1}, 2, 2)
+	got, err := reopened.KNNSearch([]float32{0.1, 0.1}, 2, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestIndexConfiguresEfConstruction(t *testing.T) {
 	if err := idx.Add(1, []float32{0, 0}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := idx.Search([]float32{0, 0}, 1, 1); err != nil {
+	if _, err := idx.KNNSearch([]float32{0, 0}, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	if err := idx.Add(2, []float32{1, 1}); err != nil {
@@ -88,7 +88,7 @@ func TestIndexEfConstructionValues(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if got, err := idx.Search([]float32{0.1, 0.1}, 2, efConstruction); err != nil {
+			if got, err := idx.KNNSearch([]float32{0.1, 0.1}, 2, efConstruction); err != nil {
 				t.Fatal(err)
 			} else if len(got) != 2 {
 				t.Fatalf("se esperaban 2 vecinos, se obtuvieron %d", len(got))
@@ -121,7 +121,7 @@ func TestProductDotSimilarityRanksHigherProductsFirst(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := idx.Search([]float32{1, 0}, 3, 3)
+	got, err := idx.KNNSearch([]float32{1, 0}, 3, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestProductDotPersistsAndSearches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reabrir producto punto: %v", err)
 	}
-	got, err := reopened.Search([]float32{1, 0}, 2, 2)
+	got, err := reopened.KNNSearch([]float32{1, 0}, 2, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
