@@ -12,41 +12,34 @@ import (
 	"fmt"
 	"math"
 
+	metricpkg "github.com/dbms-go/v2/dbms/lib/vector/metric"
+
 	"gocv.io/x/gocv"
 )
 
 type ImageCVFeature struct {
 	K        int
 	Codebook [][]float64
-	Distance func([]float64, []float64) float64
+	// Metric se usa para asignar descriptores SIFT al codebook. Euclidiana
+	// por defecto. Con Cosine se normalizan descriptores y centroides antes
+	// del k-means. DotProduct no es válido para entrenar el codebook.
+	Metric metricpkg.Metric
 }
 
-var _ Extractor = (*ImageCVFeature)(nil)
+var (
+	_ Extractor      = (*ImageCVFeature)(nil)
+	_ MetricProvider = (*ImageCVFeature)(nil)
+)
 
 // Dim devuelve la dimensión del histograma BoW (K).
 func (e *ImageCVFeature) Dim() int {
 	return e.K
 }
 
-// defaultDistance usa distancia euclidiana si no se ha configurado.
-func defaultDistance(a, b []float64) float64 {
-	var sum float64
-	for i := range a {
-		if i >= len(b) {
-			break
-		}
-		d := a[i] - b[i]
-		sum += d * d
-	}
-	return math.Sqrt(sum)
-}
-
-// getDistance devuelve la función de distancia a usar.
-func (e *ImageCVFeature) getDistance() func([]float64, []float64) float64 {
-	if e.Distance != nil {
-		return e.Distance
-	}
-	return defaultDistance
+// VectorMetric indica que los histogramas BoW se comparan con coseno, ya que
+// Quantizate los normaliza L2.
+func (e *ImageCVFeature) VectorMetric() metricpkg.Metric {
+	return metricpkg.Cosine
 }
 
 // Extract decodifica la imagen y devuelve los descriptores SIFT. El llamador
@@ -83,6 +76,9 @@ func (e *ImageCVFeature) Extract(bytes []byte) (gocv.Mat, error) {
 func (e *ImageCVFeature) QueryHist(query []byte) ([]float64, error) {
 	if e.K <= 0 {
 		return nil, fmt.Errorf("K inválido")
+	}
+	if err := metricpkg.Validate(e.Metric); err != nil {
+		return nil, err
 	}
 	if len(e.Codebook) == 0 {
 		return nil, fmt.Errorf("el Codebook no ha sido entrenado")
@@ -123,6 +119,12 @@ func (e *ImageCVFeature) Vector(img []byte) ([]float32, error) {
 func (e *ImageCVFeature) Train(dataset [][]byte) ([][]float64, error) {
 	if e.K <= 0 {
 		return nil, fmt.Errorf("K inválido")
+	}
+	if err := metricpkg.Validate(e.Metric); err != nil {
+		return nil, err
+	}
+	if e.Metric == metricpkg.DotProduct {
+		return nil, fmt.Errorf("dot product no es válido para entrenar el codebook")
 	}
 	if len(dataset) == 0 {
 		return nil, fmt.Errorf("dataset vacío")
@@ -180,6 +182,12 @@ func (im *ImageCVFeature) Partition(samples gocv.Mat) ([][]float64, float64, err
 	if im.K <= 0 {
 		return nil, 0, fmt.Errorf("K inválido")
 	}
+	if err := metricpkg.Validate(im.Metric); err != nil {
+		return nil, 0, err
+	}
+	if im.Metric == metricpkg.DotProduct {
+		return nil, 0, fmt.Errorf("dot product no es válido para entrenar el codebook")
+	}
 	if samples.Empty() || samples.Rows() < im.K {
 		return nil, 0, fmt.Errorf("insuficientes descriptores (%d) para K=%d clusters", samples.Rows(), im.K)
 	}
@@ -191,6 +199,15 @@ func (im *ImageCVFeature) Partition(samples gocv.Mat) ([][]float64, float64, err
 		defer converted.Close()
 		samples.ConvertTo(&converted, gocv.MatTypeCV32F)
 		input = converted
+	}
+
+	// OpenCV KMeans solo usa Euclidiana. Para coseno, normalizar los
+	// descriptores convierte la distancia coseno en Euclidiana monótona.
+	if im.Metric == metricpkg.Cosine {
+		normalized := input.Clone()
+		defer normalized.Close()
+		normalizeMatRows(&normalized)
+		input = normalized
 	}
 
 	bestLabels := gocv.NewMat()
@@ -221,15 +238,54 @@ func (im *ImageCVFeature) Partition(samples gocv.Mat) ([][]float64, float64, err
 		for j := 0; j < sz1; j++ {
 			f[j] = float64(centers.GetFloatAt(i, j))
 		}
+		if im.Metric == metricpkg.Cosine {
+			normalize64(f)
+		}
 		ff[i] = f
 	}
 
 	return ff, compactness, nil
 }
 
+func normalizeMatRows(mat *gocv.Mat) {
+	rows := mat.Rows()
+	cols := mat.Cols()
+	for i := 0; i < rows; i++ {
+		var norm float64
+		for j := 0; j < cols; j++ {
+			value := float64(mat.GetFloatAt(i, j))
+			norm += value * value
+		}
+		if norm == 0 {
+			continue
+		}
+		scale := float32(1 / math.Sqrt(norm))
+		for j := 0; j < cols; j++ {
+			mat.SetFloatAt(i, j, mat.GetFloatAt(i, j)*scale)
+		}
+	}
+}
+
+func normalize64(vec []float64) {
+	var norm float64
+	for _, value := range vec {
+		norm += value * value
+	}
+	if norm == 0 {
+		return
+	}
+	scale := 1 / math.Sqrt(norm)
+	for i := range vec {
+		vec[i] *= scale
+	}
+}
+
 func (e *ImageCVFeature) Quantizate(desc gocv.Mat) ([]float64, error) {
 	if desc.Empty() {
 		return nil, fmt.Errorf("matriz de descriptores vacía")
+	}
+	if err := metricpkg.Validate(e.Metric); err != nil {
+		return nil, err
 	}
 	if len(e.Codebook) == 0 {
 		return nil, fmt.Errorf("el Codebook no ha sido entrenado")
@@ -285,16 +341,16 @@ func (e *ImageCVFeature) Quantizate(desc gocv.Mat) ([]float64, error) {
 }
 
 func (im *ImageCVFeature) FindNearestIdx(descriptor []float64) int {
-	if len(im.Codebook) == 0 {
+	if len(im.Codebook) == 0 || !metricpkg.IsValid(im.Metric) {
 		return -1
 	}
 
-	distance := im.getDistance()
+	m := im.Metric
 	minDist := math.MaxFloat64
 	bestIdx := -1
 
 	for k, centroid := range im.Codebook {
-		dist := distance(centroid, descriptor)
+		dist := metricpkg.Distance(centroid, descriptor, m)
 		if dist < minDist {
 			minDist = dist
 			bestIdx = k
