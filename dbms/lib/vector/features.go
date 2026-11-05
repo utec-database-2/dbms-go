@@ -1,7 +1,7 @@
 package vector
 
 import (
-	"errors"
+	metricpkg "github.com/dbms-go/v2/dbms/lib/vector/metric"
 )
 
 // Extractor es la interfaz común para cualquier extractor de features.
@@ -9,6 +9,20 @@ import (
 type Extractor interface {
 	Dim() int
 	Vector(raw []byte) ([]float32, error)
+}
+
+// MetricProvider permite que un extractor declare la métrica recomendada para
+// los vectores que produce. Si no la implementa, se asume Euclidiana.
+type MetricProvider interface {
+	VectorMetric() metricpkg.Metric
+}
+
+// MetricOf devuelve la métrica recomendada por el extractor.
+func MetricOf(ext Extractor) metricpkg.Metric {
+	if provider, ok := ext.(MetricProvider); ok {
+		return provider.VectorMetric()
+	}
+	return metricpkg.Euclidean
 }
 
 // Float64ToFloat32 convierte un vector float64 a float32.
@@ -33,12 +47,4 @@ func Float32ToFloat64(vec []float32) []float64 {
 		out[i] = float64(v)
 	}
 	return out
-}
-
-type FeaturePipeline[T any] struct {
-	clusters int
-}
-
-func (e *FeaturePipeline[T]) Extract(bytes []byte) (*T, error) {
-	return nil, errors.New("Unsupported format")
 }
