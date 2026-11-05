@@ -217,8 +217,13 @@ type Having struct {
 	Expr ASTNode
 }
 
-// CreateIndex crea un índice sobre una tabla: CREATE [UNIQUE] INDEX nombre ON
-// tabla (columna).
+// CreateIndex crea un índice sobre una tabla:
+//
+//	CREATE [UNIQUE] INDEX nombre ON tabla [USING tipo] (columna[, ...])
+//	[WITH (opcion = valor, ...)]
+//
+// Using queda vacío para el índice por defecto. Options contiene las opciones
+// del índice (por ejemplo nlist, nprobe y metric para IVF).
 type CreateIndex struct {
 	BaseNode
 
@@ -227,6 +232,8 @@ type CreateIndex struct {
 	Columns     []NameExpr
 	Unique      bool
 	IfNotExists bool
+	Using       string
+	Options     map[string]ASTNode
 }
 
 type DropTable struct {

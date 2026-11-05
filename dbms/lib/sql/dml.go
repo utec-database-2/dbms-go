@@ -178,6 +178,21 @@ func coerceToColumn(v any, typ storage.Type) any {
 		case string:
 			return []byte(x)
 		}
+	case storage.TypeVector:
+		switch x := v.(type) {
+		case []float32:
+			return x
+		case []float64:
+			out := make([]float32, len(x))
+			for i, component := range x {
+				out[i] = float32(component)
+			}
+			return out
+		case string:
+			if vec, err := parseVectorString(x); err == nil {
+				return vec
+			}
+		}
 	}
 	return v
 }
@@ -332,6 +347,29 @@ func (e *Engine) execSelect(n *ast.Select) (*Result, error) {
 
 	// 0. ORDER BY distancia(...) LIMIT k: k-NN directo sobre el R-Tree.
 	if rows, steps, ok, err := e.planKNN(tbl, n); err != nil {
+		return nil, err
+	} else if ok {
+		if err := e.lockRowsShared(tbl, rows); err != nil {
+			return nil, err
+		}
+		groups := make([]rowGroup, 0, len(rows))
+		for _, r := range rows {
+			groups = append(groups, rowGroup{rows: []storage.Tuple{r}})
+		}
+		cols, projected, step, err := e.project(tbl, groups, n)
+		if err != nil {
+			return nil, err
+		}
+		return &Result{
+			Columns: cols,
+			Rows:    projected,
+			Message: fmt.Sprintf("%d fila(s)", len(projected)),
+			Plan:    append(steps, step),
+		}, nil
+	}
+
+	// 0b. ORDER BY vector_distance(...) LIMIT k: k-NN directo sobre el IVF.
+	if rows, steps, ok, err := e.planVectorKNN(tbl, n); err != nil {
 		return nil, err
 	} else if ok {
 		if err := e.lockRowsShared(tbl, rows); err != nil {

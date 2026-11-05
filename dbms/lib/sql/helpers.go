@@ -9,6 +9,7 @@ import (
 	"github.com/dbms-go/v2/dbms/lib/storage"
 	"github.com/dbms-go/v2/dbms/lib/storage/heap"
 	"github.com/dbms-go/v2/dbms/lib/storage/sequential"
+	metricpkg "github.com/dbms-go/v2/dbms/lib/vector/metric"
 )
 
 // dbDir devuelve el directorio donde viven los archivos de datos.
@@ -57,7 +58,7 @@ func joinErrors(errs []error) error {
 // createIndex construye un índice del tipo pedido sobre una columna y lo registra
 // en la tabla. El tipo se decide por el nombre, siguiendo la convención del
 // proyecto: pk_<tabla> es el B+ agrupado, hash_<col> el hash dinámico y cualquier
-// otro nombre un B+ no agrupado.
+// otro nombre un B+ no agrupado. Una columna VECTOR se indexa con IVF.
 func (e *Engine) createIndex(tbl *Table, name, col string, unique bool) (Index, error) {
 	var (
 		idx Index
@@ -67,6 +68,10 @@ func (e *Engine) createIndex(tbl *Table, name, col string, unique bool) (Index, 
 	pkCol, hasPK := tbl.ColumnIndex(col)
 	isPK := hasPK && hasPKCol && pkCol == onPK
 	switch {
+	case hasPK && tbl.Schema.Types[pkCol] == storage.TypeVector:
+		// Un índice declarado sobre VECTOR se resuelve con IVF: el B+ no sabe
+		// ordenar vectores de forma útil.
+		idx, err = newIVFIndex(name, col, tbl, ivfConfig{NProbe: defaultIVFNProbe, Metric: metricpkg.Euclidean})
 	case strings.HasPrefix(strings.ToLower(name), rtreePrefix):
 		idx, err = newRTreeIndex(name, col, tbl)
 	case tbl.Clustered && isPK:
@@ -85,6 +90,35 @@ func (e *Engine) createIndex(tbl *Table, name, col string, unique bool) (Index, 
 	}
 	tbl.addIndex(idx)
 	return idx, nil
+}
+
+// createIVFIndex crea el adaptador SQL del IVF y lo registra en la tabla.
+func (e *Engine) createIVFIndex(tbl *Table, name, col string, cfg ivfConfig) (Index, error) {
+	idx, err := newIVFIndex(name, col, tbl, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("sql: no se pudo crear el índice %s: %w", name, err)
+	}
+	tbl.addIndex(idx)
+	return idx, nil
+}
+
+// ivfConfigFromDisk recupera las opciones de un índice IVF persistido.
+func ivfConfigFromDisk(spec indexDisk) (ivfConfig, error) {
+	cfg := ivfConfig{NList: spec.NList, NProbe: spec.NProbe, Metric: metricpkg.Euclidean}
+	if spec.NProbe <= 0 {
+		cfg.NProbe = defaultIVFNProbe
+	}
+	if spec.Metric != "" {
+		m, err := parseVectorMetric(spec.Metric)
+		if err != nil {
+			return cfg, err
+		}
+		if m == metricpkg.DotProduct {
+			return cfg, fmt.Errorf("sql: el catálogo pide producto punto, que IVF no puede entrenar")
+		}
+		cfg.Metric = m
+	}
+	return cfg, nil
 }
 
 // openStorage abre (o crea) el almacenamiento físico de una tabla y reconstruye
@@ -123,8 +157,20 @@ func (e *Engine) openStorage(tbl *Table, schema storage.Table, clustered bool, i
 		tbl.heap = adapter
 	}
 
-	for _, idx := range indexes {
-		if _, err := e.createIndex(tbl, idx.Name, idx.Column, idx.Unique); err != nil {
+	for _, spec := range indexes {
+		if spec.Kind == IVFIndexKind.String() {
+			cfg, err := ivfConfigFromDisk(spec)
+			if err != nil {
+				return err
+			}
+			if _, err := e.createIVFIndex(tbl, spec.Name, spec.Column, cfg); err != nil {
+				return err
+			}
+			continue
+		}
+		// Si el catálogo es antiguo o no trae Kind, createIndex conserva la
+		// convención por nombre para B+, hash y R-Tree.
+		if _, err := e.createIndex(tbl, spec.Name, spec.Column, spec.Unique); err != nil {
 			return err
 		}
 	}
@@ -227,6 +273,10 @@ func (t *Table) FileInfo() TableFileInfo {
 	for i, ty := range t.Schema.Types {
 		if _, ok := t.rtreeOn(i); ok {
 			info.Types = append(info.Types, "point")
+			continue
+		}
+		if ty == storage.TypeVector {
+			info.Types = append(info.Types, fmt.Sprintf("vector(%d)", t.Schema.MaxLen[i]))
 			continue
 		}
 		info.Types = append(info.Types, ty.String())
