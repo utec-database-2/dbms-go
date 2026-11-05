@@ -132,6 +132,7 @@ func (idx *HNSWIndex) KNNSearch(vector []float32, k int, ef_search int) ([]Resul
 			Similarity: similarity(idx.metric, distance),
 		})
 	}
+	idx.ef_search = ef_search
 	sort.SliceStable(results, func(i, j int) bool {
 		return results[i].Distance < results[j].Distance
 	})
@@ -194,25 +195,37 @@ func (idx *HNSWIndex) EfConstruction() int {
 }
 
 // DotProductSimilarity calcula el producto punto entre dos vectores.
-func DotProductSimilarity(a, b []float32) float32 {
+func DotProductSimilarity(a, b []float32) (float32, error) {
 	if len(a) != len(b) {
-		panic("DotProductSimilarity: vectores de diferente longitud")
+		return 0, fmt.Errorf("DotProductSimilarity: vectores de diferente longitud")
 	}
 	var dot float32
 	for i := range a {
 		dot += a[i] * b[i]
 	}
-	return dot
+	return dot, nil
 }
 
 // ProductDotDistance adapta el producto punto a la convención de HNSW:
 // valores menores representan vectores más cercanos.
-func ProductDotDistance(a, b []float32) float32 {
-	return 1 - DotProductSimilarity(a, b)
+func ProductDotDistance(a, b []float32) (float32, error) {
+	sim, err := DotProductSimilarity(a, b)
+	if err != nil {
+		return 0, err
+	}
+	return 1 - sim, nil
+}
+
+func ProductDotDistanceFunc(a, b []float32) float32 {
+	distance, err := ProductDotDistance(a, b)
+	if err != nil {
+		panic(err)
+	}
+	return distance
 }
 
 func init() {
-	graph.RegisterDistanceFunc("product_dot", ProductDotDistance)
+	graph.RegisterDistanceFunc("product_dot", ProductDotDistanceFunc)
 }
 
 // distance devuelve la función de distancia correspondiente a la métrica.
@@ -221,7 +234,7 @@ func distance(metric Metric) graph.DistanceFunc {
 		return graph.EuclideanDistance
 	}
 	if metric == ProductDot {
-		return ProductDotDistance
+		return ProductDotDistanceFunc
 	}
 	return graph.CosineDistance
 }
