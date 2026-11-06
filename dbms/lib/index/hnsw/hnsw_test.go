@@ -59,6 +59,41 @@ func TestIndexRejectsDimensionChanges(t *testing.T) {
 	}
 }
 
+func TestIndexClosePersistsAndRejectsOperations(t *testing.T) {
+	path := t.TempDir() + "/vectors.graph"
+	idx, err := Open(path, Euclidean, 64, 64, 16, 0.5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add(1, []float32{0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Close(); err != nil {
+		t.Fatalf("Close no es idempotente: %v", err)
+	}
+	if err := idx.Add(2, []float32{1, 1}); err == nil {
+		t.Fatal("se esperaba rechazar Add después de Close")
+	}
+	if idx.Delete(1) {
+		t.Fatal("se esperaba rechazar Delete después de Close")
+	}
+	if _, err := idx.KNNSearch([]float32{0, 0}, 1, 1); err == nil {
+		t.Fatal("se esperaba rechazar KNNSearch después de Close")
+	}
+
+	reopened, err := Open(path, Euclidean, 64, 64, 16, 0.5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeIndex(t, reopened)
+	if reopened.Len() != 1 {
+		t.Fatalf("Close no persistió los datos: got %d, want 1", reopened.Len())
+	}
+}
+
 func TestIndexConfiguresEfConstruction(t *testing.T) {
 	idx, err := Open(t.TempDir()+"/vectors.graph", Euclidean, 64, 64, 16, 0.5)
 	if err != nil {
