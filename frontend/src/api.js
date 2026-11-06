@@ -88,4 +88,54 @@ export async function getRTree() {
   return parseJSON(res);
 }
 
+async function postJSON(path, data) {
+  const res = await fetch(`${BASE_URL}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  return parseJSON(res);
+}
+
+// Parte 3 — búsqueda textual sobre el índice invertido SPIMI.
+// { table, column, query, methods: ["tfidf","bm25"], k, k1?, b? }
+export function searchText(data) {
+  return postJSON("/api/text/search", data);
+}
+
+// Parte 4 — búsqueda por similitud.
+// { table, column, row? | vector?, methods: ["hnsw","ivf","seq"], metric, k, nlist?, nprobe?, efSearch? }
+export function searchVector(data) {
+  return postJSON("/api/vector/search", data);
+}
+
+// Filas que tienen vector (sin el vector), para la galería de la colección.
+export function listVectorItems(table, column) {
+  return postJSON("/api/vector/items", { table, column });
+}
+
+// Extrae el vector de una imagen subida (histograma de color en el servidor).
+export async function extractVector(file, dim) {
+  const form = new FormData();
+  form.append("file", file);
+  if (dim) form.append("dim", String(dim));
+  const res = await fetch(`${BASE_URL}/api/vector/extract`, { method: "POST", body: form });
+  return parseJSON(res);
+}
+
+// Archivos servidos por el servidor desde su directorio --media.
+export function mediaUrl(path) {
+  if (!path) return "";
+  if (/^(https?:|data:|blob:)/i.test(path)) return path;
+  return `${BASE_URL}/api/media/${String(path).replace(/^\.?\/+/, "").split("/").map(encodeURIComponent).join("/")}`;
+}
+
+// Descarga un archivo del directorio --media (p. ej. los CSV de la demo).
+export async function fetchMediaFile(path, name) {
+  const res = await fetch(mediaUrl(path));
+  if (!res.ok) throw new Error(`No se pudo descargar ${path} (HTTP ${res.status})`);
+  const blob = await res.blob();
+  return new File([blob], name || path.split("/").pop(), { type: blob.type || "text/csv" });
+}
+
 export const API_URL = BASE_URL;

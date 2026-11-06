@@ -29,6 +29,15 @@ function describeResult(r) {
 
 const rowKey = (row) => row.map(String).join("\u241f");
 
+// Los vectores (VECTOR(n)) llegan como arreglos: se muestran resumidos.
+function formatCell(value) {
+  if (Array.isArray(value)) {
+    const head = value.slice(0, 4).map((v) => (typeof v === "number" ? Number(v.toFixed(3)) : v));
+    return `[${head.join(", ")}${value.length > 4 ? `, \u2026 (${value.length})` : ""}]`;
+  }
+  return String(value);
+}
+
 function ResultPanel({
   result,
   error,
@@ -260,7 +269,7 @@ function ResultPanel({
                     title={hasPoint ? "Clic para resaltar la fila · 📍 para verla en el mapa" : "Clic para resaltar la fila"}
                   >
                     {row.map((value, columnIndex) => (
-                      <td key={columnIndex}>
+                      <td key={columnIndex} title={Array.isArray(value) ? `vector de ${value.length} dimensiones` : undefined}>
                         {parsePoint(value) && (
                           <button
                             className="cell-pin"
@@ -282,7 +291,7 @@ function ResultPanel({
                             <MapPin size={12} />
                           </button>
                         )}
-                        {String(value)}
+                        {formatCell(value)}
                       </td>
                     ))}
                     <td className="row-action-cell">

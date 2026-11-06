@@ -25,6 +25,7 @@ import (
 func main() {
 	addr := flag.String("addr", ":8080", "dirección donde escuchar")
 	dir := flag.String("dir", "./data", "directorio donde persisten los .heap de cada tabla")
+	media := flag.String("media", "./datos_demo", "directorio de imágenes/audio que se sirve en /api/media/")
 	flag.Parse()
 
 	engine, err := sql.Open("minigestor", sql.Options{Dir: *dir})
@@ -32,7 +33,12 @@ func main() {
 		log.Fatalf("no se pudo abrir la base de datos en %q: %v", *dir, err)
 	}
 	defer engine.Close()
-	db := &database{eng: engine}
+	search, err := newSearchCache()
+	if err != nil {
+		log.Fatalf("no se pudo preparar el directorio de índices de búsqueda: %v", err)
+	}
+	defer search.close()
+	db := &database{eng: engine, search: search}
 
 	//------------------------------------------
 	// SPATIAL
@@ -48,13 +54,23 @@ func main() {
 	mux.HandleFunc("POST /api/spatial/polygon", db.locked(handleSpatialPolygon(spatialStore)))
 	mux.HandleFunc("GET /api/spatial/rtree", db.locked(handleSpatialRTree(spatialStore)))
 
+	// Parte 3 (texto) y Parte 4 (multimedia): ver search.go.
+	mux.HandleFunc("POST /api/text/search", handleTextSearch(db))
+	mux.HandleFunc("POST /api/vector/search", handleVectorSearch(db))
+	mux.HandleFunc("POST /api/vector/items", handleVectorItems(db))
+	mux.HandleFunc("POST /api/vector/extract", handleVectorExtract())
+	// Archivos multimedia (imágenes, audio) referenciados por las tablas con
+	// rutas relativas a --media.
+	mux.Handle("GET /api/media/", http.StripPrefix("/api/media/", http.FileServer(http.Dir(*media))))
+
 	log.Printf("MinigestorBD escuchando en %s (datos en %s)", *addr, *dir)
 	log.Fatal(http.ListenAndServe(*addr, withCORS(mux)))
 }
 
 // database envuelve el sql.Engine para el servidor HTTP.
 type database struct {
-	eng *sql.Engine
+	eng    *sql.Engine
+	search *searchCache
 }
 
 // locked deja pasar las peticiones (los endpoints espaciales no requieren
@@ -279,6 +295,10 @@ func handleQuery(db *database, spatialStore *spatial.Store) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, out)
 
+		// Los índices de búsqueda (SPIMI, IVF, HNSW) de las tablas que el
+		// script modificó se reconstruyen en la próxima búsqueda.
+		db.search.invalidateTouched(db.eng, req.SQL)
+
 		// Si el script pudo cambiar el contenido visible de la tabla
 		// espacial (escrituras sobre ella o COMMIT/ROLLBACK que confirman
 		// cambios pendientes), reconstruimos el R-Tree.
@@ -316,6 +336,9 @@ func handleImportCSV(db *database, spatialStore *spatial.Store) http.HandlerFunc
 		defer s.Close()
 
 		inserted, skipped, errs := importRowsWithSession(s, info, file)
+		if inserted > 0 {
+			db.search.invalidate(tableName)
+		}
 		if strings.EqualFold(tableName, "ubicaciones") && inserted > 0 {
 			_ = spatialStore.Refresh()
 		}
@@ -416,7 +439,23 @@ func rowToSQLTuple(info *TableInfo, record []string) (string, error) {
 	for i, col := range info.Columns {
 		raw := strings.TrimSpace(record[i])
 		// Los tipos son los del storage del engine (storage.Type.String()).
-		switch strings.ToLower(col.Type) {
+		typ := strings.ToLower(col.Type)
+		if strings.HasPrefix(typ, "vector") {
+			// Acepta "[1, 2, 3]", "1 2 3" o "1;2;3" y lo pasa como VECTOR(...).
+			body := strings.Trim(strings.NewReplacer(`"`, "", `'`, "").Replace(raw), "[]() ")
+			parts := strings.FieldsFunc(body, func(r rune) bool { return r == ',' || r == ' ' || r == ';' || r == '\t' })
+			if len(parts) == 0 {
+				return "", fmt.Errorf("columna %q: vector vacío", col.Name)
+			}
+			for _, p := range parts {
+				if _, err := strconv.ParseFloat(p, 64); err != nil {
+					return "", fmt.Errorf("columna %q: componente %q no es numérica", col.Name, p)
+				}
+			}
+			vals[i] = "VECTOR(" + strings.Join(parts, ", ") + ")"
+			continue
+		}
+		switch typ {
 		case "int32", "int64":
 			if _, err := strconv.ParseInt(raw, 10, 64); err != nil {
 				return "", fmt.Errorf("columna %q: %q no es un entero", col.Name, raw)
