@@ -1,0 +1,5 @@
+dataset_size,index,metric,build_ms,query_avg_ms,recall_at_10,memory_mb,index_size_mb
+9987,IVF-Flat,euclidean,1336.748500,0.111213,0.926263,3.249695,0
+9987,HNSW,euclidean,1408.352000,0.050547,0.089899,16.703568,7.573397
+9987,IVF-Flat,cosine,3571.513500,0.171865,0.925253,3.303131,0
+9987,HNSW,cosine,1007.948500,0.060660,0.074747,16.637192,7.561478
