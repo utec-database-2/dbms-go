@@ -232,6 +232,26 @@ func (idx *HNSWIndex) Close() error {
 	return nil
 }
 
+// Reopen vuelve a cargar desde disco una instancia previamente cerrada.
+func (idx *HNSWIndex) Reopen() error {
+	if idx == nil {
+		return fmt.Errorf("hnsw: índice nulo")
+	}
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	if !idx.closed {
+		return fmt.Errorf("hnsw: el índice debe estar cerrado antes de reabrirlo")
+	}
+	reopened, err := Open(idx.path, idx.metric, idx.ef_construction, idx.ef_search, idx.M, idx.Ml)
+	if err != nil {
+		return err
+	}
+	idx.graph = reopened.graph
+	idx.dims = reopened.dims
+	idx.closed = false
+	return nil
+}
+
 // Path devuelve la ruta del archivo de índice.
 func (idx *HNSWIndex) Path() string {
 	idx.mu.RLock()
