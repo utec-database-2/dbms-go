@@ -19,6 +19,12 @@ Minigestor de base de datos multimodal escrito en Go para el curso de Base de Da
 - **Extensión SQL**: tipo `POINT` con índice R-Tree automático y funciones `distancia`, `dentro`, `POINT` y `POLYGON`.
 - **Panel de mapa** (Leaflet) con consultas por radio, k-NN y polígono.
 
+**Parte 3: búsqueda vectorial**
+
+- **Tipo `VECTOR(K)`**: K componentes `float32` almacenadas en la propia tabla (Opción B), sin depender de OpenCV para consultar.
+- **Índice IVF-Flat**: cuantización por `nlist` listas y búsqueda aproximada con `nprobe`; métricas Euclidiana y coseno. El código de entrenamiento es Go puro y determinista.
+- **SQL**: `CREATE INDEX ... USING IVF (...) WITH (...)` y `ORDER BY vector_distance(col, VECTOR(...)[, métrica]) LIMIT k`, resuelto sin ordenar toda la tabla.
+
 **Comparaciones experimentales**: `dbms bench` mide Heap vs Secuencial, B+ agrupado vs no agrupado vs Hash, y Secuencial vs R-Tree vs GiST de PostgreSQL, y genera CSV y gráficas.
 
 ## Arquitectura
@@ -57,7 +63,7 @@ Cada sesión toma bloqueos de tabla (S para leer, X para escribir) antes de ejec
 | Carpeta | Contenido |
 | - | - |
 | `dbms/lib/storage` | Tipos, codificación de tuplas, Heap File (`heap/`) y Archivo Secuencial Paginado (`sequential/`). |
-| `dbms/lib/index` | B+ agrupado y no agrupado (`bplus/`), Hash Extensible (`extendible/`), R-Tree (`rtree/`). |
+| `dbms/lib/index` | B+ agrupado y no agrupado (`bplus/`), Hash Extensible (`extendible/`), R-Tree (`rtree/`) e IVF-Flat (`ivf/`). |
 | `dbms/lib/external` | External sorting (`sorting/`) y external hashing (`hashing/`). |
 | `dbms/lib/dsl` | Lexer, tokens, parser y AST del SQL. |
 | `dbms/lib/sql` | Motor: catálogo, planificador, ejecución, JOIN, SQL espacial, sesiones y transacciones. |
@@ -150,9 +156,21 @@ SELECT * FROM tiendas ORDER BY distancia(ubicacion, POINT(-12.0464, -77.0428)) L
 SELECT * FROM tiendas WHERE dentro(ubicacion,
   POLYGON(POINT(-12.04, -77.05), POINT(-12.04, -77.03), POINT(-12.06, -77.03))) = true;
 SELECT * FROM tiendas WHERE distancia(ubicacion, POINT(-12.04, -77.04), 'euclidean') < 0.05;
+
+-- Vectorial (Opción B: el vector vive en la tabla)
+CREATE TABLE imagen (id INT PRIMARY KEY, embedding VECTOR(3));
+INSERT INTO imagen VALUES (1, VECTOR(1, 0, 0)), (2, VECTOR(0, 1, 0));
+CREATE INDEX ivf_imagen ON imagen USING IVF (embedding)
+  WITH (nlist = 2, nprobe = 2, metric = 'cosine');
+SELECT id FROM imagen
+  ORDER BY vector_distance(embedding, VECTOR(1, 0, 0), 'cosine') LIMIT 5;
 ```
 
-El tipo de índice se elige por nombre: `pk_<tabla>` es el índice de la clave primaria, `hash_*` crea un hash extensible, `rtree_*` un R-Tree y cualquier otro nombre un B+ no agrupado. Toda tabla necesita `PRIMARY KEY`.
+El tipo de índice se elige por nombre: `pk_<tabla>` es el índice de la clave primaria, `hash_*` crea un hash extensible, `rtree_*` un R-Tree y cualquier otro nombre un B+ no agrupado. Una columna `VECTOR(K)` usa IVF por defecto; para elegir el tipo explícitamente se usa `CREATE INDEX ... USING IVF`. Toda tabla necesita `PRIMARY KEY`.
+
+Los índices secundarios se eliminan con `DROP INDEX [IF EXISTS] nombre [ON tabla]`. El motor mantiene un registro global de índice a tabla para resolver el dueño; si dos tablas usan el mismo nombre de índice, `ON tabla` deshace la ambigüedad. El índice primario (o el B+ agrupado) no se puede eliminar por separado: para eso hay que usar `DROP TABLE`.
+
+`nlist` es el número de listas del IVF (si se omite se calcula a partir de los vectores disponibles al construir o al primer entrenamiento), `nprobe` cuántas listas se recorren en cada consulta y `metric` puede ser `euclidean` o `cosine`. El atajo de índice se aplica a `ORDER BY vector_distance(...) LIMIT k` sin `WHERE`; con filtros se usa el ordenamiento normal. El índice se reconstruye de forma determinista desde la columna al reabrir el catálogo; no se persisten centroides ni hace falta OpenCV para el kNN.
 
 ## API del servidor
 

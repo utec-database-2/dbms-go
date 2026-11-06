@@ -236,15 +236,20 @@ type CreateIndex struct {
 	Options     map[string]ASTNode
 }
 
-type DropTable struct {
-	BaseNode
-	Name     string
-	IfExists bool
-}
+type DropType uint8
 
-type DropIndex struct {
+const (
+	DropTable DropType = iota
+	DropIndex
+)
+
+type DropExpr struct {
 	BaseNode
-	Name     string
+	Type DropType
+	Name string
+	// Table solo se usa en DROP INDEX nombre ON tabla para deshacer la
+	// ambigüedad cuando dos tablas tienen un índice con el mismo nombre.
+	Table    string
 	IfExists bool
 }
 

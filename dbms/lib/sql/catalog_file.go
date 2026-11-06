@@ -56,8 +56,8 @@ func (e *Engine) catalogPath() string {
 }
 
 // saveCatalog escribe el catálogo completo. Se llama después de cada cambio de
-// esquema (CREATE TABLE, CREATE INDEX, DROP TABLE) para que un reinicio no
-// pierda la estructura aunque el proceso se corte.
+// esquema (CREATE TABLE, CREATE INDEX, DROP TABLE, DROP INDEX) para que un
+// reinicio no pierda la estructura aunque el proceso se corte.
 func (e *Engine) saveCatalog() error {
 	e.catalogMu.Lock()
 	defer e.catalogMu.Unlock()
@@ -146,6 +146,7 @@ func (e *Engine) loadCatalog() error {
 			_ = tbl.Close()
 			return err
 		}
+		e.registerTableIndexes(tbl)
 	}
 	return nil
 }

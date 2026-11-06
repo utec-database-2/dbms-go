@@ -98,7 +98,14 @@ func (parser *ParserContext) parseOne() {
 	case token.TokenUpdate:
 		parser.parent = parser.ParseUpdate()
 	case token.TokenDrop:
-		parser.parent = parser.ParseDrop()
+		res := parser.ParseDrop()
+		if res == nil {
+			if parser.err == nil {
+				parser.err = fmt.Errorf("unexpected token %q", parser.CurrStr())
+			}
+			return
+		}
+		parser.parent = res
 	case token.TokenTruncate:
 		parser.parent = parser.ParseTruncate()
 	case token.TokenAlter:
@@ -1010,14 +1017,37 @@ func (parser *ParserContext) parseLimit() *ast.Limit {
 	}
 	return l
 }
-func (parser *ParserContext) ParseDrop() *ast.DropTable {
+func (parser *ParserContext) ParseDrop() *ast.DropExpr {
 	parser.Match(token.TokenDrop)
-	parser.Match(token.TokenTable)
-	node := &ast.DropTable{}
-	node.IfExists = parser.Match(token.TokenIf) && parser.Match(token.TokenExists)
+	node := &ast.DropExpr{}
+	if parser.Match(token.TokenTable) {
+		node.Type = ast.DropTable
+	} else if parser.Match(token.TokenIndex) {
+		node.Type = ast.DropIndex
+	} else {
+		return nil
+	}
+
+	if parser.Match(token.TokenIf) {
+		if !parser.Match(token.TokenExists) {
+			parser.err = fmt.Errorf("expected EXISTS after IF, got %q", parser.CurrStr())
+			return nil
+		}
+		node.IfExists = true
+	}
 	name, err := parser.Required(token.TokenId)
-	if err == nil {
-		node.Name = name.GetContent()
+	if err != nil {
+		parser.err = err
+		return nil
+	}
+	node.Name = name.GetContent()
+	if node.Type == ast.DropIndex && parser.Match(token.TokenOn) {
+		table, err := parser.Required(token.TokenId)
+		if err != nil {
+			parser.err = err
+			return nil
+		}
+		node.Table = table.GetContent()
 	}
 	return node
 }

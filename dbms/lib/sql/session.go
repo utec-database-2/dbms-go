@@ -106,10 +106,26 @@ func tableLockKey(table string) string {
 	return "table#" + strings.ToLower(table)
 }
 
+// indexRegistryLock serializa las DDL que consultan o modifican el registro
+// global de índices. Sin él, entre resolver la tabla dueña de un índice y
+// ejecutar DROP INDEX otra sentencia podría cambiar el registro.
+const indexRegistryLock = "#index-registry"
+
 // statementLocks deduce de la sentencia qué tablas toca y en qué modo. Se
 // ordenan por nombre para que dos sentencias que tocan las mismas tablas las
-// pidan en el mismo orden.
+// pidan en el mismo orden. Esta variante no puede resolver el dueño de un
+// DROP INDEX; el motor usa el método statementLocks de Engine.
 func statementLocks(root ast.ASTNode) []tableLock {
+	return statementLocksFor(root, nil)
+}
+
+// statementLocks usa el registro global para bloquear también la tabla dueña
+// de un índice que se va a eliminar.
+func (e *Engine) statementLocks(root ast.ASTNode) []tableLock {
+	return statementLocksFor(root, e.indexOwners)
+}
+
+func statementLocksFor(root ast.ASTNode, indexOwners func(string) []*Table) []tableLock {
 	modes := map[string]lockmanager.LockMode{}
 	add := func(name string, mode lockmanager.LockMode) {
 		if name == "" {
@@ -135,10 +151,25 @@ func statementLocks(root ast.ASTNode) []tableLock {
 		add(n.From.Name, lockmanager.Exclusive)
 	case *ast.CreateTable:
 		add(n.Name, lockmanager.Exclusive)
+		add(indexRegistryLock, lockmanager.Exclusive)
 	case *ast.CreateIndex:
 		add(n.Table, lockmanager.Exclusive)
-	case *ast.DropTable:
-		add(n.Name, lockmanager.Exclusive)
+		add(indexRegistryLock, lockmanager.Exclusive)
+	case *ast.DropExpr:
+		switch n.Type {
+		case ast.DropTable:
+			add(n.Name, lockmanager.Exclusive)
+			add(indexRegistryLock, lockmanager.Exclusive)
+		case ast.DropIndex:
+			add(indexRegistryLock, lockmanager.Exclusive)
+			if n.Table != "" {
+				add(n.Table, lockmanager.Exclusive)
+			} else if indexOwners != nil {
+				for _, tbl := range indexOwners(n.Name) {
+					add(tbl.Name(), lockmanager.Exclusive)
+				}
+			}
+		}
 	case *ast.TruncateTable:
 		add(n.Name, lockmanager.Exclusive)
 	case *ast.AlterTable:
@@ -152,13 +183,18 @@ func statementLocks(root ast.ASTNode) []tableLock {
 	return out
 }
 
+func unqualifiedDropIndex(root ast.ASTNode) bool {
+	d, ok := root.(*ast.DropExpr)
+	return ok && d.Type == ast.DropIndex && d.Table == ""
+}
+
 func (s *Session) doExec(root ast.ASTNode) (*Result, error) {
 	e := s.e
 	inicio := time.Now()
 	// 1. Bloqueos de tabla. Dentro de una transacción los toma la propia
 	// transacción (y los conserva hasta el final); en autocommit, una
 	// transacción de bloqueo que solo dura esta sentencia.
-	locks := statementLocks(root)
+	locks := e.statementLocks(root)
 	holder := s.activeLk
 	var auto *lockmanager.Transaction
 	if holder == nil && len(locks) > 0 {
@@ -172,10 +208,29 @@ func (s *Session) doExec(root ast.ASTNode) (*Result, error) {
 		}
 	}
 	start := time.Now()
-	for _, l := range locks {
+	expandedDropIndex := false
+	for i := 0; i < len(locks); i++ {
+		l := locks[i]
 		if err := holder.Lock(tableLockKey(l.table), l.mode); err != nil {
 			releaseAuto()
 			return nil, s.lockFailed(l, err)
+		}
+		// En DROP INDEX sin ON, el dueño se resolvió antes de pedir el bloqueo
+		// del registro. Una vez adquirido ese bloqueo, el registro ya no puede
+		// cambiar: se recalculan los dueños y se añaden los bloqueos que falten.
+		if !expandedDropIndex && l.table == indexRegistryLock && unqualifiedDropIndex(root) {
+			expandedDropIndex = true
+			seen := make(map[string]bool, len(locks))
+			for _, held := range locks {
+				seen[held.table] = true
+			}
+			for _, extra := range e.statementLocks(root) {
+				if !seen[extra.table] {
+					locks = append(locks, extra)
+					seen[extra.table] = true
+				}
+			}
+			sort.Slice(locks, func(i, j int) bool { return locks[i].table < locks[j].table })
 		}
 	}
 	waited := time.Since(start)
@@ -193,19 +248,26 @@ func (s *Session) doExec(root ast.ASTNode) (*Result, error) {
 	}
 
 	if res != nil && len(locks) > 0 {
-		parts := make([]string, len(locks))
-		for i, l := range locks {
-			parts[i] = fmt.Sprintf("%s(%s)", l.table, l.mode)
+		parts := make([]string, 0, len(locks))
+		for _, l := range locks {
+			// El bloqueo del registro de índices es interno: no se muestra como
+			// si fuera una tabla del usuario.
+			if l.table == indexRegistryLock {
+				continue
+			}
+			parts = append(parts, fmt.Sprintf("%s(%s)", l.table, l.mode))
 		}
-		scope := "hasta el fin de la sentencia (autocommit)"
-		if s.active != nil {
-			scope = fmt.Sprintf("hasta el COMMIT/ROLLBACK de la transacción %d (2PL estricto)", s.active.ID)
+		if len(parts) > 0 {
+			scope := "hasta el fin de la sentencia (autocommit)"
+			if s.active != nil {
+				scope = fmt.Sprintf("hasta el COMMIT/ROLLBACK de la transacción %d (2PL estricto)", s.active.ID)
+			}
+			detail := fmt.Sprintf("bloqueos de tabla %s %s", strings.Join(parts, ", "), scope)
+			if waited >= time.Millisecond {
+				detail += fmt.Sprintf("; esperó %s a otra transacción", waited.Round(time.Millisecond))
+			}
+			res.Plan = append([]Step{{Kind: StepLock, Detail: detail}}, res.Plan...)
 		}
-		detail := fmt.Sprintf("bloqueos de tabla %s %s", strings.Join(parts, ", "), scope)
-		if waited >= time.Millisecond {
-			detail += fmt.Sprintf("; esperó %s a otra transacción", waited.Round(time.Millisecond))
-		}
-		res.Plan = append([]Step{{Kind: StepLock, Detail: detail}}, res.Plan...)
 	}
 	return res, err
 }

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -112,6 +113,13 @@ type Engine struct {
 	// sentencias DDL simultáneas no se pisen el archivo temporal.
 	catalogMu sync.Mutex
 
+	// indexMu protege indexTables. El registro es global porque DROP INDEX
+	// recibe solo el nombre del índice; a partir de él se resuelve la tabla
+	// dueña. Los nombres de índice no son únicos entre tablas, así que cada
+	// nombre puede apuntar a varias tablas y DROP INDEX rechaza la ambigüedad.
+	indexMu     sync.RWMutex
+	indexTables map[string][]*Table
+
 	// Control de concurrencia y de fallos.
 	txs     *transaction.Manager
 	lockTxs *lockmanager.TransactionManager
@@ -172,7 +180,12 @@ func New(dir string, opt Options) *Engine {
 	if opt.Newline == "" {
 		opt.Newline = "\n"
 	}
-	e := &Engine{cat: newCatalog(dir), opt: opt, sessions: make(map[*Session]struct{})}
+	e := &Engine{
+		cat:         newCatalog(dir),
+		opt:         opt,
+		sessions:    make(map[*Session]struct{}),
+		indexTables: make(map[string][]*Table),
+	}
 	e.def = e.NewSession()
 	// El directorio de datos se crea aquí: así CREATE TABLE funciona sobre una
 	// ruta que aún no existe. El error se reporta al abrir el motor con Open.
@@ -292,7 +305,7 @@ func (e *Engine) ScriptTouches(script, table string) (bool, error) {
 		case *ast.Commit, *ast.Rollback:
 			return true, nil
 		}
-		for _, l := range statementLocks(root) {
+		for _, l := range e.statementLocks(root) {
 			if l.mode == lockmanager.Exclusive && strings.EqualFold(l.table, table) {
 				return true, nil
 			}
@@ -366,11 +379,21 @@ func (e *Engine) execNode(root ast.ASTNode) (*Result, error) {
 			return nil, err
 		}
 		return e.execCreateIndex(node)
-	case *ast.DropTable:
-		if err := e.rejectDDLInTx("DROP TABLE"); err != nil {
-			return nil, err
+	case *ast.DropExpr:
+		switch node.Type {
+		case ast.DropTable:
+			if err := e.rejectDDLInTx("DROP TABLE"); err != nil {
+				return nil, err
+			}
+			return e.execDropTable(node)
+		case ast.DropIndex:
+			if err := e.rejectDDLInTx("DROP INDEX"); err != nil {
+				return nil, err
+			}
+			return e.execDropIndex(node)
+		default:
+			return nil, fmt.Errorf("sql: tipo de DROP no soportado")
 		}
-		return e.execDropTable(node)
 	case *ast.TruncateTable:
 		if err := e.rejectDDLInTx("TRUNCATE"); err != nil {
 			return nil, err
@@ -454,9 +477,11 @@ func (e *Engine) execCreateTable(n *ast.CreateTable) (*Result, error) {
 		_ = tbl.Close()
 		return nil, err
 	}
+	e.registerTableIndexes(tbl)
 	if err := e.saveCatalog(); err != nil {
 		// El esquema no queda registrado: se deshace la creación para no dejar
 		// una tabla en disco que al reiniciar sería invisible.
+		e.unregisterTableIndexes(tbl)
 		e.cat.drop(n.Name)
 		_ = tbl.Close()
 		_ = dropFiles(e.dbDir(), n.Name)
@@ -538,7 +563,9 @@ func (e *Engine) execCreateIndex(n *ast.CreateIndex) (*Result, error) {
 	default:
 		return nil, fmt.Errorf("sql: tipo de índice %q no soportado (use IVF)", n.Using)
 	}
+	e.registerIndex(tbl, idx.Name())
 	if err := e.saveCatalog(); err != nil {
+		e.unregisterIndex(tbl, idx.Name())
 		tbl.dropIndex(idx.Name())
 		return nil, err
 	}
@@ -552,7 +579,142 @@ func (e *Engine) execCreateIndex(n *ast.CreateIndex) (*Result, error) {
 	}, nil
 }
 
-func (e *Engine) execDropTable(n *ast.DropTable) (*Result, error) {
+// execDropIndex elimina un índice por su nombre. Como los índices viven en una
+// tabla, primero se resuelve el dueño con el registro global indexTables.
+func (e *Engine) execDropIndex(n *ast.DropExpr) (*Result, error) {
+	var tbl *Table
+	if n.Table != "" {
+		// ON tabla resuelve directamente el dueño y sirve para deshacer la
+		// ambigüedad de nombres repetidos.
+		var err error
+		tbl, err = e.requireTable(n.Table)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		owners := e.indexOwners(n.Name)
+		switch len(owners) {
+		case 0:
+			if n.IfExists {
+				return &Result{Message: fmt.Sprintf("el índice %s no existe", n.Name)}, nil
+			}
+			return nil, fmt.Errorf("sql: el índice %s no existe", n.Name)
+		case 1:
+			tbl = owners[0]
+		default:
+			names := make([]string, 0, len(owners))
+			for _, t := range owners {
+				names = append(names, t.Name())
+			}
+			sort.Strings(names)
+			return nil, fmt.Errorf("sql: el índice %s existe en varias tablas (%s); usa DROP INDEX %s ON <tabla>",
+				n.Name, strings.Join(names, ", "), n.Name)
+		}
+	}
+
+	idx, ok := tbl.Index(n.Name)
+	if !ok {
+		// El registro estaba desactualizado. Se corrige y se informa como si
+		// el índice no existiera.
+		e.unregisterIndex(tbl, n.Name)
+		if n.IfExists {
+			return &Result{Message: fmt.Sprintf("el índice %s no existe", n.Name)}, nil
+		}
+		return nil, fmt.Errorf("sql: el índice %s no existe", n.Name)
+	}
+
+	// El índice primario es parte del esquema de la tabla: sin él no se puede
+	// garantizar la unicidad ni localizar las filas. Para quitarlo hay que
+	// eliminar la tabla completa.
+	if idx.Kind() == ClusteredIndexKind ||
+		(idx.Unique() && tbl.IsPrimaryKeyIndexColumn(idx.Column())) {
+		return nil, fmt.Errorf("sql: no se puede eliminar el índice primario %s de %s; usa DROP TABLE %s",
+			idx.Name(), tbl.Name(), tbl.Name())
+	}
+
+	// Se retira primero de la tabla, se persiste el catálogo y solo entonces se
+	// olvida del registro. Si el catálogo no se puede escribir, el índice se
+	// restaura para que memoria y disco sigan coincidiendo.
+	tbl.dropIndex(idx.Name())
+	if err := e.saveCatalog(); err != nil {
+		tbl.addIndex(idx)
+		return nil, err
+	}
+	e.unregisterIndex(tbl, idx.Name())
+	if err := idx.Close(); err != nil {
+		return nil, fmt.Errorf("sql: el índice %s se eliminó del catálogo pero no se pudo cerrar: %w", idx.Name(), err)
+	}
+
+	return &Result{
+		Message: fmt.Sprintf("índice %s eliminado de %s", idx.Name(), tbl.Name()),
+		Plan: []Step{{
+			Kind:   StepDelete,
+			Detail: fmt.Sprintf("drop index %s on %s", idx.Name(), tbl.Name()),
+		}},
+	}, nil
+}
+
+// indexOwners devuelve las tablas que tienen un índice con ese nombre. Se usa
+// un slice porque el motor no impone unicidad global a los nombres de índice.
+func (e *Engine) indexOwners(name string) []*Table {
+	key := strings.ToLower(strings.TrimSpace(name))
+	e.indexMu.RLock()
+	defer e.indexMu.RUnlock()
+	return append([]*Table(nil), e.indexTables[key]...)
+}
+
+// registerIndex apunta el nombre del índice a su tabla. Es idempotente para la
+// misma tabla.
+func (e *Engine) registerIndex(tbl *Table, name string) {
+	key := strings.ToLower(strings.TrimSpace(name))
+	if key == "" {
+		return
+	}
+	e.indexMu.Lock()
+	defer e.indexMu.Unlock()
+	for _, owner := range e.indexTables[key] {
+		if owner == tbl {
+			return
+		}
+	}
+	e.indexTables[key] = append(e.indexTables[key], tbl)
+}
+
+// registerTableIndexes registra todos los índices de una tabla recién abierta.
+func (e *Engine) registerTableIndexes(tbl *Table) {
+	for _, name := range tbl.IndexNames() {
+		e.registerIndex(tbl, name)
+	}
+}
+
+// unregisterIndex quita una tabla del registro de un índice concreto.
+func (e *Engine) unregisterIndex(tbl *Table, name string) {
+	key := strings.ToLower(strings.TrimSpace(name))
+	e.indexMu.Lock()
+	defer e.indexMu.Unlock()
+	owners := e.indexTables[key]
+	for i, owner := range owners {
+		if owner != tbl {
+			continue
+		}
+		owners = append(owners[:i], owners[i+1:]...)
+		break
+	}
+	if len(owners) == 0 {
+		delete(e.indexTables, key)
+		return
+	}
+	e.indexTables[key] = owners
+}
+
+// unregisterTableIndexes quita todos los índices de una tabla del registro.
+func (e *Engine) unregisterTableIndexes(tbl *Table) {
+	for _, name := range tbl.IndexNames() {
+		e.unregisterIndex(tbl, name)
+	}
+}
+
+func (e *Engine) execDropTable(n *ast.DropExpr) (*Result, error) {
 	tbl, ok := e.cat.drop(n.Name)
 	if !ok {
 		if n.IfExists {
@@ -560,6 +722,7 @@ func (e *Engine) execDropTable(n *ast.DropTable) (*Result, error) {
 		}
 		return nil, fmt.Errorf("sql: la tabla %s no existe", n.Name)
 	}
+	e.unregisterTableIndexes(tbl)
 	if err := tbl.Close(); err != nil {
 		return nil, err
 	}

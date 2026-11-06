@@ -164,8 +164,8 @@ func (t *Table) IndexNames() []string {
 	return append([]string(nil), t.order...)
 }
 
-// dropIndex quita un índice del catálogo. Se usa para deshacer un CREATE INDEX
-// que no llegó a registrarse en el catálogo persistido.
+// dropIndex quita un índice del catálogo en memoria de esta tabla. No toca el
+// registro global ni el catálogo en disco: de eso se encarga Engine.
 func (t *Table) dropIndex(name string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
