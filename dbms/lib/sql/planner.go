@@ -171,8 +171,11 @@ func (t *Table) matchIndex(conds []ast.BinaryExpr) (Index, string, indexBounds, 
 			continue
 		}
 		if idx, ok := t.IndexOnColumn(col); ok {
-			// El IVF no resuelve igualdad: es un índice aproximado para k-NN.
+			// El IVF  y HNSW no resuelven igualdad: son índices aproximados para k-NN.
 			if _, isIVF := idx.(*ivfIndex); isIVF {
+				continue
+			}
+			if _, isHNSW := idx.(*hnswIndex); isHNSW {
 				continue
 			}
 			// El B+ agrupado con PK compuesta solo puede buscar la clave
@@ -513,6 +516,8 @@ func (t *Table) reindexAfterUpdate(idx Index, rid storage.RID, prev, next storag
 	case *rtreeIndex:
 		return v.UpdateRID(rid, prev, next)
 	case *ivfIndex:
+		return v.UpdateRID(rid, prev, next)
+	case *hnswIndex:
 		return v.UpdateRID(rid, prev, next)
 	}
 	return fmt.Errorf("sql: no se puede reindexar %s", idx.Name())

@@ -102,6 +102,16 @@ func (e *Engine) createIVFIndex(tbl *Table, name, col string, cfg ivfConfig) (In
 	return idx, nil
 }
 
+func (e *Engine) createHNSWIndex(tbl *Table, name, col string, cfg hnswConfig) (Index, error) {
+	path := hnswIndexPath(e.dbDir(), tbl.Name(), name)
+	idx, err := newHNSWIndex(name, col, tbl, path, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("sql: no se pudo crear el índice HNSW %s: %w", name, err)
+	}
+	tbl.addIndex(idx)
+	return idx, nil
+}
+
 // ivfConfigFromDisk recupera las opciones de un índice IVF persistido.
 func ivfConfigFromDisk(spec indexDisk) (ivfConfig, error) {
 	cfg := ivfConfig{NList: spec.NList, NProbe: spec.NProbe, Metric: metricpkg.Euclidean}
@@ -164,6 +174,24 @@ func (e *Engine) openStorage(tbl *Table, schema storage.Table, clustered bool, i
 				return err
 			}
 			if _, err := e.createIVFIndex(tbl, spec.Name, spec.Column, cfg); err != nil {
+				return err
+			}
+			continue
+		}
+		if spec.Kind == HNSWIndexKind.String() {
+			cfg := defaultHNSWConfig()
+			cfg.EfConstruction = spec.EfConstruction
+			cfg.EfSearch = spec.EfSearch
+			cfg.M = spec.M
+			cfg.Ml = spec.Ml
+			if spec.Metric != "" {
+				metric, err := parseVectorMetric(spec.Metric)
+				if err != nil {
+					return err
+				}
+				cfg.Metric = metric
+			}
+			if _, err := e.createHNSWIndex(tbl, spec.Name, spec.Column, cfg); err != nil {
 				return err
 			}
 			continue

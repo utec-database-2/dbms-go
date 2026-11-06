@@ -555,13 +555,28 @@ func (e *Engine) execCreateIndex(n *ast.CreateIndex) (*Result, error) {
 		if err != nil {
 			return nil, err
 		}
+	case "hnsw":
+		if n.Unique {
+			return nil, fmt.Errorf("sql: un índice HNSW no puede ser UNIQUE")
+		}
+		if tbl.Schema.Types[colPos] != storage.TypeVector {
+			return nil, fmt.Errorf("sql: un índice HNSW solo puede crearse sobre columnas VECTOR")
+		}
+		cfg, err := parseHNSWConfig(n)
+		if err != nil {
+			return nil, err
+		}
+		idx, err = e.createHNSWIndex(tbl, n.Name, col, cfg)
+		if err != nil {
+			return nil, err
+		}
 	case "":
 		idx, err = e.createIndex(tbl, n.Name, col, n.Unique)
 		if err != nil {
 			return nil, err
 		}
 	default:
-		return nil, fmt.Errorf("sql: tipo de índice %q no soportado (use IVF)", n.Using)
+		return nil, fmt.Errorf("sql: tipo de índice %q no soportado (use IVF o HNSW)", n.Using)
 	}
 	e.registerIndex(tbl, idx.Name())
 	if err := e.saveCatalog(); err != nil {

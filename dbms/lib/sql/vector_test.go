@@ -100,6 +100,47 @@ func TestIVFVectorKNN(t *testing.T) {
 	}
 }
 
+func TestHNSWVectorKNN(t *testing.T) {
+	dir := t.TempDir()
+	e, err := Open("app", Options{Dir: dir})
+	if err != nil {
+		t.Fatalf("apertura: %v", err)
+	}
+	run(t, e, "CREATE TABLE embeddings (id INT PRIMARY KEY, v VECTOR(3))")
+	run(t, e, "INSERT INTO embeddings VALUES (1, VECTOR(1, 0, 0)), (2, VECTOR(2, 0, 0)), (3, VECTOR(3, 0, 0)), (4, VECTOR(4, 0, 0))")
+
+	res := run(t, e, "CREATE INDEX idx_h ON embeddings USING HNSW (v) WITH (ef_construction=64, ef_search=32, m=16, ml=0.5, metric='euclidean')")
+	if !strings.Contains(res.Message, "hnsw") {
+		t.Fatalf("CREATE INDEX no creó HNSW: %s", res.Message)
+	}
+
+	res = run(t, e, "SELECT id FROM embeddings ORDER BY vector_distance(v, VECTOR(0, 0, 0)) LIMIT 2")
+	if got := ids(res); !equalStrings(got, []string{"1", "2"}) {
+		t.Fatalf("kNN HNSW inicial: %v", got)
+	}
+	if !strings.Contains(planText(res), "HNSW") {
+		t.Fatalf("el kNN no usó HNSW:\n%s", planText(res))
+	}
+
+	run(t, e, "UPDATE embeddings SET v = VECTOR(100, 0, 0) WHERE id = 2")
+	run(t, e, "DELETE FROM embeddings WHERE id = 3")
+	res = run(t, e, "SELECT id FROM embeddings ORDER BY vector_distance(v, VECTOR(0, 0, 0)) LIMIT 2")
+	if got := ids(res); !equalStrings(got, []string{"1", "4"}) {
+		t.Fatalf("kNN HNSW tras DML: %v", got)
+	}
+
+	e.Close()
+	e, err = Open("app", Options{Dir: dir})
+	if err != nil {
+		t.Fatalf("reapertura: %v", err)
+	}
+	defer e.Close()
+	res = run(t, e, "SELECT id FROM embeddings ORDER BY vector_distance(v, VECTOR(0, 0, 0)) LIMIT 2")
+	if got := ids(res); !equalStrings(got, []string{"1", "4"}) {
+		t.Fatalf("kNN HNSW tras reapertura: %v", got)
+	}
+}
+
 func TestIVFCosineYErrorDeMetrica(t *testing.T) {
 	e := newTestEngine(t, Options{})
 	run(t, e, "CREATE TABLE docs_vec (id INT PRIMARY KEY, v VECTOR(2))")

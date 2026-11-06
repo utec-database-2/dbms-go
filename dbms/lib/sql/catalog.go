@@ -26,6 +26,8 @@ const (
 	RTreeIndexKind
 	// IVFIndexKind: IVF-Flat sobre una columna VECTOR(K) (búsqueda k-NN).
 	IVFIndexKind
+	// HNSWIndexKind: HNSW sobre una columna VECTOR(K) (búsqueda k-NN).
+	HNSWIndexKind
 )
 
 func (k IndexKind) String() string {
@@ -40,6 +42,8 @@ func (k IndexKind) String() string {
 		return "r-tree"
 	case IVFIndexKind:
 		return "ivf"
+	case HNSWIndexKind:
+		return "hnsw"
 	}
 	return "unknown"
 }
