@@ -171,6 +171,16 @@ func (t *Table) matchIndex(conds []ast.BinaryExpr) (Index, string, indexBounds, 
 			continue
 		}
 		if idx, ok := t.IndexOnColumn(col); ok {
+			// El IVF no resuelve igualdad: es un índice aproximado para k-NN.
+			if _, isIVF := idx.(*ivfIndex); isIVF {
+				continue
+			}
+			// El B+ agrupado con PK compuesta solo puede buscar la clave
+			// completa; una igualdad sobre su primera columna es un filtro
+			// parcial y se resuelve recorriendo la tabla.
+			if _, isClustered := idx.(*clusteredIndex); isClustered && len(t.Schema.KeyCols) > 1 {
+				continue
+			}
 			val, err := literalValue(t, lit)
 			if err != nil {
 				continue
@@ -501,6 +511,8 @@ func (t *Table) reindexAfterUpdate(idx Index, rid storage.RID, prev, next storag
 	case *clusteredIndex:
 		return v.UpdateRID(rid, prev, next)
 	case *rtreeIndex:
+		return v.UpdateRID(rid, prev, next)
+	case *ivfIndex:
 		return v.UpdateRID(rid, prev, next)
 	}
 	return fmt.Errorf("sql: no se puede reindexar %s", idx.Name())

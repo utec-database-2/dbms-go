@@ -3,6 +3,7 @@ package storage
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 )
 
 // TupleCodec serializa Tuple según el esquema de Table. Implementa Codec[Tuple].
@@ -11,6 +12,7 @@ import (
 //
 //	int32 -> 4 bytes | int64 -> 8 | bool -> 1
 //	string, bytes -> uint32 longitud + datos
+//	vector -> uint32 dimensión + dimensión × float32
 type TupleCodec struct {
 	Table Table
 }
@@ -56,6 +58,16 @@ func (c TupleCodec) Sizeof(t Tuple) (int, error) {
 				return 0, mismatch(i, ty, t[i])
 			}
 			size += 4 + len(b)
+		case TypeVector:
+			v, ok := t[i].([]float32)
+			if !ok {
+				return 0, mismatch(i, ty, t[i])
+			}
+			if len(v) != c.Table.MaxLen[i] {
+				return 0, fmt.Errorf("%w: columna %d espera un vector de %d dimensiones y recibió %d",
+					ErrSchemaMismatch, i, c.Table.MaxLen[i], len(v))
+			}
+			size += 4 + 4*len(v)
 		default:
 			return 0, fmt.Errorf("%w: columna %d (%s)", ErrUnsupportedType, i, ty)
 		}
@@ -102,6 +114,14 @@ func (c TupleCodec) Marshal(t Tuple, buf []byte) (int, error) {
 			binary.BigEndian.PutUint32(buf[off:], uint32(len(b)))
 			off += 4
 			off += copy(buf[off:], b)
+		case TypeVector:
+			v := t[i].([]float32)
+			binary.BigEndian.PutUint32(buf[off:], uint32(len(v)))
+			off += 4
+			for _, component := range v {
+				binary.BigEndian.PutUint32(buf[off:], math.Float32bits(component))
+				off += 4
+			}
 		}
 	}
 	return off, nil
@@ -151,6 +171,25 @@ func (c TupleCodec) Unmarshal(buf []byte) (Tuple, error) {
 				return nil, err
 			}
 			t[i] = append([]byte{}, b...)
+		case TypeVector:
+			lb, err := r.take(4)
+			if err != nil {
+				return nil, err
+			}
+			n := int(binary.BigEndian.Uint32(lb))
+			if n != c.Table.MaxLen[i] {
+				return nil, fmt.Errorf("%w: columna %d espera un vector de %d dimensiones y encontró %d",
+					ErrSchemaMismatch, i, c.Table.MaxLen[i], n)
+			}
+			b, err := r.take(4 * n)
+			if err != nil {
+				return nil, err
+			}
+			vec := make([]float32, n)
+			for j := range vec {
+				vec[j] = math.Float32frombits(binary.BigEndian.Uint32(b[j*4:]))
+			}
+			t[i] = vec
 		default:
 			return nil, fmt.Errorf("%w: columna %d (%s)", ErrUnsupportedType, i, ty)
 		}

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -10,18 +10,66 @@ import {
   Polygon,
   Polyline,
   Popup,
+  Rectangle,
+  Tooltip,
   useMap,
   useMapEvents,
 } from "react-leaflet";
-import { Map as MapIcon, Search, Trash2, Undo2 } from "lucide-react";
+import { Map as MapIcon, Network, Search, Trash2, Undo2, X } from "lucide-react";
 
 import {
+  getRTree,
   searchSpatialKNN,
   searchSpatialPolygon,
   searchSpatialRange,
 } from "../api";
+import { ExpandBackdrop, ExpandButton } from "./Expandable";
+import { useExpandable } from "./useExpandable";
 
 const DEFAULT_CENTER = [-12.0432, -77.0282];
+
+// Un tono por nivel del R-Tree: la raíz más oscura y las hojas más claras.
+const RTREE_COLORS = ["#4c1d95", "#6d28d9", "#8b5cf6", "#a78bfa"];
+const levelColor = (level, height) => {
+  const t = height > 1 ? level / (height - 1) : 0;
+  return RTREE_COLORS[Math.round(t * (RTREE_COLORS.length - 1))];
+};
+
+// Al activar el R-Tree, encuadra el mapa en el rectángulo de la raíz (una sola
+// vez por activación: las búsquedas siguientes no lo vuelven a mover).
+function RTreeFit({ data, request }) {
+  const map = useMap();
+  const fitted = useRef(0);
+
+  useEffect(() => {
+    const root = data?.nodes?.[0];
+    if (!root || request === fitted.current) return;
+    fitted.current = request;
+    map.fitBounds(
+      [
+        [root.minLat, root.minLon],
+        [root.maxLat, root.maxLon],
+      ],
+      { padding: [40, 40], maxZoom: 15 },
+    );
+  }, [map, data, request]);
+
+  return null;
+}
+
+// Lleva el mapa al punto elegido en la tabla de resultados.
+function FocusUpdater({ focus }) {
+  const map = useMap();
+  const key = focus ? `${focus.lat},${focus.lon}` : "";
+
+  useEffect(() => {
+    if (!key) return;
+    const [lat, lon] = key.split(",").map(Number);
+    map.flyTo([lat, lon], Math.max(map.getZoom(), 15), { duration: 0.8 });
+  }, [map, key]);
+
+  return null;
+}
 
 // Agrega un vértice al polígono en borrador con cada clic sobre el mapa.
 function PolygonDrawer({ active, onAdd }) {
@@ -80,7 +128,9 @@ function MapUpdater({ center, extentMeters, boundsKey, resetKey }) {
   return null;
 }
 
-function MapPanel() {
+// onClose: si viene, el panel vive en una ventana emergente y muestra una X
+// en vez del botón de ampliar.
+function MapPanel({ linked, onLink, onClose }) {
   const [latitude, setLatitude] = useState("-12.0432");
   const [longitude, setLongitude] = useState("-77.0282");
   const [radius, setRadius] = useState("5");
@@ -98,6 +148,33 @@ function MapPanel() {
   const [spatialResult, setSpatialResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [expanded, setExpanded] = useExpandable();
+
+  // Rectángulos (MBR) de los nodos del R-Tree, pedidos al servidor.
+  const [showTree, setShowTree] = useState(false);
+  const [treeData, setTreeData] = useState(null);
+  const [treeFitRequest, setTreeFitRequest] = useState(0);
+
+  useEffect(() => {
+    if (!showTree) return;
+    let active = true;
+    getRTree()
+      .then((data) => active && setTreeData(data))
+      .catch((err) => {
+        if (!active) return;
+        setError(err.message);
+        setShowTree(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [showTree, searchCount]);
+
+  // Punto elegido en la tabla de resultados (si la fila tenía un POINT).
+  const focus =
+    linked?.source === "table" && Number.isFinite(linked.lat) && Number.isFinite(linked.lon)
+      ? linked
+      : null;
 
   const handleMetricChange = (event) => {
     const value = event.target.value;
@@ -226,7 +303,9 @@ function MapPanel() {
     resultMetric === "haversine" ? resultExtent * 1000 : resultExtent * 111195;
 
   return (
-    <section className="map-panel">
+    <>
+    <ExpandBackdrop expanded={expanded} onClose={() => setExpanded(false)} />
+    <section className={expanded ? "map-panel panel-expanded" : "map-panel"}>
       <div className="map-panel-header">
         <div className="map-panel-title">
           <MapIcon size={19} />
@@ -241,8 +320,17 @@ function MapPanel() {
           </div>
         </div>
 
-        <div className="map-result-count">
-          {spatialResult ? `${results.length} resultado(s)` : "Sin consulta"}
+        <div className="panel-header-actions">
+          <div className="map-result-count">
+            {spatialResult ? `${results.length} resultado(s)` : "Sin consulta"}
+          </div>
+          {onClose ? (
+            <button className="expand-toggle" onClick={onClose} title="Cerrar (Esc)">
+              <X size={16} />
+            </button>
+          ) : (
+            <ExpandButton expanded={expanded} onToggle={setExpanded} />
+          )}
         </div>
       </div>
 
@@ -352,6 +440,19 @@ function MapPanel() {
         )}
 
         <button
+          className={showTree ? "spatial-secondary-button toggle active" : "spatial-secondary-button toggle"}
+          onClick={() => {
+            if (!showTree) setTreeFitRequest((n) => n + 1);
+            setShowTree(!showTree);
+          }}
+          title="Dibuja los rectángulos (MBR) de cada nodo del R-Tree"
+          aria-pressed={showTree}
+        >
+          <Network size={15} />
+          R-Tree
+        </button>
+
+        <button
           className="spatial-search-button"
           onClick={handleSearch}
           disabled={loading}
@@ -373,6 +474,7 @@ function MapPanel() {
         <MapContainer
           center={DEFAULT_CENTER}
           zoom={13}
+          zoomSnap={0.25}
           scrollWheelZoom={true}
           className="spatial-map"
         >
@@ -392,6 +494,47 @@ function MapPanel() {
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           />
+
+          {showTree && <RTreeFit data={treeData} request={treeFitRequest} />}
+
+          {/* R-Tree: un rectángulo por nodo, más grueso cuanto más arriba */}
+          {showTree &&
+            treeData?.nodes.map((node, i) => (
+              <Rectangle
+                key={`rt-${i}-${node.level}`}
+                bounds={[
+                  [node.minLat, node.minLon],
+                  [node.maxLat, node.maxLon],
+                ]}
+                pathOptions={{
+                  color: levelColor(node.level, treeData.height),
+                  weight: node.leaf ? 1.5 : 3 - Math.min(1.5, node.level * 0.5),
+                  dashArray: node.leaf ? "4 4" : null,
+                  fillColor: levelColor(node.level, treeData.height),
+                  fillOpacity: node.leaf ? 0.07 : 0.03,
+                  interactive: false,
+                }}
+              />
+            ))}
+
+          {/* Puntos guardados en cada hoja del R-Tree */}
+          {showTree &&
+            treeData?.nodes.flatMap((node, i) =>
+              (node.entries || []).map(([lat, lon], j) => (
+                <CircleMarker
+                  key={`rte-${i}-${j}`}
+                  center={[lat, lon]}
+                  radius={4}
+                  pathOptions={{
+                    color: "#ffffff",
+                    weight: 1.5,
+                    fillColor: "#6d28d9",
+                    fillOpacity: 1,
+                    interactive: false,
+                  }}
+                />
+              )),
+            )}
 
           {/* Centro de la consulta */}
           {!isPolygonResult && mode !== "polygon" && (
@@ -473,16 +616,29 @@ function MapPanel() {
             />
           )}
 
-          {/* Resultados */}
-          {results.map((point) => (
+          {/* Resultados (clic: resalta su fila en el Panel de Resultados) */}
+          {results.map((point) => {
+            const selected = linked?.source === "map" && linked.id === point.id;
+            return (
             <CircleMarker
-              key={point.id}
+              key={`${point.id}-${selected}`}
               center={[point.lat, point.lon]}
-              radius={7}
+              radius={selected ? 11 : 7}
               pathOptions={{
-                color: "#dc2626",
+                color: selected ? "#f59e0b" : "#dc2626",
+                weight: selected ? 4 : 3,
                 fillColor: "#dc2626",
-                fillOpacity: 0.8,
+                fillOpacity: 0.85,
+              }}
+              eventHandlers={{
+                click: () =>
+                  onLink?.({
+                    source: "map",
+                    id: point.id,
+                    name: point.name,
+                    lat: point.lat,
+                    lon: point.lon,
+                  }),
               }}
             >
               <Popup>
@@ -505,10 +661,53 @@ function MapPanel() {
                 )}
               </Popup>
             </CircleMarker>
-          ))}
+            );
+          })}
+
+          {/* Fila elegida en la tabla de resultados */}
+          <FocusUpdater focus={focus} />
+          {focus && (
+            <CircleMarker
+              key={`focus-${focus.lat}-${focus.lon}`}
+              center={[focus.lat, focus.lon]}
+              radius={12}
+              pathOptions={{
+                color: "#f59e0b",
+                weight: 4,
+                fillColor: "#f59e0b",
+                fillOpacity: 0.35,
+                className: "focus-marker",
+              }}
+            >
+              <Tooltip permanent direction="top" offset={[0, -12]} className="focus-tooltip">
+                {focus.name}
+              </Tooltip>
+            </CircleMarker>
+          )}
         </MapContainer>
+
+        {showTree && treeData && (
+          <div className="rtree-legend">
+            <strong>
+              <Network size={14} /> R-Tree
+            </strong>
+            <span>
+              {treeData.nodes.length} nodo(s) · altura {treeData.height} · hasta{" "}
+              {treeData.maxEntries} entradas por nodo · {treeData.points} punto(s)
+            </span>
+            <div className="rtree-levels">
+              {Array.from({ length: treeData.height }, (_, level) => (
+                <span key={level}>
+                  <i style={{ borderColor: levelColor(level, treeData.height) }} />
+                  {level === 0 ? "Raíz" : level === treeData.height - 1 ? "Hojas" : `Nivel ${level}`}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </section>
+    </>
   );
 }
 
