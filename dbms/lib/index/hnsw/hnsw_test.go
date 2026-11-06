@@ -164,6 +164,23 @@ func TestProductDotPersistsAndSearches(t *testing.T) {
 	}
 }
 
+func TestIndexRejectsPersistedMetricMismatch(t *testing.T) {
+	path := t.TempDir() + "/vectors.graph"
+	idx, err := Open(path, ProductDot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add(1, []float32{1, 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(path, Euclidean); err == nil {
+		t.Fatal("se esperaba rechazar una métrica distinta a la persistida")
+	}
+}
+
 func TestProductDotDistance(t *testing.T) {
 	a := []float32{1, 0}
 	b := []float32{0.5, 0}
