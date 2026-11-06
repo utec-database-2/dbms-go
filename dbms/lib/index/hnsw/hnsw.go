@@ -43,6 +43,7 @@ type HNSWIndex struct {
 	closed          bool
 }
 
+// IndexConfig contiene los parámetros de construcción y búsqueda del índice.
 type IndexConfig struct {
 	EfConstruction int
 	EfSearch       int
@@ -52,9 +53,22 @@ type IndexConfig struct {
 }
 
 const (
-	defaultM  = 16  // cantidad maxima de vecinos por nodo
-	defaultMl = 0.5 // proporción de vecinos por nodo en el nivel superior
+	defaultEfConstruction = 64  // valor fijo del indice
+	defaultEfSearch       = 64  // valor predeterminado para consultas
+	defaultM              = 16  // cantidad maxima de vecinos por nodo
+	defaultMl             = 0.5 // proporción de vecinos por nodo en el nivel superior
 )
+
+// DefaultIndexConfig devuelve una configuración válida con valores razonables.
+func DefaultIndexConfig(metric Metric) IndexConfig {
+	return IndexConfig{
+		Metric:         metric,
+		EfConstruction: defaultEfConstruction,
+		EfSearch:       defaultEfSearch,
+		M:              defaultM,
+		Ml:             defaultMl,
+	}
+}
 
 var (
 	errInvalidMetric = fmt.Errorf("hnsw: métrica no soportada")
@@ -64,6 +78,22 @@ var (
 
 // Open carga un indice existente o crea uno nuevo. La ruta debe ser un archivo, no un directorio.
 func Open(path string, metric Metric, efConstruction int, efSearch int, M int, Ml float64) (*HNSWIndex, error) {
+	return OpenWithConfig(path, IndexConfig{
+		Metric:         metric,
+		EfConstruction: efConstruction,
+		EfSearch:       efSearch,
+		M:              M,
+		Ml:             Ml,
+	})
+}
+
+// OpenWithConfig abre o crea un índice usando una configuración completa.
+func OpenWithConfig(path string, config IndexConfig) (*HNSWIndex, error) {
+	metric := config.Metric
+	efConstruction := config.EfConstruction
+	efSearch := config.EfSearch
+	M := config.M
+	Ml := config.Ml
 	if path == "" {
 		return nil, fmt.Errorf("hnsw: la ruta no puede estar vacía")
 	}
@@ -116,13 +146,6 @@ func Open(path string, metric Metric, efConstruction int, efSearch int, M int, M
 	g.M = M
 	g.Ml = Ml
 	g.EfSearch = efSearch
-
-	if M <= 0 {
-		M = defaultM
-	}
-	if Ml <= 0 {
-		Ml = defaultMl
-	}
 	return &HNSWIndex{
 		graph:           g,
 		path:            path,
@@ -242,7 +265,13 @@ func (idx *HNSWIndex) Reopen() error {
 	if !idx.closed {
 		return fmt.Errorf("hnsw: el índice debe estar cerrado antes de reabrirlo")
 	}
-	reopened, err := Open(idx.path, idx.metric, idx.ef_construction, idx.ef_search, idx.M, idx.Ml)
+	reopened, err := OpenWithConfig(idx.path, IndexConfig{
+		Metric:         idx.metric,
+		EfConstruction: idx.ef_construction,
+		EfSearch:       idx.ef_search,
+		M:              idx.M,
+		Ml:             idx.Ml,
+	})
 	if err != nil {
 		return err
 	}
