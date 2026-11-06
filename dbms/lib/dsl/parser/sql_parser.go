@@ -507,29 +507,36 @@ func (parser *ParserContext) ParseSelect() *ast.Select {
 	node := &ast.Select{}
 
 	node.Distinct = parser.Match(token.TokenDistinct)
-
-	if parser.Match(token.TokenAsterisk) {
-		node.All = true
-	} else {
-		for !parser.Check(token.TokenFrom) && !parser.Check(token.TokenWhere) && !parser.IsEnd() && parser.CurrToken().GetType() != token.TokenSemicolon {
-			if parser.Match(token.TokenComma) {
-				continue
-			}
-			v, err := parser.ParseValue()
-			if err != nil {
-				break
-			}
-			item := ast.ASTNode(v)
-			if parser.Match(token.TokenAs) {
-				if alias, err := parser.Required(token.TokenId); err == nil {
-					name := alias.GetContent()
-					item = &ast.AliasedExpr{Expr: v, Alias: &name}
-				}
-			}
-			node.Selected = append(node.Selected, item)
+	// Permite SELECT * y SELECT *, SCORE() AS relevancia.
+	for !parser.Check(token.TokenFrom) && !parser.Check(token.TokenWhere) && !parser.IsEnd() && !parser.Check(token.TokenSemicolon) {
+		if parser.Match(token.TokenComma) {
+			continue
+		}
+		if parser.Match(token.TokenAsterisk) {
+			node.All = true
 			if !parser.Match(token.TokenComma) {
 				break
 			}
+			continue
+		}
+		v, err := parser.ParseValue()
+		if err != nil {
+			parser.err = err
+			return node
+		}
+		item := ast.ASTNode(v)
+		if parser.Match(token.TokenAs) {
+			alias, err := parser.Required(token.TokenId)
+			if err != nil {
+				parser.err = err
+				return node
+			}
+			name := alias.GetContent()
+			item = &ast.AliasedExpr{Expr: v, Alias: &name}
+		}
+		node.Selected = append(node.Selected, item)
+		if !parser.Match(token.TokenComma) {
+			break
 		}
 	}
 
@@ -549,8 +556,30 @@ func (parser *ParserContext) ParseSelect() *ast.Select {
 		break
 	}
 
-	if parser.Check(token.TokenWhere) {
-		node.Closure = parser.ParseWhereExpr()
+	if parser.Match(token.TokenWhere) {
+		cond, err := parser.ParseCondition()
+		if err != nil {
+			parser.err = err
+			return node
+		}
+		node.Closure = cond // también conserva MATCH() sin operador de comparación
+	}
+	if parser.Match(token.TokenUsing) {
+		if node.Closure == nil {
+			parser.err = fmt.Errorf("USING BM25/TF_IDF requiere WHERE MATCH")
+			return node
+		}
+		m, err := parser.Required(token.TokenId)
+		if err != nil {
+			parser.err = fmt.Errorf("USING necesita BM25 o TF_IDF: %w", err)
+			return node
+		}
+		method := strings.ToLower(m.GetContent())
+		if method != "tf_idf" && method != "bm25" {
+			parser.err = fmt.Errorf("USING desconocido %q: se esperaba BM25 o TF_IDF", m.GetContent())
+			return node
+		}
+		node.TextRankMethod = method
 	}
 
 	if parser.Match(token.TokenGroup) {

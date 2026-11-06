@@ -264,6 +264,7 @@ func (e *Engine) Close() {
 		}
 	}
 	for _, t := range e.cat.all() {
+		t.clearRankedIndexes()
 		for _, idx := range t.indexes {
 			_ = idx.Close()
 		}

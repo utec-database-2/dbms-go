@@ -105,6 +105,7 @@ type Table struct {
 	// text cachea la estadística del corpus de cada columna para el scoring
 	// textual (MATCH ... USING implícito). Se descarta en cada escritura.
 	text map[int]*textCorpus
+	textRanks map[int]*sqlRankedIndex // cache SPIMI por columna; invalidado al escribir
 
 	mu sync.RWMutex
 }
