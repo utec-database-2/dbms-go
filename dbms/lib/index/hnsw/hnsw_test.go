@@ -1,6 +1,8 @@
 package hnsw
 
 import (
+	"math"
+	"math/rand"
 	"strconv"
 	"testing"
 )
@@ -195,5 +197,280 @@ func TestProductDotDistancePanicsOnDifferentLengths(t *testing.T) {
 	}
 	if got != 0 {
 		t.Fatalf("distancia inesperada: got %f, want 0", got)
+	}
+}
+
+func Test_1000Vectors128Dims_Euclidean(t *testing.T) {
+	idx, err := Open(t.TempDir()+"/vectors.graph", Euclidean)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rng := rand.New(rand.NewSource(42))
+	for i := 0; i < 1000; i++ {
+		vector := make([]float32, 128)
+		for j := 0; j < 128; j++ {
+			vector[j] = rng.Float32()
+		}
+		if err := idx.Add(uint64(i), vector); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if idx.Len() != 1000 {
+		t.Fatalf("longitud inesperada: got %d, want 1000", idx.Len())
+	}
+	if idx.Dims() != 128 {
+		t.Fatalf("dimensión inesperada: got %d, want 128", idx.Dims())
+	}
+	queries := make([][]float32, 3)
+	for i := range queries {
+		queries[i] = make([]float32, 128)
+		for j := range queries[i] {
+			queries[i][j] = rng.Float32()
+		}
+	}
+	neighborsPerQuery := make([][]Result, len(queries))
+	for queryIndex, query := range queries {
+		if len(query) != 128 {
+			t.Fatalf("dimensión de consulta inesperada: got %d, want 128", len(query))
+		}
+		got, err := idx.KNNSearch(query, 10, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 10 {
+			t.Fatalf("se esperaban 10 vecinos, se obtuvieron %d", len(got))
+		}
+		for i, neighbor := range got {
+			if neighbor.ID >= 1000 {
+				t.Fatalf("vecino inesperado en la posición %d: got %d, want >= 1000", i, neighbor.ID)
+			}
+		}
+		neighborsPerQuery[queryIndex] = append([]Result(nil), got...)
+	}
+
+	if err := idx.Save(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(idx.path, Euclidean)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopened.Len() != 1000 {
+		t.Fatalf("longitud inesperada después de reabrir: got %d, want 1000", reopened.Len())
+	}
+	if reopened.Dims() != 128 {
+		t.Fatalf("dimensión inesperada después de reabrir: got %d, want 128", reopened.Dims())
+	}
+	for queryIndex, query := range queries {
+		got, err := reopened.KNNSearch(query, 10, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 10 {
+			t.Fatalf("se esperaban 10 vecinos después de reabrir, se obtuvieron %d", len(got))
+		}
+		before := neighborsPerQuery[queryIndex]
+		if len(got) != len(before) {
+			t.Fatalf("cantidad de vecinos distinta después de reabrir en query %d: got %d, want %d", queryIndex, len(got), len(before))
+		}
+		for i, neighbor := range got {
+			if neighbor.ID >= 1000 {
+				t.Fatalf("vecino inesperado después de reabrir en la posición %d: got %d, want >= 1000", i, neighbor.ID)
+			}
+			want := before[i]
+			if neighbor.ID != want.ID {
+				t.Fatalf("vecino distinto después de reabrir en query %d posición %d: got %d, want %d", queryIndex, i, neighbor.ID, want.ID)
+			}
+			if math.Abs(float64(neighbor.Distance-want.Distance)) > 1e-6 {
+				t.Fatalf("distancia distinta después de reabrir en query %d posición %d: got %f, want %f", queryIndex, i, neighbor.Distance, want.Distance)
+			}
+			if math.Abs(float64(neighbor.Similarity-want.Similarity)) > 1e-6 {
+				t.Fatalf("similitud distinta después de reabrir en query %d posición %d: got %f, want %f", queryIndex, i, neighbor.Similarity, want.Similarity)
+			}
+		}
+	}
+
+}
+
+func Test_1000Vectors128Dims_ProductDot(t *testing.T) {
+	idx, err := Open(t.TempDir()+"/vectors.graph", ProductDot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rng := rand.New(rand.NewSource(42))
+	for i := 0; i < 1000; i++ {
+		vector := make([]float32, 128)
+		for j := 0; j < 128; j++ {
+			vector[j] = rng.Float32()
+		}
+		if err := idx.Add(uint64(i), vector); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if idx.Len() != 1000 {
+		t.Fatalf("longitud inesperada: got %d, want 1000", idx.Len())
+	}
+	if idx.Dims() != 128 {
+		t.Fatalf("dimensión inesperada: got %d, want 128", idx.Dims())
+	}
+	queries := make([][]float32, 3)
+	for i := range queries {
+		queries[i] = make([]float32, 128)
+		for j := range queries[i] {
+			queries[i][j] = rng.Float32()
+		}
+	}
+	neighborsPerQuery := make([][]Result, len(queries))
+	for queryIndex, query := range queries {
+		if len(query) != 128 {
+			t.Fatalf("dimensión de consulta inesperada: got %d, want 128", len(query))
+		}
+		got, err := idx.KNNSearch(query, 10, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 10 {
+			t.Fatalf("se esperaban 10 vecinos, se obtuvieron %d", len(got))
+		}
+		for i, neighbor := range got {
+			if neighbor.ID >= 1000 {
+				t.Fatalf("vecino inesperado en la posición %d: got %d, want >= 1000", i, neighbor.ID)
+			}
+		}
+		neighborsPerQuery[queryIndex] = append([]Result(nil), got...)
+	}
+
+	if err := idx.Save(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(idx.path, ProductDot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopened.Len() != 1000 {
+		t.Fatalf("longitud inesperada después de reabrir: got %d, want 1000", reopened.Len())
+	}
+	if reopened.Dims() != 128 {
+		t.Fatalf("dimensión inesperada después de reabrir: got %d, want 128", reopened.Dims())
+	}
+	for queryIndex, query := range queries {
+		got, err := reopened.KNNSearch(query, 10, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 10 {
+			t.Fatalf("se esperaban 10 vecinos después de reabrir, se obtuvieron %d", len(got))
+		}
+		before := neighborsPerQuery[queryIndex]
+		if len(got) != len(before) {
+			t.Fatalf("cantidad de vecinos distinta después de reabrir en query %d: got %d, want %d", queryIndex, len(got), len(before))
+		}
+		for i, neighbor := range got {
+			if neighbor.ID >= 1000 {
+				t.Fatalf("vecino inesperado después de reabrir en la posición %d: got %d, want >= 1000", i, neighbor.ID)
+			}
+			want := before[i]
+			if neighbor.ID != want.ID {
+				t.Fatalf("vecino distinto después de reabrir en query %d posición %d: got %d, want %d", queryIndex, i, neighbor.ID, want.ID)
+			}
+			if math.Abs(float64(neighbor.Distance-want.Distance)) > 1e-6 {
+				t.Fatalf("distancia distinta después de reabrir en query %d posición %d: got %f, want %f", queryIndex, i, neighbor.Distance, want.Distance)
+			}
+			if math.Abs(float64(neighbor.Similarity-want.Similarity)) > 1e-6 {
+				t.Fatalf("similitud distinta después de reabrir en query %d posición %d: got %f, want %f", queryIndex, i, neighbor.Similarity, want.Similarity)
+			}
+		}
+	}
+
+}
+
+func Test_1000Vectors128Dims_Cosine(t *testing.T) {
+	idx, err := Open(t.TempDir()+"/vectors.graph", Cosine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rng := rand.New(rand.NewSource(42))
+	for i := 0; i < 1000; i++ {
+		vector := make([]float32, 128)
+		for j := 0; j < 128; j++ {
+			vector[j] = rng.Float32()
+		}
+		if err := idx.Add(uint64(i), vector); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if idx.Len() != 1000 {
+		t.Fatalf("longitud inesperada: got %d, want 1000", idx.Len())
+	}
+	if idx.Dims() != 128 {
+		t.Fatalf("dimensión inesperada: got %d, want 128", idx.Dims())
+	}
+	queries := make([][]float32, 3)
+	for i := range queries {
+		queries[i] = make([]float32, 128)
+		for j := range queries[i] {
+			queries[i][j] = rng.Float32()
+		}
+	}
+	neighborsPerQuery := make([][]Result, len(queries))
+	for queryIndex, query := range queries {
+		if len(query) != 128 {
+			t.Fatalf("dimensión de consulta inesperada: got %d, want 128", len(query))
+		}
+		got, err := idx.KNNSearch(query, 10, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 10 {
+			t.Fatalf("se esperaban 10 vecinos, se obtuvieron %d", len(got))
+		}
+		for i, neighbor := range got {
+			if neighbor.ID >= 1000 {
+				t.Fatalf("vecino inesperado en la posición %d: got %d, want >= 1000", i, neighbor.ID)
+			}
+		}
+		neighborsPerQuery[queryIndex] = append([]Result(nil), got...)
+	}
+
+	if err := idx.Save(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(idx.path, Cosine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopened.Len() != 1000 {
+		t.Fatalf("longitud inesperada después de reabrir: got %d, want 1000", reopened.Len())
+	}
+	if reopened.Dims() != 128 {
+		t.Fatalf("dimensión inesperada después de reabrir: got %d, want 128", reopened.Dims())
+	}
+	for queryIndex, query := range queries {
+		got, err := reopened.KNNSearch(query, 10, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 10 {
+			t.Fatalf("se esperaban 10 vecinos después de reabrir, se obtuvieron %d", len(got))
+		}
+		before := neighborsPerQuery[queryIndex]
+		if len(got) != len(before) {
+			t.Fatalf("cantidad de vecinos distinta después de reabrir en query %d: got %d, want %d", queryIndex, len(got), len(before))
+		}
+		for i, neighbor := range got {
+			if neighbor.ID >= 1000 {
+				t.Fatalf("vecino inesperado después de reabrir en la posición %d: got %d, want >= 1000", i, neighbor.ID)
+			}
+			want := before[i]
+			if neighbor.ID != want.ID {
+				t.Fatalf("vecino distinto después de reabrir en query %d posición %d: got %d, want %d", queryIndex, i, neighbor.ID, want.ID)
+			}
+			if math.Abs(float64(neighbor.Distance-want.Distance)) > 1e-6 {
+				t.Fatalf("distancia distinta después de reabrir en query %d posición %d: got %f, want %f", queryIndex, i, neighbor.Distance, want.Distance)
+			}
+			if math.Abs(float64(neighbor.Similarity-want.Similarity)) > 1e-6 {
+				t.Fatalf("similitud distinta después de reabrir en query %d posición %d: got %f, want %f", queryIndex, i, neighbor.Similarity, want.Similarity)
+			}
+		}
 	}
 }
