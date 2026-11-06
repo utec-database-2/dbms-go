@@ -1,0 +1,4 @@
+﻿metodo,consultas_totales,consultas_evaluables,precision_at_10,recall_at_10
+tfidf,30,30,0.100000,0.565556
+bm25,30,30,0.130000,0.758333
+pg_gin,30,30,0.083333,0.405000

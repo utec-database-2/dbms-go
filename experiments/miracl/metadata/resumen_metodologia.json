@@ -1,0 +1,23 @@
+{
+  "dataset": "MIRACL es (subconjunto propio, no benchmark completo)",
+  "sizes": [
+    1000,
+    10000,
+    100000
+  ],
+  "top_k": 10,
+  "query_categories_per_size": {
+    "1": 5,
+    "3": 5,
+    "5+": 5
+  },
+  "queries_relevance": 30,
+  "corpus_100k_sha256": "42031e63124555f8ad028873a1a7ac1a154aa6b0ba269e9e2c131400275ad96d",
+  "precision_at_10_maximum_with_known_qrels": 0.176667,
+  "notes": [
+    "Precision@10 y Recall@10 usan solo juicios positivos conocidos; no implican exhaustividad.",
+    "Latencia Go SPIMI interna vs latencia PostgreSQL cliente-servidor, no equivalentes como coste del índice.",
+    "PostgreSQL usa tokenización/ranking nativos; TF-IDF y BM25 usan Go; misma colección y consultas.",
+    "Medianas por grupo son mediana de cinco medianas por consulta, no mediana conjunta de todas las muestras."
+  ]
+}
