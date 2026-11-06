@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"sync"
 
@@ -37,9 +38,15 @@ type HNSWIndex struct {
 	dims            int
 	ef_construction int
 	ef_search       int
+	M               int
+	Ml              int
 }
 
-const defaultEfConstruction = 64
+const (
+	defaultEfConstruction = 64
+	defaultM              = 16 // cantidad maxima de vecinos por nodo
+	defaultMl             = 8  // cantidad maxima de vecinos por nodo en el nivel superior
+)
 
 var (
 	errInvalidMetric = fmt.Errorf("hnsw: métrica no soportada")
@@ -50,6 +57,12 @@ var (
 func Open(path string, metric Metric, efConstruction ...int) (*HNSWIndex, error) {
 	if path == "" {
 		return nil, fmt.Errorf("hnsw: la ruta no puede estar vacía")
+	}
+	// Identifica si estamos abriendo o creando un nuevo índice.
+	_, err := os.Stat(path)
+	isNewIndex := os.IsNotExist(err)
+	if err != nil && !isNewIndex {
+		return nil, fmt.Errorf("hnsw: error al verificar la existencia del archivo: %w", err)
 	}
 	if metric != Cosine && metric != Euclidean && metric != ProductDot {
 		return nil, errInvalidMetric
@@ -69,6 +82,15 @@ func Open(path string, metric Metric, efConstruction ...int) (*HNSWIndex, error)
 	g, err := graph.LoadSavedGraph[uint64](path)
 	if err != nil {
 		return nil, fmt.Errorf("hnsw: abrir %s: %w", path, err)
+	}
+	if !isNewIndex {
+		persistedMetric, ok := metricFromDistance(g.Distance)
+		if !ok {
+			return nil, fmt.Errorf("hnsw: %s contiene una función de distancia desconocida", path)
+		}
+		if persistedMetric != metric {
+			return nil, fmt.Errorf("hnsw: %s usa la métrica %s, no %s", path, persistedMetric, metric)
+		}
 	}
 	g.Distance = distance(metric)
 	g.EfSearch = ef
@@ -226,6 +248,23 @@ func ProductDotDistanceFunc(a, b []float32) float32 {
 
 func init() {
 	graph.RegisterDistanceFunc("product_dot", ProductDotDistanceFunc)
+}
+
+func metricFromDistance(distance graph.DistanceFunc) (Metric, bool) {
+	if distance == nil {
+		return "", false
+	}
+	pointer := reflect.ValueOf(distance).Pointer()
+	switch {
+	case pointer == reflect.ValueOf(graph.EuclideanDistance).Pointer():
+		return Euclidean, true
+	case pointer == reflect.ValueOf(graph.CosineDistance).Pointer():
+		return Cosine, true
+	case pointer == reflect.ValueOf(ProductDotDistanceFunc).Pointer():
+		return ProductDot, true
+	default:
+		return "", false
+	}
 }
 
 // distance devuelve la función de distancia correspondiente a la métrica.
