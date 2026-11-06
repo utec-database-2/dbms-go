@@ -2,7 +2,10 @@ package mfcc
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 
 	external "github.com/zrma/go-mfcc/mfcc"
 )
@@ -44,6 +47,35 @@ func ReadWavMono(path string) ([]float64, int, error) {
 // MFCCFromWav extrae vectores MFCC directamente de un archivo WAV mono o estéreo.
 func MFCCFromWav(path string) ([][]float64, int, int, error) {
 	return external.ComputeMFCCFromWav(path)
+}
+
+// MFCCFromAudio extracts MFCC vectors from WAV files and converts other
+// formats through ffmpeg when necessary.
+func MFCCFromAudio(path string) ([][]float64, int, int, error) {
+	if strings.EqualFold(filepath.Ext(path), ".wav") {
+		return MFCCFromWav(path)
+	}
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		return nil, 0, 0, fmt.Errorf("ffmpeg is required for non-WAV audio: %w", err)
+	}
+
+	converted, err := os.CreateTemp("", "dbms-go-audio-*.wav")
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("create temporary WAV file: %w", err)
+	}
+	convertedPath := converted.Name()
+	if err := converted.Close(); err != nil {
+		os.Remove(convertedPath)
+		return nil, 0, 0, fmt.Errorf("close temporary WAV file: %w", err)
+	}
+	defer os.Remove(convertedPath)
+
+	command := exec.Command("ffmpeg", "-v", "error", "-y", "-i", path,
+		"-acodec", "pcm_s16le", convertedPath)
+	if output, err := command.CombinedOutput(); err != nil {
+		return nil, 0, 0, fmt.Errorf("convert audio to WAV: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return MFCCFromWav(convertedPath)
 }
 
 func flatten(frames [][]float64, err error) ([]float64, error) {
