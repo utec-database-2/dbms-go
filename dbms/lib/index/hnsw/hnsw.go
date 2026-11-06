@@ -171,6 +171,13 @@ func (idx *HNSWIndex) Save() error {
 	return nil
 }
 
+func (idx *HNSWIndex) Close() error {
+	if idx == nil {
+		return nil
+	}
+	return idx.Save()
+}
+
 // Path devuelve la ruta del archivo de índice.
 func (idx *HNSWIndex) Path() string {
 	idx.mu.RLock()

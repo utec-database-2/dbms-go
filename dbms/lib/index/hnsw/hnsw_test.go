@@ -7,6 +7,13 @@ import (
 	"testing"
 )
 
+func closeIndex(t *testing.T, idx *HNSWIndex) {
+	t.Helper()
+	if err := idx.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestIndexPersistsAndSearches(t *testing.T) {
 	path := t.TempDir() + "/vectors.graph"
 	idx, err := Open(path, Euclidean)
@@ -22,9 +29,7 @@ func TestIndexPersistsAndSearches(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := idx.Save(); err != nil {
-		t.Fatal(err)
-	}
+	closeIndex(t, idx)
 
 	reopened, err := Open(path, Euclidean)
 	if err != nil {
@@ -37,6 +42,7 @@ func TestIndexPersistsAndSearches(t *testing.T) {
 	if len(got) != 2 || got[0].ID != 1 || got[1].ID != 2 {
 		t.Fatalf("vecinos inesperados: %+v", got)
 	}
+	closeIndex(t, reopened)
 }
 
 func TestIndexRejectsDimensionChanges(t *testing.T) {
@@ -44,6 +50,7 @@ func TestIndexRejectsDimensionChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer closeIndex(t, idx)
 	if err := idx.Add(1, []float32{1, 0}); err != nil {
 		t.Fatal(err)
 	}
@@ -57,6 +64,7 @@ func TestIndexConfiguresEfConstruction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer closeIndex(t, idx)
 	if got := idx.EfConstruction(); got != 64 {
 		t.Fatalf("ef_constructor inesperado: got %d, want 64", got)
 	}
@@ -78,6 +86,7 @@ func TestIndexEfConstructionValues(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			defer closeIndex(t, idx)
 			if got := idx.EfConstruction(); got != efConstruction {
 				t.Fatalf("ef_constructor inesperado: got %d, want %d", got, efConstruction)
 			}
@@ -110,6 +119,7 @@ func TestProductDotSimilarityRanksHigherProductsFirst(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer closeIndex(t, idx)
 	for _, entry := range []struct {
 		id     uint64
 		vector []float32
@@ -147,9 +157,7 @@ func TestProductDotPersistsAndSearches(t *testing.T) {
 	if err := idx.Add(2, []float32{0.5, 0}); err != nil {
 		t.Fatal(err)
 	}
-	if err := idx.Save(); err != nil {
-		t.Fatalf("guardar producto punto: %v", err)
-	}
+	closeIndex(t, idx)
 
 	reopened, err := Open(path, ProductDot)
 	if err != nil {
@@ -162,6 +170,7 @@ func TestProductDotPersistsAndSearches(t *testing.T) {
 	if len(got) != 2 || got[0].ID != 1 || got[1].ID != 2 {
 		t.Fatalf("vecinos persistidos inesperados: %+v", got)
 	}
+	closeIndex(t, reopened)
 }
 
 func TestIndexRejectsPersistedMetricMismatch(t *testing.T) {
@@ -173,9 +182,7 @@ func TestIndexRejectsPersistedMetricMismatch(t *testing.T) {
 	if err := idx.Add(1, []float32{1, 0}); err != nil {
 		t.Fatal(err)
 	}
-	if err := idx.Save(); err != nil {
-		t.Fatal(err)
-	}
+	closeIndex(t, idx)
 	if _, err := Open(path, Euclidean); err == nil {
 		t.Fatal("se esperaba rechazar una métrica distinta a la persistida")
 	}
@@ -222,6 +229,7 @@ func Test_1000Vectors128Dims_Euclidean(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer closeIndex(t, idx)
 	rng := rand.New(rand.NewSource(42))
 	for i := 0; i < 1000; i++ {
 		vector := make([]float32, 128)
@@ -265,9 +273,7 @@ func Test_1000Vectors128Dims_Euclidean(t *testing.T) {
 		neighborsPerQuery[queryIndex] = append([]Result(nil), got...)
 	}
 
-	if err := idx.Save(); err != nil {
-		t.Fatal(err)
-	}
+	closeIndex(t, idx)
 	reopened, err := Open(idx.path, Euclidean)
 	if err != nil {
 		t.Fatal(err)
@@ -314,6 +320,7 @@ func Test_1000Vectors128Dims_ProductDot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer closeIndex(t, idx)
 	rng := rand.New(rand.NewSource(42))
 	for i := 0; i < 1000; i++ {
 		vector := make([]float32, 128)
@@ -357,9 +364,7 @@ func Test_1000Vectors128Dims_ProductDot(t *testing.T) {
 		neighborsPerQuery[queryIndex] = append([]Result(nil), got...)
 	}
 
-	if err := idx.Save(); err != nil {
-		t.Fatal(err)
-	}
+	closeIndex(t, idx)
 	reopened, err := Open(idx.path, ProductDot)
 	if err != nil {
 		t.Fatal(err)
@@ -406,6 +411,7 @@ func Test_1000Vectors128Dims_Cosine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer closeIndex(t, idx)
 	rng := rand.New(rand.NewSource(42))
 	for i := 0; i < 1000; i++ {
 		vector := make([]float32, 128)
@@ -449,9 +455,7 @@ func Test_1000Vectors128Dims_Cosine(t *testing.T) {
 		neighborsPerQuery[queryIndex] = append([]Result(nil), got...)
 	}
 
-	if err := idx.Save(); err != nil {
-		t.Fatal(err)
-	}
+	closeIndex(t, idx)
 	reopened, err := Open(idx.path, Cosine)
 	if err != nil {
 		t.Fatal(err)
