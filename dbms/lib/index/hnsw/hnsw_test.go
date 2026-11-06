@@ -94,6 +94,33 @@ func TestIndexClosePersistsAndRejectsOperations(t *testing.T) {
 	}
 }
 
+func TestIndexReopenReactivatesClosedInstance(t *testing.T) {
+	path := t.TempDir() + "/vectors.graph"
+	idx, err := Open(path, Euclidean, 64, 64, 16, 0.5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add(1, []float32{0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Reopen(); err == nil {
+		t.Fatal("se esperaba rechazar Reopen sobre un índice activo")
+	}
+	if err := idx.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Reopen(); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add(2, []float32{1, 1}); err != nil {
+		t.Fatal(err)
+	}
+	if idx.Len() != 2 {
+		t.Fatalf("cantidad inesperada después de Reopen: got %d, want 2", idx.Len())
+	}
+	closeIndex(t, idx)
+}
+
 func TestIndexConfiguresEfConstruction(t *testing.T) {
 	idx, err := Open(t.TempDir()+"/vectors.graph", Euclidean, 64, 64, 16, 0.5)
 	if err != nil {
