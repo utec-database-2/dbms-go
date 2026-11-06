@@ -330,6 +330,7 @@ func (e *Engine) execDelete(n *ast.Delete) (*Result, error) {
 // recorrido), filtro, GROUP BY, ORDER BY con external sorting, y LIMIT.
 func (e *Engine) execSelect(n *ast.Select) (*Result, error) {
 	resolveOrderByAlias(n)
+	if n.TextRankMethod != "" && len(n.Join) > 0 { return nil, fmt.Errorf("sql: MATCH USING no admite JOIN") }
 	if n.From.Name == "" {
 		return nil, fmt.Errorf("sql: SELECT sin FROM (no se soporta SELECT de constantes)")
 	}
@@ -344,6 +345,7 @@ func (e *Engine) execSelect(n *ast.Select) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	if n.TextRankMethod != "" { return e.execRankedSelect(tbl,n) }
 
 	// 0. ORDER BY distancia(...) LIMIT k: k-NN directo sobre el R-Tree.
 	if rows, steps, ok, err := e.planKNN(tbl, n); err != nil {

@@ -596,6 +596,7 @@ func (t *Table) validateTuple(row storage.Tuple) error {
 }
 
 func (t *Table) Close() error {
+	t.clearRankedIndexes()
 	var errs []error
 	for _, name := range t.IndexNames() {
 		if err := t.indexes[name].Close(); err != nil {
