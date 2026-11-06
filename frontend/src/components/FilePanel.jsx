@@ -6,21 +6,58 @@ import {
   ChevronDown,
   ChevronRight,
   Layers3,
+  CloudUpload,
 } from "lucide-react";
+import { ExpandBackdrop, ExpandButton } from "./Expandable";
+import { useExpandable } from "./useExpandable";
 
-function FilePanel({ tables, error, selectedTableName, onSelectTable }) {
+function FilePanel({ tables, error, selectedTableName, onSelectTable, onDropFile }) {
   const [tablesOpen, setTablesOpen] = useState(true);
+  const [expanded, setExpanded] = useExpandable();
+  const [dragging, setDragging] = useState(false);
+
+  // Soltar un .csv sobre el panel abre el diálogo de importación con ese archivo.
+  const dropHandlers = {
+    onDragOver: (event) => {
+      if (!event.dataTransfer?.types?.includes("Files")) return;
+      event.preventDefault();
+      setDragging(true);
+    },
+    onDragLeave: (event) => {
+      if (!event.currentTarget.contains(event.relatedTarget)) setDragging(false);
+    },
+    onDrop: (event) => {
+      event.preventDefault();
+      setDragging(false);
+      const file = event.dataTransfer.files?.[0];
+      if (file) onDropFile(file);
+    },
+  };
 
   const selectedTable = tables.find((t) => t.Name === selectedTableName) || null;
 
   return (
-    <section className="file-panel">
-      <div className="panel-title">
-        <div>
-          <h2>Panel de Archivos</h2>
-          <p>Tablas y estructura</p>
+    <>
+    <ExpandBackdrop expanded={expanded} onClose={() => setExpanded(false)} />
+    <section
+      className={expanded ? "file-panel panel-expanded" : "file-panel"}
+      {...dropHandlers}
+    >
+      {dragging && (
+        <div className="drop-overlay">
+          <CloudUpload size={30} />
+          <strong>Suelta el CSV para importarlo</strong>
         </div>
-        <Database size={20} />
+      )}
+      <div className="panel-title">
+        <div className="file-title">
+          <Database size={19} />
+          <div>
+            <h2>Panel de Archivos</h2>
+            <p>Tablas y estructura</p>
+          </div>
+        </div>
+        <ExpandButton expanded={expanded} onToggle={setExpanded} />
       </div>
 
       <div className="file-content">
@@ -142,6 +179,7 @@ function FilePanel({ tables, error, selectedTableName, onSelectTable }) {
         </div>
       </div>
     </section>
+    </>
   );
 }
 

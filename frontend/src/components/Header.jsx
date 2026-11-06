@@ -1,11 +1,8 @@
-import {
-  Database,
-  Moon,
-  Sun,
-  Settings
-} from "lucide-react";
+import { Database, Upload } from "lucide-react";
 
-function Header({ darkMode, toggleTheme, apiOk }) {
+// Barra superior: nombre a la izquierda; importar CSV y estado del servidor a
+// la derecha. El resto de herramientas está en la barra de la izquierda.
+function Header({ apiOk, onImport }) {
   return (
     <header className="header">
 
@@ -26,32 +23,16 @@ function Header({ darkMode, toggleTheme, apiOk }) {
       {/* PARTE DERECHA */}
       <div className="header-actions">
 
+        <button className="toolbar-button" onClick={onImport}>
+          <Upload size={17} />
+          <span>Importar CSV</span>
+        </button>
+
         {/* ESTADO */}
         <div className="connection-status">
           <span className={apiOk ? "status-dot" : "status-dot offline"}></span>
           <span>{apiOk ? "Conectado" : "Servidor no disponible"}</span>
         </div>
-
-        {/* CAMBIO DE TEMA */}
-        <button
-          className="theme-button"
-          onClick={toggleTheme}
-          title="Cambiar tema"
-        >
-          {darkMode ? (
-            <Sun size={18} />
-          ) : (
-            <Moon size={18} />
-          )}
-        </button>
-
-        {/* CONFIGURACIÓN */}
-        <button
-          className="icon-button"
-          title="Configuración"
-        >
-          <Settings size={18} />
-        </button>
 
       </div>
 
