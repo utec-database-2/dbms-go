@@ -166,10 +166,10 @@ CREATE INDEX ivf_imagen ON imagen USING IVF (embedding)
 SELECT id FROM imagen
   ORDER BY vector_distance(embedding, VECTOR(1, 0, 0), 'cosine') LIMIT 5;
 
-CREATE INDEX hnsw_imagen ON imagen USING IVF(embedding)
-  WITH (ef_construction = 64, ef_search= 32, m = 16, ml = 0.15, metric = 'euclidean');
+CREATE INDEX hnsw_imagen ON imagen USING HNSW(embedding)
+  WITH (ef_construction = 64, ef_search= 32, m = 16, ml = 0.15, metric = 'cosine');
 SELECT id FROM imagen 
-  ORDER BY vector_distance(embedding, VECTOR(0, 0, 0), 'euclidean') LIMIT 5;
+  ORDER BY vector_distance(embedding, VECTOR(0, 0, 0), 'cosine') LIMIT 5;
 
 ```
 
