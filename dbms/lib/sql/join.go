@@ -233,7 +233,9 @@ func (e *Engine) joinStep(left []joinSource, right joinSource, rows []storage.Tu
 	rcol := right.tbl.Schema.Columns[rpos]
 	// Index nested loop: la derecha tiene un índice de búsqueda exacta.
 	if idx, has := right.tbl.IndexOnColumn(rpos); has {
-		if _, isRTree := idx.(*rtreeIndex); !isRTree {
+		_, isRTree := idx.(*rtreeIndex)
+		_, isIVF := idx.(*ivfIndex)
+		if !isRTree && !isIVF {
 			var out []storage.Tuple
 			lookups := 0
 			for _, l := range rows {

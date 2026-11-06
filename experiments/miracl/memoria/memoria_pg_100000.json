@@ -1,0 +1,30 @@
+{
+  "metodo": "PostgreSQL nativo + GIN",
+  "documentos": 100000,
+  "alcance": "Pico del backend PostgreSQL de las consultas; cliente Go medido aparte. NO incluye toda la RAM del servidor/cachés compartidas",
+  "unidad": "MiB",
+  "instrumento": "psutil: RSS/USS muestreados",
+  "intervalo_muestreo_s": 0.02,
+  "medicion": {
+    "duracion_observacion_s": 8.109,
+    "cliente": {
+      "pid": 344,
+      "muestras": 167,
+      "rss_inicial_mib": 2.43,
+      "rss_pico_mib": 30.707,
+      "uss_inicial_mib": 0.039,
+      "uss_pico_mib": 21.574,
+      "aviso": null
+    },
+    "backend_postgresql": {
+      "pid": 23264,
+      "muestras": 167,
+      "rss_inicial_mib": 17.125,
+      "rss_pico_mib": 136.16,
+      "uss_inicial_mib": null,
+      "uss_pico_mib": null,
+      "aviso": null
+    },
+    "backend_encontrado": true
+  }
+}

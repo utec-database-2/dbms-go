@@ -12,7 +12,7 @@ type Table struct {
 	Name    string
 	Columns []string
 	Types   []Type
-	MaxLen  []int // string/bytes: máximo declarado (VARCHAR(n)); ignorado en tipos fijos
+	MaxLen  []int // string/bytes: máximo declarado; vector: dimensión
 	KeyCols []int // columnas de la PK, en orden
 }
 
@@ -42,6 +42,9 @@ func (t Table) maxColSize(i int) int {
 		return 8
 	case TypeBool:
 		return 1
+	case TypeVector:
+		// 4 bytes de longitud + una palabra IEEE-754 por componente.
+		return 4 + 4*t.MaxLen[i]
 	default: // string, bytes: 4 bytes de longitud + MaxLen
 		return 4 + t.MaxLen[i]
 	}
@@ -58,7 +61,7 @@ func (t Table) Validate() error {
 	for i, ty := range t.Types {
 		switch ty {
 		case TypeInt32, TypeInt64, TypeBool:
-		case TypeString, TypeBytes:
+		case TypeString, TypeBytes, TypeVector:
 			if len(t.MaxLen) != len(t.Types) || t.MaxLen[i] <= 0 {
 				return fmt.Errorf("%w: la columna %d (%s) necesita MaxLen > 0", ErrBadOptions, i, ty)
 			}
@@ -73,6 +76,9 @@ func (t Table) Validate() error {
 	for _, c := range t.KeyCols {
 		if c < 0 || c >= len(t.Types) || seen[c] {
 			return fmt.Errorf("%w: KeyCols inválido (%d)", ErrBadOptions, c)
+		}
+		if t.Types[c] == TypeVector {
+			return fmt.Errorf("%w: una columna VECTOR no puede ser clave primaria", ErrBadOptions)
 		}
 		seen[c] = true
 	}
@@ -100,6 +106,13 @@ func (t Table) CheckTuple(tp Tuple) error {
 			n = len(tp[i].(string))
 		case TypeBytes:
 			n = len(tp[i].([]byte))
+		case TypeVector:
+			n = len(tp[i].([]float32))
+			if n != t.MaxLen[i] {
+				return fmt.Errorf("%w: la columna %d es un vector de %d dimensiones y se recibieron %d",
+					ErrSchemaMismatch, i, t.MaxLen[i], n)
+			}
+			continue
 		default:
 			continue
 		}
@@ -175,6 +188,22 @@ func compareValues(ty Type, a, b any) int {
 		return strings.Compare(a.(string), b.(string))
 	case TypeBytes:
 		return bytes.Compare(a.([]byte), b.([]byte))
+	case TypeVector:
+		x, y := a.([]float32), b.([]float32)
+		for i := 0; i < len(x) && i < len(y); i++ {
+			switch {
+			case x[i] < y[i]:
+				return -1
+			case x[i] > y[i]:
+				return 1
+			}
+		}
+		switch {
+		case len(x) < len(y):
+			return -1
+		case len(x) > len(y):
+			return 1
+		}
 	}
 	return 0
 }
@@ -196,7 +225,7 @@ func (t Table) SchemaHash() uint32 {
 	w := func(v int) { fmt.Fprintf(h, "%d,", v) }
 	for i, ty := range t.Types {
 		w(int(ty))
-		if ty == TypeString || ty == TypeBytes {
+		if ty == TypeString || ty == TypeBytes || ty == TypeVector {
 			w(t.MaxLen[i])
 		}
 	}

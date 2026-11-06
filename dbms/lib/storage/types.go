@@ -10,6 +10,9 @@ const (
 	TypeBool
 	TypeString
 	TypeBytes
+	// TypeVector es un vector de dimensión fija. MaxLen guarda la cantidad de
+	// componentes y el valor de la tupla es un []float32.
+	TypeVector
 )
 
 func (t Type) String() string {
@@ -24,6 +27,8 @@ func (t Type) String() string {
 		return "string"
 	case TypeBytes:
 		return "bytes"
+	case TypeVector:
+		return "vector"
 	}
 	return fmt.Sprintf("type(%d)", int(t))
 }

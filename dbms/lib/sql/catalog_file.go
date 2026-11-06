@@ -42,6 +42,12 @@ type indexDisk struct {
 	Name   string `json:"name"`
 	Column string `json:"column"`
 	Unique bool   `json:"unique"`
+	// Kind permite reabrir índices que no se pueden inferir del nombre, como
+	// el IVF. Los catálogos antiguos no lo tienen y se reabren por convención.
+	Kind   string `json:"kind,omitempty"`
+	NList  int    `json:"nlist,omitempty"`
+	NProbe int    `json:"nprobe,omitempty"`
+	Metric string `json:"metric,omitempty"`
 }
 
 // catalogPath devuelve la ruta del archivo de catálogo del motor.
@@ -75,11 +81,19 @@ func (e *Engine) saveCatalog() error {
 			if idx.Kind() == ClusteredIndexKind {
 				continue
 			}
-			spec.Indexes = append(spec.Indexes, indexDisk{
+			entry := indexDisk{
 				Name:   idx.Name(),
 				Column: idx.Column(),
 				Unique: idx.Unique(),
-			})
+				Kind:   idx.Kind().String(),
+			}
+			if ivfIdx, ok := idx.(*ivfIndex); ok {
+				nlist, nprobe, metric := ivfIdx.options()
+				entry.NList = nlist
+				entry.NProbe = nprobe
+				entry.Metric = vectorMetricName(metric)
+			}
+			spec.Indexes = append(spec.Indexes, entry)
 		}
 		disk.Tables = append(disk.Tables, spec)
 	}
@@ -214,6 +228,8 @@ func typeName(t storage.Type) string {
 		return "text"
 	case storage.TypeBytes:
 		return "bytes"
+	case storage.TypeVector:
+		return "vector"
 	}
 	return t.String()
 }
@@ -231,6 +247,8 @@ func parseTypeName(name string) (storage.Type, bool) {
 		return storage.TypeString, true
 	case "bytes", "blob", "varbinary":
 		return storage.TypeBytes, true
+	case "vector", "vector32", "embedding":
+		return storage.TypeVector, true
 	}
 	return 0, false
 }
