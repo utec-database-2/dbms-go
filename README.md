@@ -23,7 +23,8 @@ Minigestor de base de datos multimodal escrito en Go para el curso de Base de Da
 
 - **Tipo `VECTOR(K)`**: K componentes `float32` almacenadas en la propia tabla (Opción B), sin depender de OpenCV para consultar.
 - **Índice IVF-Flat**: cuantización por `nlist` listas y búsqueda aproximada con `nprobe`; métricas Euclidiana y coseno. El código de entrenamiento es Go puro y determinista.
-- **SQL**: `CREATE INDEX ... USING IVF (...) WITH (...)` y `ORDER BY vector_distance(col, VECTOR(...)[, métrica]) LIMIT k`, resuelto sin ordenar toda la tabla.
+- **Índice HNSW**: grafo jerarquico navegable estructurado con capas con `m` conexiones maximas por nodo y exploración de candidatos mediante `ef_construction`y `ef_search`; metricas Euclidiana, coseno y Producto Punto. 
+- **SQL**: `CREATE INDEX ... USING [IVF|HNSW] (...) WITH (...)` y `ORDER BY vector_distance(col, VECTOR(...)[, métrica]) LIMIT k`, resuelto sin ordenar toda la tabla.
 
 **Comparaciones experimentales**: `dbms bench` mide Heap vs Secuencial, B+ agrupado vs no agrupado vs Hash, y Secuencial vs R-Tree vs GiST de PostgreSQL, y genera CSV y gráficas.
 
@@ -164,6 +165,12 @@ CREATE INDEX ivf_imagen ON imagen USING IVF (embedding)
   WITH (nlist = 2, nprobe = 2, metric = 'cosine');
 SELECT id FROM imagen
   ORDER BY vector_distance(embedding, VECTOR(1, 0, 0), 'cosine') LIMIT 5;
+
+CREATE INDEX hnsw_imagen ON imagen USING IVF(embedding)
+  WITH (ef_construction = 64, ef_search= 32, m = 16, ml = 0.15, metric = 'euclidean');
+SELECT id FROM imagen 
+  ORDER BY vector_distance(embedding, VECTOR(0, 0, 0), 'euclidean') LIMIT 5;
+
 ```
 
 El tipo de índice se elige por nombre: `pk_<tabla>` es el índice de la clave primaria, `hash_*` crea un hash extensible, `rtree_*` un R-Tree y cualquier otro nombre un B+ no agrupado. Una columna `VECTOR(K)` usa IVF por defecto; para elegir el tipo explícitamente se usa `CREATE INDEX ... USING IVF`. Toda tabla necesita `PRIMARY KEY`.
