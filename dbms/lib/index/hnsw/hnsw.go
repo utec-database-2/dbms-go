@@ -39,13 +39,20 @@ type HNSWIndex struct {
 	ef_construction int
 	ef_search       int
 	M               int
-	Ml              int
+	Ml              float64
+}
+
+type IndexConfig struct {
+	EfConstruction int
+	EfSearch       int
+	M              int
+	Ml             float64
+	Metric
 }
 
 const (
-	defaultEfConstruction = 64
-	defaultM              = 16 // cantidad maxima de vecinos por nodo
-	defaultMl             = 8  // cantidad maxima de vecinos por nodo en el nivel superior
+	defaultM  = 16  // cantidad maxima de vecinos por nodo
+	defaultMl = 0.5 // proporción de vecinos por nodo en el nivel superior
 )
 
 var (
@@ -54,25 +61,33 @@ var (
 )
 
 // Open carga un indice existente o crea uno nuevo. La ruta debe ser un archivo, no un directorio.
-func Open(path string, metric Metric, efConstruction ...int) (*HNSWIndex, error) {
+func Open(path string, metric Metric, efConstruction int, efSearch int, M int, Ml float64) (*HNSWIndex, error) {
 	if path == "" {
 		return nil, fmt.Errorf("hnsw: la ruta no puede estar vacía")
 	}
 	// Identifica si estamos abriendo o creando un nuevo índice.
-	_, err := os.Stat(path)
+	info, err := os.Stat(path)
 	isNewIndex := os.IsNotExist(err)
 	if err != nil && !isNewIndex {
 		return nil, fmt.Errorf("hnsw: error al verificar la existencia del archivo: %w", err)
 	}
+	if err == nil && info.Size() == 0 {
+		isNewIndex = true
+	}
 	if metric != Cosine && metric != Euclidean && metric != ProductDot {
 		return nil, errInvalidMetric
 	}
-	ef := defaultEfConstruction
-	if len(efConstruction) > 0 {
-		ef = efConstruction[0]
-	}
-	if ef < 1 {
+	if efConstruction < 1 {
 		return nil, fmt.Errorf("hnsw: ef_constructor debe ser mayor que cero")
+	}
+	if efSearch < 1 {
+		return nil, fmt.Errorf("hnsw: ef_search debe ser mayor que cero")
+	}
+	if M < 1 {
+		return nil, fmt.Errorf("hnsw: M debe ser mayor que cero")
+	}
+	if Ml <= 0 || Ml >= 1 {
+		return nil, fmt.Errorf("hnsw: Ml debe estar entre cero y uno")
 	}
 	if dir := filepath.Dir(path); dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -91,16 +106,30 @@ func Open(path string, metric Metric, efConstruction ...int) (*HNSWIndex, error)
 		if persistedMetric != metric {
 			return nil, fmt.Errorf("hnsw: %s usa la métrica %s, no %s", path, persistedMetric, metric)
 		}
+		if g.M != M || g.Ml != Ml {
+			return nil, fmt.Errorf("hnsw: %s usa M=%d y Ml=%g, no M=%d y Ml=%g", path, g.M, g.Ml, M, Ml)
+		}
 	}
 	g.Distance = distance(metric)
-	g.EfSearch = ef
+	g.M = M
+	g.Ml = Ml
+	g.EfSearch = efSearch
+
+	if M <= 0 {
+		M = defaultM
+	}
+	if Ml <= 0 {
+		Ml = defaultMl
+	}
 	return &HNSWIndex{
 		graph:           g,
 		path:            path,
 		metric:          metric,
 		dims:            g.Dims(),
-		ef_construction: ef,
-		ef_search:       ef,
+		M:               M,
+		Ml:              Ml,
+		ef_construction: efConstruction,
+		ef_search:       efSearch,
 	}, nil
 }
 
@@ -117,6 +146,8 @@ func (idx *HNSWIndex) Add(id uint64, vector []float32) error {
 	// coder/hnsw usa EfSearch también durante Add para explorar candidatos de
 	// construcción; se restaura aquí después de cualquier búsqueda.
 	idx.graph.EfSearch = idx.ef_construction
+	idx.graph.M = idx.M
+	idx.graph.Ml = idx.Ml
 	idx.graph.Add(graph.MakeNode(id, append([]float32(nil), vector...)))
 	return nil
 }

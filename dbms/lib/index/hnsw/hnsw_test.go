@@ -16,7 +16,7 @@ func closeIndex(t *testing.T, idx *HNSWIndex) {
 
 func TestIndexPersistsAndSearches(t *testing.T) {
 	path := t.TempDir() + "/vectors.graph"
-	idx, err := Open(path, Euclidean)
+	idx, err := Open(path, Euclidean, 64, 64, 16, 0.5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +31,7 @@ func TestIndexPersistsAndSearches(t *testing.T) {
 	}
 	closeIndex(t, idx)
 
-	reopened, err := Open(path, Euclidean)
+	reopened, err := Open(path, Euclidean, 64, 64, 16, 0.5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestIndexPersistsAndSearches(t *testing.T) {
 }
 
 func TestIndexRejectsDimensionChanges(t *testing.T) {
-	idx, err := Open(t.TempDir()+"/vectors.graph", Cosine)
+	idx, err := Open(t.TempDir()+"/vectors.graph", Cosine, 64, 64, 16, 0.5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,13 +60,16 @@ func TestIndexRejectsDimensionChanges(t *testing.T) {
 }
 
 func TestIndexConfiguresEfConstruction(t *testing.T) {
-	idx, err := Open(t.TempDir()+"/vectors.graph", Euclidean, 64)
+	idx, err := Open(t.TempDir()+"/vectors.graph", Euclidean, 64, 64, 16, 0.5)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer closeIndex(t, idx)
 	if got := idx.EfConstruction(); got != 64 {
 		t.Fatalf("ef_constructor inesperado: got %d, want 64", got)
+	}
+	if idx.graph.M != 16 || idx.graph.Ml != 0.5 || idx.graph.EfSearch != 64 {
+		t.Fatalf("configuración del grafo inesperada: M=%d Ml=%g ef_search=%d", idx.graph.M, idx.graph.Ml, idx.graph.EfSearch)
 	}
 	if err := idx.Add(1, []float32{0, 0}); err != nil {
 		t.Fatal(err)
@@ -81,8 +84,9 @@ func TestIndexConfiguresEfConstruction(t *testing.T) {
 
 func TestIndexEfConstructionValues(t *testing.T) {
 	for _, efConstruction := range []int{32, 64, 128} {
+		efSearch := efConstruction
 		t.Run("ef_construction="+strconv.Itoa(efConstruction), func(t *testing.T) {
-			idx, err := Open(t.TempDir()+"/vectors.graph", Euclidean, efConstruction)
+			idx, err := Open(t.TempDir()+"/vectors.graph", Euclidean, efConstruction, efSearch, 16, 0.5)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -109,13 +113,13 @@ func TestIndexEfConstructionValues(t *testing.T) {
 }
 
 func TestIndexRejectsInvalidEfConstruction(t *testing.T) {
-	if _, err := Open(t.TempDir()+"/vectors.graph", Euclidean, 0); err == nil {
-		t.Fatal("se esperaba rechazar ef_constructor cero")
+	if _, err := Open(t.TempDir()+"/vectors.graph", Euclidean, 0, 64, 16, 0.5); err == nil {
+		t.Fatal("se esperaba rechazar ef_constructor igual a cero")
 	}
 }
 
 func TestProductDotSimilarityRanksHigherProductsFirst(t *testing.T) {
-	idx, err := Open(t.TempDir()+"/vectors.graph", ProductDot)
+	idx, err := Open(t.TempDir()+"/vectors.graph", ProductDot, 64, 64, 16, 0.5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +151,7 @@ func TestProductDotSimilarityRanksHigherProductsFirst(t *testing.T) {
 
 func TestProductDotPersistsAndSearches(t *testing.T) {
 	path := t.TempDir() + "/vectors.graph"
-	idx, err := Open(path, ProductDot)
+	idx, err := Open(path, ProductDot, 64, 64, 16, 0.5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +163,7 @@ func TestProductDotPersistsAndSearches(t *testing.T) {
 	}
 	closeIndex(t, idx)
 
-	reopened, err := Open(path, ProductDot)
+	reopened, err := Open(path, ProductDot, 64, 64, 16, 0.5)
 	if err != nil {
 		t.Fatalf("reabrir producto punto: %v", err)
 	}
@@ -175,7 +179,7 @@ func TestProductDotPersistsAndSearches(t *testing.T) {
 
 func TestIndexRejectsPersistedMetricMismatch(t *testing.T) {
 	path := t.TempDir() + "/vectors.graph"
-	idx, err := Open(path, ProductDot)
+	idx, err := Open(path, ProductDot, 64, 64, 16, 0.5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +187,7 @@ func TestIndexRejectsPersistedMetricMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	closeIndex(t, idx)
-	if _, err := Open(path, Euclidean); err == nil {
+	if _, err := Open(path, Euclidean, 64, 64, 16, 0.5); err == nil {
 		t.Fatal("se esperaba rechazar una métrica distinta a la persistida")
 	}
 }
@@ -225,7 +229,7 @@ func TestProductDotDistancePanicsOnDifferentLengths(t *testing.T) {
 }
 
 func Test_1000Vectors128Dims_Euclidean(t *testing.T) {
-	idx, err := Open(t.TempDir()+"/vectors.graph", Euclidean)
+	idx, err := Open(t.TempDir()+"/vectors.graph", Euclidean, 64, 64, 16, 0.5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +278,7 @@ func Test_1000Vectors128Dims_Euclidean(t *testing.T) {
 	}
 
 	closeIndex(t, idx)
-	reopened, err := Open(idx.path, Euclidean)
+	reopened, err := Open(idx.path, Euclidean, 64, 64, 16, 0.5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +320,7 @@ func Test_1000Vectors128Dims_Euclidean(t *testing.T) {
 }
 
 func Test_1000Vectors128Dims_ProductDot(t *testing.T) {
-	idx, err := Open(t.TempDir()+"/vectors.graph", ProductDot)
+	idx, err := Open(t.TempDir()+"/vectors.graph", ProductDot, 64, 64, 16, 0.5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +369,7 @@ func Test_1000Vectors128Dims_ProductDot(t *testing.T) {
 	}
 
 	closeIndex(t, idx)
-	reopened, err := Open(idx.path, ProductDot)
+	reopened, err := Open(idx.path, ProductDot, 64, 64, 16, 0.5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -407,7 +411,7 @@ func Test_1000Vectors128Dims_ProductDot(t *testing.T) {
 }
 
 func Test_1000Vectors128Dims_Cosine(t *testing.T) {
-	idx, err := Open(t.TempDir()+"/vectors.graph", Cosine)
+	idx, err := Open(t.TempDir()+"/vectors.graph", Cosine, 64, 64, 16, 0.5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,7 +460,7 @@ func Test_1000Vectors128Dims_Cosine(t *testing.T) {
 	}
 
 	closeIndex(t, idx)
-	reopened, err := Open(idx.path, Cosine)
+	reopened, err := Open(idx.path, Cosine, 64, 64, 16, 0.5)
 	if err != nil {
 		t.Fatal(err)
 	}
