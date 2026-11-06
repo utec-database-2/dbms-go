@@ -46,6 +46,7 @@ func main() {
 	mux.HandleFunc("POST /api/spatial/range", db.locked(handleSpatialRange(spatialStore)))
 	mux.HandleFunc("POST /api/spatial/knn", db.locked(handleSpatialKNN(spatialStore)))
 	mux.HandleFunc("POST /api/spatial/polygon", db.locked(handleSpatialPolygon(spatialStore)))
+	mux.HandleFunc("GET /api/spatial/rtree", db.locked(handleSpatialRTree(spatialStore)))
 
 	log.Printf("MinigestorBD escuchando en %s (datos en %s)", *addr, *dir)
 	log.Fatal(http.ListenAndServe(*addr, withCORS(mux)))

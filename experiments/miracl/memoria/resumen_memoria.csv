@@ -1,0 +1,6 @@
+﻿sistema,documentos,proceso,fase_observada,rss_pico_mib,uss_pico_mib,observaciones
+SPIMI + TF-IDF/BM25,1000,go,construccion y consultas,15.082,8.805,326
+SPIMI + TF-IDF/BM25,10000,go,construccion y consultas,28.406,22.242,419
+SPIMI + TF-IDF/BM25,100000,go,construccion y consultas,67.484,61.039,1899
+PostgreSQL + GIN,100000,postgres_backend,solo consultas (RSS incluye compartida),136.16,,167
+PostgreSQL + GIN,100000,go_client,solo consultas,30.707,21.574,167

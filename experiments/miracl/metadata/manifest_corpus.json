@@ -1,0 +1,33 @@
+{
+  "dataset": "MIRACL español v1.0 (dev, primer shard de corpus)",
+  "official_urls": {
+    "docs-0.jsonl.gz": "https://huggingface.co/datasets/miracl/miracl-corpus/resolve/main/miracl-corpus-v1.0-es/docs-0.jsonl.gz",
+    "topics.miracl-v1.0-es-dev.tsv": "https://huggingface.co/datasets/miracl/miracl/resolve/main/miracl-v1.0-es/topics/topics.miracl-v1.0-es-dev.tsv",
+    "qrels.miracl-v1.0-es-dev.tsv": "https://huggingface.co/datasets/miracl/miracl/resolve/main/miracl-v1.0-es/qrels/qrels.miracl-v1.0-es-dev.tsv"
+  },
+  "source_shard_documents_scanned": 500000,
+  "sampling": "reserva uniforme reproducible en docs-0 + anclaje de documentos juzgados al prefijo de 1000",
+  "relevance_selection_bias": "consultas elegidas por tener positivos en el shard; no representativo de toda MIRACL",
+  "judgments_limitation": "qrels no exhaustivos; documentos sin juicio no necesariamente irrelevantes",
+  "max_docs": 100000,
+  "documents_in_first_1000": 1000,
+  "anchored_judged_documents": 89,
+  "official_queries": 30,
+  "official_query_buckets": {
+    "3": 1,
+    "5+": 27,
+    "other": 2
+  },
+  "positive_qrels_in_subset": 53,
+  "performance_queries": 15,
+  "performance_has_qrels": false,
+  "sanitization": "puntuacion y simbolos -> espacios para preservar compatibilidad de lexemas Go/PostgreSQL",
+  "max_text_chars": 12000,
+  "seed": 2026,
+  "documents_sha256": "42031e63124555f8ad028873a1a7ac1a154aa6b0ba269e9e2c131400275ad96d",
+  "raw_files_sha256": {
+    "docs-0.jsonl.gz": "e261da2adb2a5d817756dc6d9f977ab70d5ee350faad7b6e129531413d8fae89",
+    "topics.miracl-v1.0-es-dev.tsv": "5e93b5a1cea22a44912e6ad242147c58719dd8ce4bb6304264a53876b70e65ac",
+    "qrels.miracl-v1.0-es-dev.tsv": "2d9441de1e25d7d2faf54f757db618ad5a2927337862a367f1a60e87ef7e40b2"
+  }
+}

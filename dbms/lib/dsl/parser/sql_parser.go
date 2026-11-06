@@ -803,7 +803,9 @@ func (parser *ParserContext) parseTableConstraint(node *ast.CreateTable) bool {
 	return false
 }
 
-// parseCreateIndex lee CREATE [UNIQUE] INDEX nombre ON tabla (columna[, ...]).
+// parseCreateIndex lee
+// CREATE [UNIQUE] INDEX nombre ON tabla [USING tipo] (columna[, ...])
+// [WITH (opcion = valor, ...)].
 func (parser *ParserContext) parseCreateIndex() *ast.CreateIndex {
 	parser.Match(token.TokenCreate)
 	node := &ast.CreateIndex{}
@@ -830,6 +832,16 @@ func (parser *ParserContext) parseCreateIndex() *ast.CreateIndex {
 	}
 	node.Table = tbl.GetContent()
 
+	// USING IVF va entre la tabla y la lista de columnas. USING ya es una
+	// palabra clave del lexer por los JOIN, así que reutilizamos su token.
+	if parser.Match(token.TokenUsing) {
+		kind, err := parser.Required(token.TokenId)
+		if err != nil {
+			return node
+		}
+		node.Using = strings.ToLower(kind.GetContent())
+	}
+
 	if parser.Match(token.TokenLparent) {
 		for parser.Check(token.TokenId) {
 			col, err := parser.Required(token.TokenId)
@@ -842,6 +854,30 @@ func (parser *ParserContext) parseCreateIndex() *ast.CreateIndex {
 			}
 		}
 		parser.Match(token.TokenRparent)
+	}
+
+	// WITH no es una palabra clave del lexer, así que llega como TokenId.
+	if parser.Check(token.TokenId) && strings.EqualFold(parser.CurrStr(), "with") {
+		parser.idx++
+		if parser.Match(token.TokenLparent) {
+			node.Options = make(map[string]ast.ASTNode)
+			for !parser.Check(token.TokenRparent) && !parser.IsEnd() {
+				key, err := parser.Required(token.TokenId)
+				if err != nil {
+					break
+				}
+				parser.Match(token.TokenAssign)
+				value, err := parser.ParseValue()
+				if err != nil {
+					break
+				}
+				node.Options[strings.ToLower(key.GetContent())] = value
+				if !parser.Match(token.TokenComma) {
+					break
+				}
+			}
+			parser.Match(token.TokenRparent)
+		}
 	}
 	return node
 }

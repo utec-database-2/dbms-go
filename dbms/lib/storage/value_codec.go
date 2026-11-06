@@ -27,6 +27,7 @@ const (
 	TagFloat  ValueTag = 4
 	TagString ValueTag = 5
 	TagBytes  ValueTag = 6
+	TagVector ValueTag = 7
 )
 
 // ErrCodec indica un valor o una secuencia de bytes que no se puede decodificar.
@@ -60,6 +61,12 @@ func AppendValue(dst []byte, v any) ([]byte, error) {
 		return appendBlob(dst, byte(TagString), []byte(val)), nil
 	case []byte:
 		return appendBlob(dst, byte(TagBytes), val), nil
+	case []float32:
+		raw := make([]byte, 4*len(val))
+		for i, component := range val {
+			binary.LittleEndian.PutUint32(raw[i*4:], math.Float32bits(component))
+		}
+		return appendBlob(dst, byte(TagVector), raw), nil
 	}
 	return nil, fmt.Errorf("%w: %T no tiene codificación", ErrCodec, v)
 }
@@ -105,6 +112,19 @@ func DecodeValue(buf []byte) (any, int, error) {
 		// Se copia para que el llamante no dependa del buffer del log.
 		out := make([]byte, len(raw))
 		copy(out, raw)
+		return out, 1 + n, nil
+	case TagVector:
+		raw, n, err := readBlob(rest)
+		if err != nil {
+			return nil, 0, err
+		}
+		if len(raw)%4 != 0 {
+			return nil, 0, fmt.Errorf("%w: vector de %d bytes no es múltiplo de 4", ErrCodec, len(raw))
+		}
+		out := make([]float32, len(raw)/4)
+		for i := range out {
+			out[i] = math.Float32frombits(binary.LittleEndian.Uint32(raw[i*4:]))
+		}
 		return out, 1 + n, nil
 	}
 	return nil, 0, fmt.Errorf("%w: tag %d desconocido", ErrCodec, tag)

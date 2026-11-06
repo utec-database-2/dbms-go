@@ -1,0 +1,62 @@
+[
+  {
+    "id": "lat_1_01",
+    "text": "historia"
+  },
+  {
+    "id": "lat_1_02",
+    "text": "ciencia"
+  },
+  {
+    "id": "lat_1_03",
+    "text": "matemáticas"
+  },
+  {
+    "id": "lat_1_04",
+    "text": "música"
+  },
+  {
+    "id": "lat_1_05",
+    "text": "geografía"
+  },
+  {
+    "id": "lat_3_01",
+    "text": "historia del Perú"
+  },
+  {
+    "id": "lat_3_02",
+    "text": "ciencia y tecnología"
+  },
+  {
+    "id": "lat_3_03",
+    "text": "arte y cultura"
+  },
+  {
+    "id": "lat_3_04",
+    "text": "animales de América"
+  },
+  {
+    "id": "lat_3_05",
+    "text": "universidades del mundo"
+  },
+  {
+    "id": "lat_5p_01",
+    "text": "historia de la ciencia moderna en Europa"
+  },
+  {
+    "id": "lat_5p_02",
+    "text": "investigación científica de las enfermedades infecciosas"
+  },
+  {
+    "id": "lat_5p_03",
+    "text": "desarrollo de la inteligencia artificial en universidades"
+  },
+  {
+    "id": "lat_5p_04",
+    "text": "geografía e historia cultural de América Latina"
+  },
+  {
+    "id": "lat_5p_05",
+    "text": "teoría matemática aplicada a los sistemas informáticos"
+  }
+]
