@@ -40,6 +40,7 @@ type HNSWIndex struct {
 	ef_search       int
 	M               int
 	Ml              float64
+	closed          bool
 }
 
 type IndexConfig struct {
@@ -58,6 +59,7 @@ const (
 var (
 	errInvalidMetric = fmt.Errorf("hnsw: métrica no soportada")
 	errInvalidVector = fmt.Errorf("hnsw: vector inválido")
+	errClosed        = fmt.Errorf("hnsw: índice cerrado")
 )
 
 // Open carga un indice existente o crea uno nuevo. La ruta debe ser un archivo, no un directorio.
@@ -137,6 +139,9 @@ func Open(path string, metric Metric, efConstruction int, efSearch int, M int, M
 func (idx *HNSWIndex) Add(id uint64, vector []float32) error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
+	if idx.closed {
+		return errClosed
+	}
 	if err := idx.validateVector(vector); err != nil {
 		return err
 	}
@@ -156,6 +161,9 @@ func (idx *HNSWIndex) Add(id uint64, vector []float32) error {
 func (idx *HNSWIndex) Delete(id uint64) bool {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
+	if idx.closed {
+		return false
+	}
 	return idx.graph.Delete(id)
 }
 
@@ -166,6 +174,9 @@ func (idx *HNSWIndex) KNNSearch(vector []float32, k int, ef_search int) ([]Resul
 	}
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
+	if idx.closed {
+		return nil, errClosed
+	}
 	if err := idx.validateVector(vector); err != nil {
 		return nil, err
 	}
@@ -196,6 +207,9 @@ func (idx *HNSWIndex) KNNSearch(vector []float32, k int, ef_search int) ([]Resul
 func (idx *HNSWIndex) Save() error {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
+	if idx.closed {
+		return nil
+	}
 	if err := idx.graph.Save(); err != nil {
 		return fmt.Errorf("hnsw: guardar %s: %w", idx.path, err)
 	}
@@ -206,7 +220,16 @@ func (idx *HNSWIndex) Close() error {
 	if idx == nil {
 		return nil
 	}
-	return idx.Save()
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	if idx.closed {
+		return nil
+	}
+	if err := idx.graph.Save(); err != nil {
+		return fmt.Errorf("hnsw: guardar %s: %w", idx.path, err)
+	}
+	idx.closed = true
+	return nil
 }
 
 // Path devuelve la ruta del archivo de índice.
