@@ -122,7 +122,7 @@ func TestIndexReopenReactivatesClosedInstance(t *testing.T) {
 }
 
 func TestIndexConfiguresEfConstruction(t *testing.T) {
-	idx, err := Open(t.TempDir()+"/vectors.graph", Euclidean, 64, 64, 16, 0.5)
+	idx, err := OpenWithConfig(t.TempDir()+"/vectors.graph", IndexConfig{Metric: Euclidean, EfConstruction: 64, EfSearch: 64, M: 16, Ml: 0.5})
 	if err != nil {
 		t.Fatal(err)
 	}
