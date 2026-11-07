@@ -235,7 +235,8 @@ func (e *Engine) joinStep(left []joinSource, right joinSource, rows []storage.Tu
 	if idx, has := right.tbl.IndexOnColumn(rpos); has {
 		_, isRTree := idx.(*rtreeIndex)
 		_, isIVF := idx.(*ivfIndex)
-		if !isRTree && !isIVF {
+		_, isHNSW := idx.(*hnswIndex)
+		if !isRTree && !isIVF && !isHNSW {
 			var out []storage.Tuple
 			lookups := 0
 			for _, l := range rows {

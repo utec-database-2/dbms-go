@@ -21,12 +21,24 @@ const (
 	defaultIVFNProbe = 1
 )
 
+type vectorKNNIndex interface {
+	Query(query []float32, topK, searchParameter int) ([]storage.Tuple, error)
+	vectorDim() int
+	vectorMetric() metricpkg.Metric
+	searchParameter() int
+	vectorKind() string
+	Name() string
+	Entries() int
+}
+
 // ivfConfig son las opciones de un índice IVF. NList <= 0 pide el valor por
 // defecto, calculado a partir del número de filas.
 type ivfConfig struct {
 	NList  int
 	NProbe int
 	Metric metricpkg.Metric
+	// K es el tamaño del codebook; solo lo usa el índice IMAGE.
+	K int
 }
 
 // parseIVFConfig traduce las opciones del AST. Los valores admiten tanto
@@ -47,6 +59,15 @@ func parseIVFConfig(n *ast.CreateIndex) (ivfConfig, error) {
 				return cfg, fmt.Errorf("sql: opción nprobe: %w", err)
 			}
 			cfg.NProbe = v
+		case "k":
+			v, err := optionInt(node)
+			if err != nil {
+				return cfg, fmt.Errorf("sql: opción k: %w", err)
+			}
+			if v <= 0 {
+				return cfg, fmt.Errorf("sql: k debe ser positivo")
+			}
+			cfg.K = v
 		case "metric":
 			v, err := optionString(node)
 			if err != nil {
@@ -203,6 +224,10 @@ type ivfIndex struct {
 	nprobe int
 	metric metricpkg.Metric
 
+	// image, si no es nil, indica un índice IMAGE: la columna guarda la ruta o
+	// los bytes de una imagen y el vector se calcula con el codebook.
+	image *imageSource
+
 	mu      sync.RWMutex
 	index   *ivfpkg.IVFFlatIndex
 	pending []ivfPending
@@ -213,7 +238,16 @@ type ivfIndex struct {
 
 var _ Index = (*ivfIndex)(nil)
 
-func (idx *ivfIndex) SupportsRange() bool { return false }
+func (idx *ivfIndex) SupportsRange() bool            { return false }
+func (idx *ivfIndex) vectorDim() int                 { return idx.dim }
+func (idx *ivfIndex) vectorMetric() metricpkg.Metric { return idx.metric }
+func (idx *ivfIndex) searchParameter() int           { return idx.nprobe }
+func (idx *ivfIndex) vectorKind() string {
+	if idx.image != nil {
+		return "IMAGE"
+	}
+	return "IVF"
+}
 
 func (idx *ivfIndex) resetLocked() {
 	idx.index = nil
@@ -230,9 +264,19 @@ func (idx *ivfIndex) vectorOf(row storage.Tuple) ([]float32, error) {
 	if row[idx.pos] == nil {
 		return nil, nil // una columna vectorial nula no se indexa
 	}
-	vec, ok := row[idx.pos].([]float32)
-	if !ok {
-		return nil, fmt.Errorf("sql: la columna %s no contiene un vector", idx.col)
+	var vec []float32
+	if idx.image != nil {
+		v, err := idx.image.vector(row[idx.pos])
+		if err != nil {
+			return nil, err
+		}
+		vec = v
+	} else {
+		v, ok := row[idx.pos].([]float32)
+		if !ok {
+			return nil, fmt.Errorf("sql: la columna %s no contiene un vector", idx.col)
+		}
+		vec = v
 	}
 	if len(vec) != idx.dim {
 		return nil, fmt.Errorf("sql: el vector de %s tiene %d dimensiones, se esperaban %d",
@@ -670,6 +714,35 @@ func (t *Table) ivfOn(col int) (*ivfIndex, bool) {
 	return nil, false
 }
 
+func (t *Table) hnswOn(col int) (*hnswIndex, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	for _, name := range t.order {
+		if idx, ok := t.indexes[name].(*hnswIndex); ok && idx.pos == col {
+			return idx, true
+		}
+	}
+	return nil, false
+}
+
+func (t *Table) vectorOn(col int) (vectorKNNIndex, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	for _, name := range t.order {
+		switch idx := t.indexes[name].(type) {
+		case *ivfIndex:
+			if idx.pos == col {
+				return idx, true
+			}
+		case *hnswIndex:
+			if idx.pos == col {
+				return idx, true
+			}
+		}
+	}
+	return nil, false
+}
+
 // ---------------------------------------------------------------------------
 // Literales, funciones y planner vectorial
 // ---------------------------------------------------------------------------
@@ -757,6 +830,17 @@ func (ec *evalContext) evalVectorFunc(fn *ast.FuncCallExpr) (any, bool, error) {
 		}
 		return vec, true, nil
 
+	case "image_vector", "vector_imagen":
+		if len(fn.Args) != 1 {
+			return nil, true, fmt.Errorf("sql: IMAGE_VECTOR espera (ruta | bytes)")
+		}
+		v, err := ec.eval(fn.Args[0])
+		if err != nil {
+			return nil, true, err
+		}
+		vec, err := ec.evalImageVector(v)
+		return vec, true, err
+
 	case "vector_distance", "distancia_vector", "vector_dist", "knn_distance":
 		if len(fn.Args) != 2 && len(fn.Args) != 3 {
 			return nil, true, fmt.Errorf("sql: vector_distance espera (vector, vector [, métrica])")
@@ -769,11 +853,11 @@ func (ec *evalContext) evalVectorFunc(fn *ast.FuncCallExpr) (any, bool, error) {
 			}
 			args[i] = v
 		}
-		a, err := toVector32(args[0])
+		a, err := ec.vectorArg(args[0])
 		if err != nil {
 			return nil, true, err
 		}
-		b, err := toVector32(args[1])
+		b, err := ec.vectorArg(args[1])
 		if err != nil {
 			return nil, true, err
 		}
@@ -819,7 +903,7 @@ func (ec *evalContext) evalMetricArg(node ast.ASTNode) (string, error) {
 }
 
 // vectorArgs reconoce vector_distance(columna, vector [, métrica]).
-func (t *Table) vectorArgs(fn *ast.FuncCallExpr) (*ivfIndex, []float32, metricpkg.Metric, bool, error) {
+func (t *Table) vectorArgs(fn *ast.FuncCallExpr) (vectorKNNIndex, []float32, metricpkg.Metric, bool, error) {
 	if len(fn.Args) < 2 {
 		return nil, nil, 0, false, nil
 	}
@@ -831,7 +915,7 @@ func (t *Table) vectorArgs(fn *ast.FuncCallExpr) (*ivfIndex, []float32, metricpk
 	if !ok {
 		return nil, nil, 0, false, nil
 	}
-	idx, ok := t.ivfOn(col)
+	idx, ok := t.vectorOn(col)
 	if !ok {
 		return nil, nil, 0, false, nil
 	}
@@ -844,10 +928,10 @@ func (t *Table) vectorArgs(fn *ast.FuncCallExpr) (*ivfIndex, []float32, metricpk
 	if err != nil {
 		return nil, nil, 0, false, err
 	}
-	if len(vec) != idx.dim {
-		return nil, nil, 0, false, fmt.Errorf("sql: la consulta tiene %d dimensiones y el índice espera %d", len(vec), idx.dim)
+	if len(vec) != idx.vectorDim() {
+		return nil, nil, 0, false, fmt.Errorf("sql: la consulta tiene %d dimensiones y el índice espera %d", len(vec), idx.vectorDim())
 	}
-	metric := idx.metric
+	metric := idx.vectorMetric()
 	if len(fn.Args) >= 3 {
 		name, err := ec.evalMetricArg(fn.Args[2])
 		if err != nil {
@@ -857,10 +941,10 @@ func (t *Table) vectorArgs(fn *ast.FuncCallExpr) (*ivfIndex, []float32, metricpk
 		if err != nil {
 			return nil, nil, 0, false, err
 		}
-		if metric != idx.metric {
+		if metric != idx.vectorMetric() {
 			return nil, nil, 0, false, fmt.Errorf(
 				"sql: la métrica de la consulta (%s) no coincide con la del índice (%s)",
-				vectorMetricName(metric), vectorMetricName(idx.metric))
+				vectorMetricName(metric), vectorMetricName(idx.vectorMetric()))
 		}
 	}
 	return idx, vec, metric, true, nil
@@ -905,8 +989,8 @@ func (e *Engine) planVectorKNN(tbl *Table, n *ast.Select) ([]storage.Tuple, []St
 			return nil, nil, false, fmt.Errorf("sql: OFFSET inválido")
 		}
 	}
-	nlist, nprobe, _ := idx.options()
-	rows, err := idx.Query(vec, int(k+offset), nprobe)
+	searchParameter := idx.searchParameter()
+	rows, err := idx.Query(vec, int(k+offset), searchParameter)
 	if err != nil {
 		return nil, nil, false, err
 	}
@@ -917,8 +1001,8 @@ func (e *Engine) planVectorKNN(tbl *Table, n *ast.Select) ([]storage.Tuple, []St
 	}
 	return rows, []Step{{
 		Kind: StepIndexScan,
-		Detail: fmt.Sprintf("k-NN en índice IVF %s: %d vecinos, nlist=%d, nprobe=%d (%s, sin ordenar la tabla)",
-			idx.Name(), k, nlist, nprobe, vectorMetricName(metric)),
+		Detail: fmt.Sprintf("k-NN en índice %s %s: %d vecinos, parámetro=%d (%s, sin ordenar la tabla)",
+			idx.vectorKind(), idx.Name(), k, searchParameter, vectorMetricName(metric)),
 		Rows: len(rows),
 		Cost: len(rows) + idx.Entries()/16,
 	}}, true, nil

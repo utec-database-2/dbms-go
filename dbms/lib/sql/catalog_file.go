@@ -44,10 +44,15 @@ type indexDisk struct {
 	Unique bool   `json:"unique"`
 	// Kind permite reabrir índices que no se pueden inferir del nombre, como
 	// el IVF. Los catálogos antiguos no lo tienen y se reabren por convención.
-	Kind   string `json:"kind,omitempty"`
-	NList  int    `json:"nlist,omitempty"`
-	NProbe int    `json:"nprobe,omitempty"`
-	Metric string `json:"metric,omitempty"`
+	Kind           string  `json:"kind,omitempty"`
+	NList          int     `json:"nlist,omitempty"`
+	NProbe         int     `json:"nprobe,omitempty"`
+	Metric         string  `json:"metric,omitempty"`
+	K              int     `json:"k,omitempty"` // tamaño del codebook (índice IMAGE)
+	EfConstruction int     `json:"ef_construction,omitempty"`
+	EfSearch       int     `json:"ef_search,omitempty"`
+	M              int     `json:"m,omitempty"`
+	Ml             float64 `json:"ml,omitempty"`
 }
 
 // catalogPath devuelve la ruta del archivo de catálogo del motor.
@@ -56,8 +61,8 @@ func (e *Engine) catalogPath() string {
 }
 
 // saveCatalog escribe el catálogo completo. Se llama después de cada cambio de
-// esquema (CREATE TABLE, CREATE INDEX, DROP TABLE) para que un reinicio no
-// pierda la estructura aunque el proceso se corte.
+// esquema (CREATE TABLE, CREATE INDEX, DROP TABLE, DROP INDEX) para que un
+// reinicio no pierda la estructura aunque el proceso se corte.
 func (e *Engine) saveCatalog() error {
 	e.catalogMu.Lock()
 	defer e.catalogMu.Unlock()
@@ -92,6 +97,17 @@ func (e *Engine) saveCatalog() error {
 				entry.NList = nlist
 				entry.NProbe = nprobe
 				entry.Metric = vectorMetricName(metric)
+				if ivfIdx.image != nil {
+					entry.K = ivfIdx.dim
+				}
+			}
+			if hnswIdx, ok := idx.(*hnswIndex); ok {
+				cfg := hnswIdx.options()
+				entry.EfConstruction = cfg.EfConstruction
+				entry.EfSearch = cfg.EfSearch
+				entry.M = cfg.M
+				entry.Ml = cfg.Ml
+				entry.Metric = hnswMetricName(cfg.Metric)
 			}
 			spec.Indexes = append(spec.Indexes, entry)
 		}
@@ -146,6 +162,7 @@ func (e *Engine) loadCatalog() error {
 			_ = tbl.Close()
 			return err
 		}
+		e.registerTableIndexes(tbl)
 	}
 	return nil
 }
@@ -205,6 +222,9 @@ func dropFiles(dir, table string) error {
 		base + sequential.SUFFIX_SEQ,
 		base + sequential.SUFFIX_AUX,
 		base + sequential.SUFFIX_SEQ + ".tmp",
+	}
+	if hnswFiles, err := filepath.Glob(base + ".hnsw*"); err == nil {
+		candidates = append(candidates, hnswFiles...)
 	}
 	var errs []error
 	for _, path := range candidates {

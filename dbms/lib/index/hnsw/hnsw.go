@@ -281,6 +281,32 @@ func (idx *HNSWIndex) Reopen() error {
 	return nil
 }
 
+// Reset vacía el grafo y conserva su archivo y configuración para una reconstrucción.
+func (idx *HNSWIndex) Reset() error {
+	if idx == nil {
+		return fmt.Errorf("hnsw: índice nulo")
+	}
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	if idx.closed {
+		return errClosed
+	}
+	if err := os.Remove(idx.path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("hnsw: limpiar %s: %w", idx.path, err)
+	}
+	g, err := graph.LoadSavedGraph[uint64](idx.path)
+	if err != nil {
+		return fmt.Errorf("hnsw: recrear %s: %w", idx.path, err)
+	}
+	g.Distance = distance(idx.metric)
+	g.M = idx.M
+	g.Ml = idx.Ml
+	g.EfSearch = idx.ef_construction
+	idx.graph = g
+	idx.dims = 0
+	return nil
+}
+
 // Path devuelve la ruta del archivo de índice.
 func (idx *HNSWIndex) Path() string {
 	idx.mu.RLock()

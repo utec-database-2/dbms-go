@@ -98,7 +98,14 @@ func (parser *ParserContext) parseOne() {
 	case token.TokenUpdate:
 		parser.parent = parser.ParseUpdate()
 	case token.TokenDrop:
-		parser.parent = parser.ParseDrop()
+		res := parser.ParseDrop()
+		if res == nil {
+			if parser.err == nil {
+				parser.err = fmt.Errorf("unexpected token %q", parser.CurrStr())
+			}
+			return
+		}
+		parser.parent = res
 	case token.TokenTruncate:
 		parser.parent = parser.ParseTruncate()
 	case token.TokenAlter:
@@ -500,29 +507,36 @@ func (parser *ParserContext) ParseSelect() *ast.Select {
 	node := &ast.Select{}
 
 	node.Distinct = parser.Match(token.TokenDistinct)
-
-	if parser.Match(token.TokenAsterisk) {
-		node.All = true
-	} else {
-		for !parser.Check(token.TokenFrom) && !parser.Check(token.TokenWhere) && !parser.IsEnd() && parser.CurrToken().GetType() != token.TokenSemicolon {
-			if parser.Match(token.TokenComma) {
-				continue
-			}
-			v, err := parser.ParseValue()
-			if err != nil {
-				break
-			}
-			item := ast.ASTNode(v)
-			if parser.Match(token.TokenAs) {
-				if alias, err := parser.Required(token.TokenId); err == nil {
-					name := alias.GetContent()
-					item = &ast.AliasedExpr{Expr: v, Alias: &name}
-				}
-			}
-			node.Selected = append(node.Selected, item)
+	// Permite SELECT * y SELECT *, SCORE() AS relevancia.
+	for !parser.Check(token.TokenFrom) && !parser.Check(token.TokenWhere) && !parser.IsEnd() && !parser.Check(token.TokenSemicolon) {
+		if parser.Match(token.TokenComma) {
+			continue
+		}
+		if parser.Match(token.TokenAsterisk) {
+			node.All = true
 			if !parser.Match(token.TokenComma) {
 				break
 			}
+			continue
+		}
+		v, err := parser.ParseValue()
+		if err != nil {
+			parser.err = err
+			return node
+		}
+		item := ast.ASTNode(v)
+		if parser.Match(token.TokenAs) {
+			alias, err := parser.Required(token.TokenId)
+			if err != nil {
+				parser.err = err
+				return node
+			}
+			name := alias.GetContent()
+			item = &ast.AliasedExpr{Expr: v, Alias: &name}
+		}
+		node.Selected = append(node.Selected, item)
+		if !parser.Match(token.TokenComma) {
+			break
 		}
 	}
 
@@ -542,8 +556,30 @@ func (parser *ParserContext) ParseSelect() *ast.Select {
 		break
 	}
 
-	if parser.Check(token.TokenWhere) {
-		node.Closure = parser.ParseWhereExpr()
+	if parser.Match(token.TokenWhere) {
+		cond, err := parser.ParseCondition()
+		if err != nil {
+			parser.err = err
+			return node
+		}
+		node.Closure = cond // también conserva MATCH() sin operador de comparación
+	}
+	if parser.Match(token.TokenUsing) {
+		if node.Closure == nil {
+			parser.err = fmt.Errorf("USING BM25/TF_IDF requiere WHERE MATCH")
+			return node
+		}
+		m, err := parser.Required(token.TokenId)
+		if err != nil {
+			parser.err = fmt.Errorf("USING necesita BM25 o TF_IDF: %w", err)
+			return node
+		}
+		method := strings.ToLower(m.GetContent())
+		if method != "tf_idf" && method != "bm25" {
+			parser.err = fmt.Errorf("USING desconocido %q: se esperaba BM25 o TF_IDF", m.GetContent())
+			return node
+		}
+		node.TextRankMethod = method
 	}
 
 	if parser.Match(token.TokenGroup) {
@@ -1010,14 +1046,37 @@ func (parser *ParserContext) parseLimit() *ast.Limit {
 	}
 	return l
 }
-func (parser *ParserContext) ParseDrop() *ast.DropTable {
+func (parser *ParserContext) ParseDrop() *ast.DropExpr {
 	parser.Match(token.TokenDrop)
-	parser.Match(token.TokenTable)
-	node := &ast.DropTable{}
-	node.IfExists = parser.Match(token.TokenIf) && parser.Match(token.TokenExists)
+	node := &ast.DropExpr{}
+	if parser.Match(token.TokenTable) {
+		node.Type = ast.DropTable
+	} else if parser.Match(token.TokenIndex) {
+		node.Type = ast.DropIndex
+	} else {
+		return nil
+	}
+
+	if parser.Match(token.TokenIf) {
+		if !parser.Match(token.TokenExists) {
+			parser.err = fmt.Errorf("expected EXISTS after IF, got %q", parser.CurrStr())
+			return nil
+		}
+		node.IfExists = true
+	}
 	name, err := parser.Required(token.TokenId)
-	if err == nil {
-		node.Name = name.GetContent()
+	if err != nil {
+		parser.err = err
+		return nil
+	}
+	node.Name = name.GetContent()
+	if node.Type == ast.DropIndex && parser.Match(token.TokenOn) {
+		table, err := parser.Required(token.TokenId)
+		if err != nil {
+			parser.err = err
+			return nil
+		}
+		node.Table = table.GetContent()
 	}
 	return node
 }

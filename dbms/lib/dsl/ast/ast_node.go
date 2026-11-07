@@ -48,15 +48,16 @@ type Select struct {
 	// Selected son las expresiones de la lista de proyección: una columna simple,
 	// un literal, una llamada a función o una expresión aritmética, cada una con
 	// su alias opcional.
-	Selected []ASTNode
-	All      bool
-	From     TableExpr
-	Join     []JoinExpr
-	Closure  ASTNode // WHERE
-	GroupBy  []ASTNode
-	Having   ASTNode
-	OrderBy  *OrderBy
-	Limit    *Limit
+	Selected       []ASTNode
+	All            bool
+	From           TableExpr
+	Join           []JoinExpr
+	Closure        ASTNode // WHERE
+	TextRankMethod string  // "bm25" o "tf_idf" tras WHERE MATCH(...) USING
+	GroupBy        []ASTNode
+	Having         ASTNode
+	OrderBy        *OrderBy
+	Limit          *Limit
 }
 
 type CreateTable struct {
@@ -236,15 +237,20 @@ type CreateIndex struct {
 	Options     map[string]ASTNode
 }
 
-type DropTable struct {
-	BaseNode
-	Name     string
-	IfExists bool
-}
+type DropType uint8
 
-type DropIndex struct {
+const (
+	DropTable DropType = iota
+	DropIndex
+)
+
+type DropExpr struct {
 	BaseNode
-	Name     string
+	Type DropType
+	Name string
+	// Table solo se usa en DROP INDEX nombre ON tabla para deshacer la
+	// ambigüedad cuando dos tablas tienen un índice con el mismo nombre.
+	Table    string
 	IfExists bool
 }
 

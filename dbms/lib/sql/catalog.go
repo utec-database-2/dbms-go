@@ -26,6 +26,11 @@ const (
 	RTreeIndexKind
 	// IVFIndexKind: IVF-Flat sobre una columna VECTOR(K) (búsqueda k-NN).
 	IVFIndexKind
+	// HNSWIndexKind: HNSW sobre una columna VECTOR(K) (búsqueda k-NN).
+	HNSWIndexKind
+	// ImageIndexKind: IVF-Flat sobre histogramas de imagen (SIFT + codebook).
+	// La columna guarda la ruta de la imagen; el vector se calcula al indexar.
+	ImageIndexKind
 )
 
 func (k IndexKind) String() string {
@@ -40,6 +45,10 @@ func (k IndexKind) String() string {
 		return "r-tree"
 	case IVFIndexKind:
 		return "ivf"
+	case HNSWIndexKind:
+		return "hnsw"
+	case ImageIndexKind:
+		return "image-ivf"
 	}
 	return "unknown"
 }
@@ -100,7 +109,8 @@ type Table struct {
 
 	// text cachea la estadística del corpus de cada columna para el scoring
 	// textual (MATCH ... USING implícito). Se descarta en cada escritura.
-	text map[int]*textCorpus
+	text      map[int]*textCorpus
+	textRanks map[int]*sqlRankedIndex // cache SPIMI por columna; invalidado al escribir
 
 	mu sync.RWMutex
 }
@@ -164,8 +174,8 @@ func (t *Table) IndexNames() []string {
 	return append([]string(nil), t.order...)
 }
 
-// dropIndex quita un índice del catálogo. Se usa para deshacer un CREATE INDEX
-// que no llegó a registrarse en el catálogo persistido.
+// dropIndex quita un índice del catálogo en memoria de esta tabla. No toca el
+// registro global ni el catálogo en disco: de eso se encarga Engine.
 func (t *Table) dropIndex(name string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
