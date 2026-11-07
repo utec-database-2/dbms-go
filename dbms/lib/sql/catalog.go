@@ -28,6 +28,9 @@ const (
 	IVFIndexKind
 	// HNSWIndexKind: HNSW sobre una columna VECTOR(K) (búsqueda k-NN).
 	HNSWIndexKind
+	// ImageIndexKind: IVF-Flat sobre histogramas de imagen (SIFT + codebook).
+	// La columna guarda la ruta de la imagen; el vector se calcula al indexar.
+	ImageIndexKind
 )
 
 func (k IndexKind) String() string {
@@ -44,6 +47,8 @@ func (k IndexKind) String() string {
 		return "ivf"
 	case HNSWIndexKind:
 		return "hnsw"
+	case ImageIndexKind:
+		return "image-ivf"
 	}
 	return "unknown"
 }
@@ -104,7 +109,7 @@ type Table struct {
 
 	// text cachea la estadística del corpus de cada columna para el scoring
 	// textual (MATCH ... USING implícito). Se descarta en cada escritura.
-	text map[int]*textCorpus
+	text      map[int]*textCorpus
 	textRanks map[int]*sqlRankedIndex // cache SPIMI por columna; invalidado al escribir
 
 	mu sync.RWMutex

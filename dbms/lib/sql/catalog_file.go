@@ -48,6 +48,7 @@ type indexDisk struct {
 	NList          int     `json:"nlist,omitempty"`
 	NProbe         int     `json:"nprobe,omitempty"`
 	Metric         string  `json:"metric,omitempty"`
+	K              int     `json:"k,omitempty"` // tamaño del codebook (índice IMAGE)
 	EfConstruction int     `json:"ef_construction,omitempty"`
 	EfSearch       int     `json:"ef_search,omitempty"`
 	M              int     `json:"m,omitempty"`
@@ -96,6 +97,9 @@ func (e *Engine) saveCatalog() error {
 				entry.NList = nlist
 				entry.NProbe = nprobe
 				entry.Metric = vectorMetricName(metric)
+				if ivfIdx.image != nil {
+					entry.K = ivfIdx.dim
+				}
 			}
 			if hnswIdx, ok := idx.(*hnswIndex); ok {
 				cfg := hnswIdx.options()

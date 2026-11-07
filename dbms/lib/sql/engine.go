@@ -23,6 +23,7 @@ import (
 	"github.com/dbms-go/v2/dbms/lib/lockmanager"
 	"github.com/dbms-go/v2/dbms/lib/storage"
 	"github.com/dbms-go/v2/dbms/lib/transaction"
+	metricpkg "github.com/dbms-go/v2/dbms/lib/vector/metric"
 )
 
 // StepKind clasifica un paso del plan de ejecución.
@@ -552,7 +553,32 @@ func (e *Engine) execCreateIndex(n *ast.CreateIndex) (*Result, error) {
 		if err != nil {
 			return nil, err
 		}
+		if cfg.K != 0 {
+			return nil, fmt.Errorf("sql: la opción k solo existe en USING IMAGE")
+		}
 		idx, err = e.createIVFIndex(tbl, n.Name, col, cfg)
+		if err != nil {
+			return nil, err
+		}
+	case "image":
+		if n.Unique {
+			return nil, fmt.Errorf("sql: un índice IMAGE no puede ser UNIQUE")
+		}
+		cfg, err := parseIVFConfig(n)
+		if err != nil {
+			return nil, err
+		}
+		// Los histogramas BoW se comparan con coseno salvo que se pida otra métrica.
+		hasMetric := false
+		for key := range n.Options {
+			if strings.EqualFold(key, "metric") {
+				hasMetric = true
+			}
+		}
+		if !hasMetric {
+			cfg.Metric = metricpkg.Cosine
+		}
+		idx, err = e.createImageIndex(tbl, n.Name, col, cfg)
 		if err != nil {
 			return nil, err
 		}
@@ -577,7 +603,7 @@ func (e *Engine) execCreateIndex(n *ast.CreateIndex) (*Result, error) {
 			return nil, err
 		}
 	default:
-		return nil, fmt.Errorf("sql: tipo de índice %q no soportado (use IVF o HNSW)", n.Using)
+		return nil, fmt.Errorf("sql: tipo de índice %q no soportado (use IVF, HNSW o IMAGE)", n.Using)
 	}
 	e.registerIndex(tbl, idx.Name())
 	if err := e.saveCatalog(); err != nil {
@@ -657,6 +683,9 @@ func (e *Engine) execDropIndex(n *ast.DropExpr) (*Result, error) {
 		return nil, err
 	}
 	e.unregisterIndex(tbl, idx.Name())
+	if ivf, ok := idx.(*ivfIndex); ok && ivf.image != nil {
+		_ = os.Remove(ivf.image.codebookPath)
+	}
 	if err := idx.Close(); err != nil {
 		return nil, fmt.Errorf("sql: el índice %s se eliminó del catálogo pero no se pudo cerrar: %w", idx.Name(), err)
 	}
@@ -739,6 +768,7 @@ func (e *Engine) execDropTable(n *ast.DropExpr) (*Result, error) {
 		return nil, fmt.Errorf("sql: la tabla %s no existe", n.Name)
 	}
 	e.unregisterTableIndexes(tbl)
+	removeImageCodebooks(tbl)
 	if err := tbl.Close(); err != nil {
 		return nil, err
 	}

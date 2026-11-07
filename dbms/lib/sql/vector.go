@@ -37,6 +37,8 @@ type ivfConfig struct {
 	NList  int
 	NProbe int
 	Metric metricpkg.Metric
+	// K es el tamaño del codebook; solo lo usa el índice IMAGE.
+	K int
 }
 
 // parseIVFConfig traduce las opciones del AST. Los valores admiten tanto
@@ -57,6 +59,15 @@ func parseIVFConfig(n *ast.CreateIndex) (ivfConfig, error) {
 				return cfg, fmt.Errorf("sql: opción nprobe: %w", err)
 			}
 			cfg.NProbe = v
+		case "k":
+			v, err := optionInt(node)
+			if err != nil {
+				return cfg, fmt.Errorf("sql: opción k: %w", err)
+			}
+			if v <= 0 {
+				return cfg, fmt.Errorf("sql: k debe ser positivo")
+			}
+			cfg.K = v
 		case "metric":
 			v, err := optionString(node)
 			if err != nil {
@@ -213,6 +224,10 @@ type ivfIndex struct {
 	nprobe int
 	metric metricpkg.Metric
 
+	// image, si no es nil, indica un índice IMAGE: la columna guarda la ruta o
+	// los bytes de una imagen y el vector se calcula con el codebook.
+	image *imageSource
+
 	mu      sync.RWMutex
 	index   *ivfpkg.IVFFlatIndex
 	pending []ivfPending
@@ -227,7 +242,12 @@ func (idx *ivfIndex) SupportsRange() bool            { return false }
 func (idx *ivfIndex) vectorDim() int                 { return idx.dim }
 func (idx *ivfIndex) vectorMetric() metricpkg.Metric { return idx.metric }
 func (idx *ivfIndex) searchParameter() int           { return idx.nprobe }
-func (idx *ivfIndex) vectorKind() string             { return "IVF" }
+func (idx *ivfIndex) vectorKind() string {
+	if idx.image != nil {
+		return "IMAGE"
+	}
+	return "IVF"
+}
 
 func (idx *ivfIndex) resetLocked() {
 	idx.index = nil
@@ -244,9 +264,19 @@ func (idx *ivfIndex) vectorOf(row storage.Tuple) ([]float32, error) {
 	if row[idx.pos] == nil {
 		return nil, nil // una columna vectorial nula no se indexa
 	}
-	vec, ok := row[idx.pos].([]float32)
-	if !ok {
-		return nil, fmt.Errorf("sql: la columna %s no contiene un vector", idx.col)
+	var vec []float32
+	if idx.image != nil {
+		v, err := idx.image.vector(row[idx.pos])
+		if err != nil {
+			return nil, err
+		}
+		vec = v
+	} else {
+		v, ok := row[idx.pos].([]float32)
+		if !ok {
+			return nil, fmt.Errorf("sql: la columna %s no contiene un vector", idx.col)
+		}
+		vec = v
 	}
 	if len(vec) != idx.dim {
 		return nil, fmt.Errorf("sql: el vector de %s tiene %d dimensiones, se esperaban %d",
@@ -800,6 +830,17 @@ func (ec *evalContext) evalVectorFunc(fn *ast.FuncCallExpr) (any, bool, error) {
 		}
 		return vec, true, nil
 
+	case "image_vector", "vector_imagen":
+		if len(fn.Args) != 1 {
+			return nil, true, fmt.Errorf("sql: IMAGE_VECTOR espera (ruta | bytes)")
+		}
+		v, err := ec.eval(fn.Args[0])
+		if err != nil {
+			return nil, true, err
+		}
+		vec, err := ec.evalImageVector(v)
+		return vec, true, err
+
 	case "vector_distance", "distancia_vector", "vector_dist", "knn_distance":
 		if len(fn.Args) != 2 && len(fn.Args) != 3 {
 			return nil, true, fmt.Errorf("sql: vector_distance espera (vector, vector [, métrica])")
@@ -812,11 +853,11 @@ func (ec *evalContext) evalVectorFunc(fn *ast.FuncCallExpr) (any, bool, error) {
 			}
 			args[i] = v
 		}
-		a, err := toVector32(args[0])
+		a, err := ec.vectorArg(args[0])
 		if err != nil {
 			return nil, true, err
 		}
-		b, err := toVector32(args[1])
+		b, err := ec.vectorArg(args[1])
 		if err != nil {
 			return nil, true, err
 		}
