@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ClockArrowUp,
   Eraser,
+  Images,
   FileSpreadsheet,
   GitBranch,
   LayoutDashboard,
@@ -12,6 +13,7 @@ import {
   Sparkles,
   Sun,
   Table2,
+  TextSearch,
   WandSparkles,
 } from "lucide-react";
 import Header from "./components/Header";
@@ -21,6 +23,8 @@ import QueryPanel from "./components/QueryPanel";
 import ResultPanel from "./components/ResultPanel";
 import ExecutionPlanPanel from "./components/ExecutionPlanPanel";
 import MapPanel from "./components/MapPanel";
+import TextSearchPanel from "./components/TextSearchPanel";
+import VectorSearchPanel from "./components/VectorSearchPanel";
 import Dashboard from "./components/Dashboard";
 import SettingsDialog from "./components/SettingsDialog";
 import ImportDialog from "./components/ImportDialog";
@@ -56,9 +60,18 @@ function App() {
   // Diálogo abierto: "settings" | "palette" | "history" | { type: "import", file }.
   const [dialog, setDialog] = useState(null);
   const closeDialog = useCallback(() => setDialog(null), []);
-  // La consulta espacial vive en una ventana emergente que se abre desde la
-  // barra de la izquierda (queda montada para no perder la búsqueda).
-  const [mapOpen, setMapOpen] = useState(false);
+  // Las herramientas de consulta especializada (espacial, textual y
+  // multimedia) viven en ventanas emergentes que se abren desde la barra de la
+  // izquierda; quedan montadas para no perder la búsqueda. Solo una a la vez.
+  const [toolWindow, setToolWindow] = useState(null); // null | "map" | "text" | "vector"
+  const mapOpen = toolWindow === "map";
+  const toggleWindow = useCallback((name) => setToolWindow((w) => (w === name ? null : name)), []);
+  const closeWindow = useCallback(() => setToolWindow(null), []);
+  // Desde una ventana de búsqueda: lleva su SQL equivalente al editor.
+  const openSQL = useCallback((sql) => {
+    setQuery(sql);
+    setToolWindow(null);
+  }, []);
 
   const showPlan = settings.showPlan;
   const togglePlan = useCallback(
@@ -241,20 +254,22 @@ function App() {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
         setDialog((d) => (d === "palette" ? null : "palette"));
-      } else if (event.key === "Escape" && mapOpen && !document.querySelector(".modal-layer")) {
-        setMapOpen(false);
+      } else if (event.key === "Escape" && toolWindow && !document.querySelector(".modal-layer")) {
+        setToolWindow(null);
       }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [mapOpen]);
+  }, [toolWindow]);
 
   const commands = useMemo(
     () => [
       { id: "run", group: "Consulta", label: "Ejecutar consulta", hint: "Ctrl Enter", icon: <Play size={15} />, run: () => handleExecute() },
       { id: "format", group: "Consulta", label: "Formatear SQL", icon: <WandSparkles size={15} />, run: () => setQuery((q) => formatSql(q)) },
       { id: "clear", group: "Consulta", label: "Limpiar editor", icon: <Eraser size={15} />, run: () => setQuery("") },
-      { id: "map", group: "Herramientas", label: "Abrir consulta espacial", icon: <MapIcon size={15} />, run: () => setMapOpen(true) },
+      { id: "map", group: "Herramientas", label: "Abrir consulta espacial", icon: <MapIcon size={15} />, run: () => setToolWindow("map") },
+      { id: "text", group: "Herramientas", label: "Abrir búsqueda textual (TF-IDF / BM25)", icon: <TextSearch size={15} />, run: () => setToolWindow("text") },
+      { id: "vector", group: "Herramientas", label: "Abrir búsqueda multimedia (HNSW / IVF)", icon: <Images size={15} />, run: () => setToolWindow("vector") },
       {
         id: "plan",
         group: "Herramientas",
@@ -329,12 +344,12 @@ function App() {
 
       <div className="workbench">
         <ActivityBar
-          mapOpen={mapOpen}
+          windowOpen={toolWindow}
           planOpen={showPlan}
           historyOpen={dialog === "history"}
           paletteOpen={dialog === "palette"}
           settingsOpen={dialog === "settings"}
-          onMap={() => setMapOpen((v) => !v)}
+          onWindow={toggleWindow}
           onHistory={() => setDialog("history")}
           onPalette={() => setDialog("palette")}
           onPlan={togglePlan}
@@ -376,7 +391,7 @@ function App() {
               rowsPerPage={settings.rowsPerPage}
               linked={linked}
               onLink={setLinked}
-              onShowOnMap={() => setMapOpen(true)}
+              onShowOnMap={() => setToolWindow("map")}
             />
           }
           plan={
@@ -394,10 +409,43 @@ function App() {
       <div
         className={mapOpen ? "map-window-layer open" : "map-window-layer"}
         aria-hidden={!mapOpen}
-        onMouseDown={(event) => event.target === event.currentTarget && setMapOpen(false)}
+        onMouseDown={(event) => event.target === event.currentTarget && closeWindow()}
       >
         <div className="map-window">
-          <MapPanel linked={linked} onLink={setLinked} onClose={() => setMapOpen(false)} />
+          <MapPanel linked={linked} onLink={setLinked} onClose={closeWindow} />
+        </div>
+      </div>
+
+      {/* Búsqueda textual (Parte 3) y multimedia (Parte 4). */}
+      <div
+        className={toolWindow === "text" ? "map-window-layer open" : "map-window-layer"}
+        aria-hidden={toolWindow !== "text"}
+        onMouseDown={(event) => event.target === event.currentTarget && closeWindow()}
+      >
+        <div className="map-window">
+          <TextSearchPanel
+            tables={tables}
+            active={toolWindow === "text"}
+            onClose={closeWindow}
+            onOpenSQL={openSQL}
+            onTablesChanged={refreshTables}
+          />
+        </div>
+      </div>
+
+      <div
+        className={toolWindow === "vector" ? "map-window-layer open" : "map-window-layer"}
+        aria-hidden={toolWindow !== "vector"}
+        onMouseDown={(event) => event.target === event.currentTarget && closeWindow()}
+      >
+        <div className="map-window">
+          <VectorSearchPanel
+            tables={tables}
+            active={toolWindow === "vector"}
+            onClose={closeWindow}
+            onOpenSQL={openSQL}
+            onTablesChanged={refreshTables}
+          />
         </div>
       </div>
 
