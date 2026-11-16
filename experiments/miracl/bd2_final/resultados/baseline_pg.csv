@@ -1,0 +1,10 @@
+﻿documents,mode,open_db_ms,select_1_median_ms,scope
+1000,auto,39.5449,0.13679999999999998,open_db fuera de consulta; SELECT 1 ida/vuelta (no red pura)
+1000,force_custom_plan,47.7008,0.1153,open_db fuera de consulta; SELECT 1 ida/vuelta (no red pura)
+1000,force_generic_plan,62.7477,0.0975,open_db fuera de consulta; SELECT 1 ida/vuelta (no red pura)
+10000,auto,152.5836,0.17115,open_db fuera de consulta; SELECT 1 ida/vuelta (no red pura)
+10000,force_custom_plan,110.4375,0.1037,open_db fuera de consulta; SELECT 1 ida/vuelta (no red pura)
+10000,force_generic_plan,48.9575,0.0668,open_db fuera de consulta; SELECT 1 ida/vuelta (no red pura)
+100000,auto,56.7334,0.15355,open_db fuera de consulta; SELECT 1 ida/vuelta (no red pura)
+100000,force_custom_plan,71.6142,0.0706,open_db fuera de consulta; SELECT 1 ida/vuelta (no red pura)
+100000,force_generic_plan,63.7401,0.08545,open_db fuera de consulta; SELECT 1 ida/vuelta (no red pura)
