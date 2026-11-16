@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/dbms-go/v2/dbms/lib/benchclock"
 	"hash"
 	"math"
 	"os"
@@ -207,9 +208,9 @@ func buildCorpus(path, dir string, limit int) (corpus, error) {
 		if res.Known[id] {
 			return res, fmt.Errorf("documento línea %d: id duplicado %q", lineNo, id)
 		}
-		start := time.Now()
+		start := benchclock.Now()
 		tokens, err := text.PreprocessText(*doc.Text)
-		res.Preprocess += time.Since(start)
+		res.Preprocess += benchclock.Since(start)
 		if err != nil {
 			return res, fmt.Errorf("preprocesar doc %q: %w", id, err)
 		}
@@ -394,6 +395,11 @@ func measure(reader *spimi.Reader, qs []query, cfg config, data corpus,
 				fmt.Sprintf("%.6f", median(times[method])*1000),
 				fmt.Sprintf("%.6f", p95(times[method])*1000), string(batchSeries),
 			}
+			profile, err := finalProfile(reader, method, q, opts, hits[method], batchSizes[method], cfg.repeats)
+			if err != nil {
+				return fmt.Errorf("perfil %s/%s: %w", q.ID, method, err)
+			}
+			row = append(row, profile)
 			if err := csvWriter.Write(row); err != nil {
 				return err
 			}
@@ -410,6 +416,7 @@ var csvHeader = []string{
 	"retrieved_ids", "relevant_in_subset", "precision_at_k", "recall_at_k", "latencies_ms",
 	"go_version", "goos", "num_cpu", "gomaxprocs", "bm25_k1", "bm25_b", "timing_scope", "index_source",
 	"batch_size", "target_sample_ms", "query_median_us", "query_p95_us", "batch_durations_ms",
+	"profile_go_json",
 }
 
 func run(cfg config) error {
@@ -497,9 +504,9 @@ func run(cfg config) error {
 			output.Close()
 			return fmt.Errorf("n=%d: %w", n, err)
 		}
-		t0 := time.Now()
+		t0 := benchclock.Now()
 		reader, err := spimi.Open(dir)
-		openTime := time.Since(t0)
+		openTime := benchclock.Since(t0)
 		if err != nil {
 			output.Close()
 			return err
