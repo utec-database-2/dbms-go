@@ -189,6 +189,18 @@ func (e *Engine) openStorage(tbl *Table, schema storage.Table, clustered bool, i
 			}
 			continue
 		}
+		if spec.Kind == AudioIndexKind.String() {
+			cfg, err := ivfConfigFromDisk(spec)
+			if err != nil {
+				return err
+			}
+			cfg.K = spec.K
+			if _, err := e.createAudioIndex(tbl, spec.Name, spec.Column, cfg); err != nil {
+				return err
+			}
+			continue
+		}
+
 		if spec.Kind == HNSWIndexKind.String() {
 			cfg := defaultHNSWConfig()
 			cfg.EfConstruction = spec.EfConstruction

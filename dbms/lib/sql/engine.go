@@ -582,6 +582,29 @@ func (e *Engine) execCreateIndex(n *ast.CreateIndex) (*Result, error) {
 		if err != nil {
 			return nil, err
 		}
+	case "audio":
+		if n.Unique {
+			return nil, fmt.Errorf("sql: un índice AUDIO no puede ser UNIQUE")
+		}
+		cfg, err := parseIVFConfig(n)
+		if err != nil {
+			return nil, err
+		}
+		// Los histogramas MFCC se comparan con coseno salvo que se pida otra métrica.
+		hasMetric := false
+		for key := range n.Options {
+			if strings.EqualFold(key, "metric") {
+				hasMetric = true
+			}
+		}
+		if !hasMetric {
+			cfg.Metric = metricpkg.Cosine
+		}
+		idx, err = e.createAudioIndex(tbl, n.Name, col, cfg)
+		if err != nil {
+			return nil, err
+		}
+
 	case "hnsw":
 		if n.Unique {
 			return nil, fmt.Errorf("sql: un índice HNSW no puede ser UNIQUE")
@@ -686,6 +709,9 @@ func (e *Engine) execDropIndex(n *ast.DropExpr) (*Result, error) {
 	if ivf, ok := idx.(*ivfIndex); ok && ivf.image != nil {
 		_ = os.Remove(ivf.image.codebookPath)
 	}
+	if ivf, ok := idx.(*ivfIndex); ok && ivf.audio != nil {
+		_ = os.Remove(ivf.audio.codebookPath)
+	}
 	if err := idx.Close(); err != nil {
 		return nil, fmt.Errorf("sql: el índice %s se eliminó del catálogo pero no se pudo cerrar: %w", idx.Name(), err)
 	}
@@ -769,6 +795,7 @@ func (e *Engine) execDropTable(n *ast.DropExpr) (*Result, error) {
 	}
 	e.unregisterTableIndexes(tbl)
 	removeImageCodebooks(tbl)
+	removeAudioCodebooks(tbl)
 	if err := tbl.Close(); err != nil {
 		return nil, err
 	}

@@ -31,6 +31,9 @@ const (
 	// ImageIndexKind: IVF-Flat sobre histogramas de imagen (SIFT + codebook).
 	// La columna guarda la ruta de la imagen; el vector se calcula al indexar.
 	ImageIndexKind
+	// AudioIndexKind: IVF-Flat sobre histogramas de audio (MFCC + codebook).
+	// La columna guarda la ruta del audio; el vector se calcula al indexar.
+	AudioIndexKind
 )
 
 func (k IndexKind) String() string {
@@ -49,6 +52,8 @@ func (k IndexKind) String() string {
 		return "hnsw"
 	case ImageIndexKind:
 		return "image-ivf"
+	case AudioIndexKind:
+		return "audio-ivf"
 	}
 	return "unknown"
 }
