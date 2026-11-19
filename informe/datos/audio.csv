@@ -1,0 +1,47 @@
+experiment,metric,N,method,params,build_ms,avg_query_ms,p95_query_ms,speedup,recall_5,recall_10,recall_20
+escalabilidad,cosine,1000,Secuencial,exacto,0.0000,0.1863,0.1994,1.0000,1.0000,1.0000,1.0000
+escalabilidad,cosine,1000,IVF-Flat,"nlist=32, nprobe=8",314.4579,0.0319,0.0427,5.8367,0.9880,0.9860,0.9775
+escalabilidad,cosine,1000,HNSW,"M=16, efC=100, efS=64",55.0517,0.0238,0.0274,7.8265,0.7560,0.7010,0.5695
+escalabilidad,cosine,10000,Secuencial,exacto,0.0000,2.1179,2.3716,1.0000,1.0000,1.0000,1.0000
+escalabilidad,cosine,10000,IVF-Flat,"nlist=100, nprobe=25",9532.0035,0.2573,0.2974,8.2303,0.9960,0.9970,0.9975
+escalabilidad,cosine,10000,HNSW,"M=16, efC=100, efS=64",952.8998,0.0463,0.0579,45.7251,0.5280,0.4620,0.3835
+escalabilidad,cosine,100000,Secuencial,exacto,0.0000,25.9154,28.4073,1.0000,1.0000,1.0000,1.0000
+escalabilidad,cosine,100000,IVF-Flat,"nlist=316, nprobe=79",32616.9404,2.2928,2.6939,11.3030,1.0000,1.0000,1.0000
+escalabilidad,cosine,100000,HNSW,"M=16, efC=100, efS=64",13216.9420,0.1178,0.1508,220.0783,0.5840,0.5660,0.4890
+tradeoff,cosine,7997,IVF-Flat,"nlist=89, nprobe=1",6740.5336,0.0236,0.0296,69.4938,0.6800,0.6490,0.6125
+tradeoff,cosine,7997,IVF-Flat,"nlist=89, nprobe=2",6740.5336,0.0326,0.0414,50.4359,0.8260,0.8200,0.7915
+tradeoff,cosine,7997,IVF-Flat,"nlist=89, nprobe=4",6740.5336,0.0505,0.0639,32.5352,0.9300,0.9300,0.9105
+tradeoff,cosine,7997,IVF-Flat,"nlist=89, nprobe=8",6740.5336,0.0872,0.1105,18.8173,0.9800,0.9790,0.9715
+tradeoff,cosine,7997,IVF-Flat,"nlist=89, nprobe=16",6740.5336,0.1540,0.1781,10.6582,0.9940,0.9930,0.9910
+tradeoff,cosine,7997,IVF-Flat,"nlist=89, nprobe=22",6740.5336,0.2021,0.2286,8.1225,0.9980,0.9970,0.9945
+tradeoff,cosine,7997,IVF-Flat,"nlist=89, nprobe=45",6740.5336,0.3891,0.4240,4.2192,0.9980,0.9990,0.9990
+tradeoff,cosine,7997,IVF-Flat,"nlist=89, nprobe=89",6740.5336,0.7524,0.7684,2.1821,1.0000,1.0000,0.9995
+tradeoff,cosine,7997,HNSW,"M=16, efC=100, efS=10",677.9359,0.0408,0.0499,40.2845,0.4700,0.4400,0.3800
+tradeoff,cosine,7997,HNSW,"M=16, efC=100, efS=16",677.9359,0.0437,0.0654,37.5751,0.4700,0.4400,0.3800
+tradeoff,cosine,7997,HNSW,"M=16, efC=100, efS=32",677.9359,0.0447,0.0840,36.7108,0.4700,0.4400,0.3800
+tradeoff,cosine,7997,HNSW,"M=16, efC=100, efS=64",677.9359,0.0795,0.1937,20.6389,0.4700,0.4400,0.3800
+tradeoff,cosine,7997,HNSW,"M=16, efC=100, efS=128",677.9359,0.0619,0.0984,26.5183,0.4700,0.4400,0.3800
+tradeoff,cosine,7997,HNSW,"M=16, efC=100, efS=256",677.9359,0.0517,0.0650,31.7334,0.4700,0.4400,0.3800
+escalabilidad,euclidean,1000,Secuencial,exacto,0.0000,0.1728,0.1794,1.0000,1.0000,1.0000,1.0000
+escalabilidad,euclidean,1000,IVF-Flat,"nlist=32, nprobe=8",74.5365,0.0606,0.0653,2.8525,0.9940,0.9920,0.9865
+escalabilidad,euclidean,1000,HNSW,"M=16, efC=100, efS=64",124.6112,0.0459,0.0943,3.7665,0.4240,0.4300,0.3750
+escalabilidad,euclidean,10000,Secuencial,exacto,0.0000,2.0150,2.5018,1.0000,1.0000,1.0000,1.0000
+escalabilidad,euclidean,10000,IVF-Flat,"nlist=100, nprobe=25",5785.0502,0.4213,0.4414,4.7829,1.0000,0.9990,0.9955
+escalabilidad,euclidean,10000,HNSW,"M=16, efC=100, efS=64",1584.9272,0.0665,0.1216,30.2995,0.3040,0.2530,0.2160
+escalabilidad,euclidean,100000,Secuencial,exacto,0.0000,25.0587,27.7339,1.0000,1.0000,1.0000,1.0000
+escalabilidad,euclidean,100000,IVF-Flat,"nlist=316, nprobe=79",7657.0158,2.2747,2.4344,11.0164,1.0000,1.0000,1.0000
+escalabilidad,euclidean,100000,HNSW,"M=16, efC=100, efS=64",20343.7210,0.0849,0.1159,295.0092,0.3500,0.3270,0.2805
+tradeoff,euclidean,7997,IVF-Flat,"nlist=89, nprobe=1",2916.1876,0.0299,0.0544,54.5869,0.7180,0.6720,0.6120
+tradeoff,euclidean,7997,IVF-Flat,"nlist=89, nprobe=2",2916.1876,0.0505,0.0865,32.2915,0.8980,0.8640,0.8145
+tradeoff,euclidean,7997,IVF-Flat,"nlist=89, nprobe=4",2916.1876,0.1044,0.1542,15.6099,0.9700,0.9530,0.9395
+tradeoff,euclidean,7997,IVF-Flat,"nlist=89, nprobe=8",2916.1876,0.1870,0.2303,8.7189,0.9880,0.9810,0.9750
+tradeoff,euclidean,7997,IVF-Flat,"nlist=89, nprobe=16",2916.1876,0.3297,0.3530,4.9449,0.9960,0.9940,0.9910
+tradeoff,euclidean,7997,IVF-Flat,"nlist=89, nprobe=22",2916.1876,0.3973,0.4202,4.1037,0.9960,0.9960,0.9945
+tradeoff,euclidean,7997,IVF-Flat,"nlist=89, nprobe=45",2916.1876,0.5406,0.5609,3.0159,1.0000,1.0000,0.9995
+tradeoff,euclidean,7997,IVF-Flat,"nlist=89, nprobe=89",2916.1876,0.6520,0.6740,2.5005,1.0000,1.0000,1.0000
+tradeoff,euclidean,7997,HNSW,"M=16, efC=100, efS=10",1268.2986,0.0562,0.0661,29.0170,0.2660,0.2500,0.2060
+tradeoff,euclidean,7997,HNSW,"M=16, efC=100, efS=16",1268.2986,0.0534,0.0600,30.5022,0.2660,0.2500,0.2060
+tradeoff,euclidean,7997,HNSW,"M=16, efC=100, efS=32",1268.2986,0.0605,0.0750,26.9679,0.2660,0.2500,0.2060
+tradeoff,euclidean,7997,HNSW,"M=16, efC=100, efS=64",1268.2986,0.0710,0.0990,22.9696,0.2660,0.2500,0.2060
+tradeoff,euclidean,7997,HNSW,"M=16, efC=100, efS=128",1268.2986,0.0793,0.1924,20.5555,0.2660,0.2500,0.2060
+tradeoff,euclidean,7997,HNSW,"M=16, efC=100, efS=256",1268.2986,0.0666,0.0838,24.4776,0.2660,0.2500,0.2060

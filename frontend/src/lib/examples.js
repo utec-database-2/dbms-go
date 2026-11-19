@@ -62,6 +62,30 @@ export const EXAMPLES = [
     sql: "SELECT nombre FROM ubicaciones WHERE dentro(ubicacion, POLYGON(POINT(-12.00, -77.10), POINT(-12.00, -77.00), POINT(-12.10, -77.00), POINT(-12.10, -77.10))) = true;",
   },
   {
+    name: "Tabla de documentos",
+    sql: "CREATE TABLE documentos CLUSTERED BY (id) (id INT PRIMARY KEY, titulo VARCHAR(80), categoria VARCHAR(40), contenido VARCHAR(600));",
+  },
+  {
+    name: "Búsqueda de texto (MATCH)",
+    sql: "SELECT id, titulo, MATCH(contenido, 'indice arbol consultas rango') AS score\nFROM documentos\nWHERE MATCH(contenido, 'indice arbol consultas rango') > 0\nORDER BY score DESC\nLIMIT 5;",
+  },
+  {
+    name: "Tabla de vectores",
+    sql: "CREATE TABLE embeddings CLUSTERED BY (id) (id INT PRIMARY KEY, nombre VARCHAR(40), v VECTOR(3));",
+  },
+  {
+    name: "Insertar vectores",
+    sql: "INSERT INTO embeddings VALUES (1, 'rojo', VECTOR(1, 0, 0)), (2, 'naranja', VECTOR(0.9, 0.4, 0)), (3, 'verde', VECTOR(0, 1, 0)), (4, 'azul', VECTOR(0, 0, 1)), (5, 'celeste', VECTOR(0, 0.5, 0.9));",
+  },
+  {
+    name: "Índice IVF",
+    sql: "CREATE INDEX idx_embeddings_v ON embeddings USING IVF (v) WITH (nlist=2, nprobe=2, metric='cosine');",
+  },
+  {
+    name: "k-NN vectorial",
+    sql: "SELECT id, nombre, vector_distance(v, VECTOR(1, 0.2, 0), 'cosine') AS distancia\nFROM embeddings\nORDER BY vector_distance(v, VECTOR(1, 0.2, 0), 'cosine')\nLIMIT 3;",
+  },
+  {
     name: "Script (varias)",
     sql: "BEGIN TRANSACTION;\nINSERT INTO alumno VALUES (4, 'Dan', 7);\nSELECT * FROM alumno WHERE codigo >= 1 AND codigo <= 4;\nEND TRANSACTION;",
   },

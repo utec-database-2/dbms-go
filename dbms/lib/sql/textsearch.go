@@ -91,6 +91,7 @@ func (t *Table) invalidateText() {
 	t.mu.Lock()
 	t.text = nil
 	t.mu.Unlock()
+	t.clearRankedIndexes() // cerrar readers y limpiar archivos de SPIMI
 }
 
 // scoreTFIDF mide la similitud entre un documento y una consulta: suma, para

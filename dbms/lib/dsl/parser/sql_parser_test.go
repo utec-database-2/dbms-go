@@ -99,6 +99,41 @@ func TestParseAllErrorIndicaSentencia(t *testing.T) {
 	}
 }
 
+func TestParseDropTableEIndex(t *testing.T) {
+	for _, tc := range []struct {
+		src      string
+		typ      ast.DropType
+		name     string
+		table    string
+		ifExists bool
+	}{
+		{"DROP TABLE alumnos", ast.DropTable, "alumnos", "", false},
+		{"DROP TABLE IF EXISTS alumnos", ast.DropTable, "alumnos", "", true},
+		{"DROP INDEX idx_nombre", ast.DropIndex, "idx_nombre", "", false},
+		{"DROP INDEX IF EXISTS idx_nombre", ast.DropIndex, "idx_nombre", "", true},
+		{"DROP INDEX idx_nombre ON alumnos", ast.DropIndex, "idx_nombre", "alumnos", false},
+	} {
+		p := Parse(lexer.Tokenize(tc.src, "\n"))
+		if p.Err() != nil {
+			t.Fatalf("%q: %v", tc.src, p.Err())
+		}
+		node, ok := p.Parent().(*ast.DropExpr)
+		if !ok {
+			t.Fatalf("%q: nodo %T, se esperaba *ast.DropExpr", tc.src, p.Parent())
+		}
+		if node.Type != tc.typ || node.Name != tc.name || node.Table != tc.table || node.IfExists != tc.ifExists {
+			t.Fatalf("%q: %+v", tc.src, node)
+		}
+	}
+
+	for _, src := range []string{"DROP INDEX", "DROP INDEX IF idx", "DROP"} {
+		p := Parse(lexer.Tokenize(src, "\n"))
+		if p.Err() == nil {
+			t.Errorf("%q: se esperaba error de sintaxis", src)
+		}
+	}
+}
+
 func TestParseSigueExigiendoUnaSentencia(t *testing.T) {
 	// Una sentencia con ";" final: válido, como hasta ahora.
 	p := Parse(lexer.Tokenize("SELECT * FROM alumnos;", "\n"))
