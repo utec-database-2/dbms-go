@@ -266,6 +266,9 @@ func (ec *evalContext) vectorArg(v any) ([]float32, error) {
 			if idx, ok := ec.table.imageIndex(); ok {
 				return idx.image.vector(v)
 			}
+			if idx, ok := ec.table.audioIndex(); ok {
+				return idx.audio.vector(v)
+			}
 		}
 	}
 	return nil, err

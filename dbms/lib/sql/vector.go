@@ -228,6 +228,10 @@ type ivfIndex struct {
 	// los bytes de una imagen y el vector se calcula con el codebook.
 	image *imageSource
 
+	// audio, si no es nil, indica un índice AUDIO: la columna guarda la ruta o
+	// los bytes de un audio y el vector se calcula con el vocabulario.
+	audio *audioSource
+
 	mu      sync.RWMutex
 	index   *ivfpkg.IVFFlatIndex
 	pending []ivfPending
@@ -245,6 +249,9 @@ func (idx *ivfIndex) searchParameter() int           { return idx.nprobe }
 func (idx *ivfIndex) vectorKind() string {
 	if idx.image != nil {
 		return "IMAGE"
+	}
+	if idx.audio != nil {
+		return "AUDIO"
 	}
 	return "IVF"
 }
@@ -267,6 +274,12 @@ func (idx *ivfIndex) vectorOf(row storage.Tuple) ([]float32, error) {
 	var vec []float32
 	if idx.image != nil {
 		v, err := idx.image.vector(row[idx.pos])
+		if err != nil {
+			return nil, err
+		}
+		vec = v
+	} else if idx.audio != nil {
+		v, err := idx.audio.vector(row[idx.pos])
 		if err != nil {
 			return nil, err
 		}
@@ -839,6 +852,17 @@ func (ec *evalContext) evalVectorFunc(fn *ast.FuncCallExpr) (any, bool, error) {
 			return nil, true, err
 		}
 		vec, err := ec.evalImageVector(v)
+		return vec, true, err
+
+	case "audio_vector", "vector_audio":
+		if len(fn.Args) != 1 {
+			return nil, true, fmt.Errorf("sql: AUDIO_VECTOR espera (ruta | bytes)")
+		}
+		v, err := ec.eval(fn.Args[0])
+		if err != nil {
+			return nil, true, err
+		}
+		vec, err := ec.evalAudioVector(v)
 		return vec, true, err
 
 	case "vector_distance", "distancia_vector", "vector_dist", "knn_distance":

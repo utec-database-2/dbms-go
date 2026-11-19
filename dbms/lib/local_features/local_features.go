@@ -1,6 +1,7 @@
 package local_features
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"path/filepath"
@@ -18,6 +19,12 @@ type Vocabulary struct {
 	centroids [][]float64
 	idf       []float64
 	size      int
+}
+
+type serializedVocabulary struct {
+	Centroids [][]float64 `json:"centroids"`
+	IDF       []float64   `json:"idf"`
+	Size      int         `json:"size"`
 }
 
 // NewVocabulary creates an empty vocabulary with k visual/audio words.
@@ -264,4 +271,32 @@ func hasImageExtension(filename string) bool {
 	default:
 		return false
 	}
+}
+
+func (v *Vocabulary) GobEncode() ([]byte, error) {
+	serialized := serializedVocabulary{
+		Centroids: v.centroids,
+		IDF:       v.idf,
+		Size:      v.size,
+	}
+	return json.Marshal(serialized)
+}
+
+func (v *Vocabulary) GobDecode(data []byte) error {
+	var serialized serializedVocabulary
+	if err := json.Unmarshal(data, &serialized); err != nil {
+		return err
+	}
+	v.centroids = serialized.Centroids
+	v.idf = serialized.IDF
+	v.size = serialized.Size
+	return nil
+}
+
+// Size devuelve la cantidad de palabras del vocabulario (K).
+func (v *Vocabulary) Size() int {
+	if v == nil {
+		return 0
+	}
+	return v.size
 }

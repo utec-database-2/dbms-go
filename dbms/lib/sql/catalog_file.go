@@ -97,7 +97,7 @@ func (e *Engine) saveCatalog() error {
 				entry.NList = nlist
 				entry.NProbe = nprobe
 				entry.Metric = vectorMetricName(metric)
-				if ivfIdx.image != nil {
+				if ivfIdx.image != nil || ivfIdx.audio != nil {
 					entry.K = ivfIdx.dim
 				}
 			}

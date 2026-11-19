@@ -12,6 +12,7 @@
 package main
 
 import (
+	"encoding/gob"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,6 +31,7 @@ import (
 	"github.com/dbms-go/v2/dbms/lib/index/ivf"
 	"github.com/dbms-go/v2/dbms/lib/index/text/ranking"
 	"github.com/dbms-go/v2/dbms/lib/index/text/spimi"
+	"github.com/dbms-go/v2/dbms/lib/local_features"
 	"github.com/dbms-go/v2/dbms/lib/sql"
 	text "github.com/dbms-go/v2/dbms/lib/text"
 	"github.com/dbms-go/v2/dbms/lib/vector"
@@ -951,11 +953,46 @@ func handleVectorItems(db *database) http.HandlerFunc {
 	}
 }
 
+func isAudioUpload(filename string) bool {
+	switch strings.ToLower(filepath.Ext(filename)) {
+	case ".wav", ".mp3", ".ogg", ".flac", ".m4a", ".aac":
+		return true
+	default:
+		return false
+	}
+}
+
+func loadAudioDemoVocab(mediaDir string) (*local_features.Vocabulary, error) {
+	candidates := []string{
+		filepath.Join(mediaDir, "audio", "vocab.gob"),
+		filepath.Join("data", "audio", "vocabulary.gob"),
+	}
+	var lastErr error
+	for _, p := range candidates {
+		f, err := os.Open(p)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		var v local_features.Vocabulary
+		err = gob.NewDecoder(f).Decode(&v)
+		f.Close()
+		if err == nil && v.Size() > 0 {
+			return &v, nil
+		}
+		lastErr = err
+	}
+	return nil, fmt.Errorf("no se encontró el vocabulario de audio (vocab.gob): %w", lastErr)
+}
+
 // POST /api/vector/extract (multipart, campo "file"): extrae el vector de una
 // imagen subida para usarla como consulta. Usa el histograma de color, que no
 // necesita OpenCV; "dim" pide la dimensión de la columna (debe ser un cubo:
 // 8, 27, 64, 125...).
-func handleVectorExtract() http.HandlerFunc {
+// Tambien puede extraer MFCC de audio (wav, mp3, ogg, flac, m4a, aac) si se
+// encuentra el vocabulario de audio (vocab.gob) en data/audio/vocabulary.gob o
+// media/audio/vocab.gob.
+func handleVectorExtract(mediaDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseMultipartForm(16 << 20); err != nil {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("form inválido: %w", err))
@@ -973,6 +1010,42 @@ func handleVectorExtract() http.HandlerFunc {
 			return
 		}
 
+		// Audio: extrae MFCC y lo vectoriza con el vocabulario de audio (si existe).
+		if isAudioUpload(header.Filename) || strings.EqualFold(r.FormValue("kind"), "audio") {
+			vocab, err := loadAudioDemoVocab(mediaDir)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, fmt.Errorf("no se puede cargar el vocabulario de audio: %w", err))
+				return
+			}
+			var dim int
+			if d := r.FormValue("dim"); d != "" {
+				if _, err := fmt.Sscan(d, &dim); err != nil || dim <= 0 {
+					writeError(w, http.StatusBadRequest, fmt.Errorf("dim inválida: %q", d))
+					return
+				}
+			}
+			if dim > 0 && dim != vocab.Size() {
+				writeError(w, http.StatusBadRequest, fmt.Errorf("la columna tiene %d dimensiones y el vocabulario de audio produce %d; para otros vectores hace falta su propio extractor (SIFT/MFCC)", dim, vocab.Size()))
+				return
+			}
+			ext := &vector.AudioBoWFeature{K: vocab.Size(), Vocab: vocab}
+			start := time.Now()
+			vec, err := ext.Vector(raw)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, fmt.Errorf("%s: %w (formatos: WAV, MP3, OGG, FLAC, M4A, AAC)", header.Filename, err))
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"file":      header.Filename,
+				"vector":    vec,
+				"dim":       len(vec),
+				"extractor": fmt.Sprintf("MFCC + BoW con vocabulario de audio (%d dimensiones)", vocab.Size()),
+				"elapsedMs": ms(time.Since(start)),
+			})
+			return
+		}
+
+		//  Imagen: histograma de color RGB (normalizado L2) con b³ bins (b=4, 8, 27, 64...).
 		bins := 4
 		if d := r.FormValue("dim"); d != "" {
 			var dim int

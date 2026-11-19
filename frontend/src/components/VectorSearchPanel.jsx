@@ -76,6 +76,20 @@ function Thumb({ values, media, label }) {
   );
 }
 
+function parseVec(val) {
+  if (Array.isArray(val)) return val;
+  if (typeof val === "string" && val.startsWith("[") && val.endsWith("]")) {
+    const nums = val
+      .slice(1, -1)
+      .trim()
+      .split(/[\s,]+/)
+      .filter(Boolean)
+      .map(Number);
+    if (nums.length > 0 && nums.every((n) => !Number.isNaN(n))) return nums;
+  }
+  return null;
+}
+
 function VectorSearchPanel({ tables, onClose, onOpenSQL, onTablesChanged, active }) {
   const vecTables = useMemo(() => tablesWith(tables, isVectorType), [tables]);
   const [tableName, setTableName] = useState("");
@@ -105,7 +119,6 @@ function VectorSearchPanel({ tables, onClose, onOpenSQL, onTablesChanged, active
   const column = vecColumns.some((c) => c.Name === columnName) ? columnName : (vecColumns[0]?.Name ?? "");
   const dim = vectorDim(vecColumns.find((c) => c.Name === column)?.Type);
   const cube = Math.round(Math.cbrt(dim));
-  const canUpload = dim > 0 && cube ** 3 === dim;
   const sourceKey = table ? `${table.Name}|${column}|${table.Records}` : "";
 
   // Carga la colección (filas con vector) cuando cambia la tabla o su tamaño.
@@ -130,6 +143,13 @@ function VectorSearchPanel({ tables, onClose, onOpenSQL, onTablesChanged, active
 
   const columns = data?.columns || items?.columns || [];
   const media = mediaColumn(columns, (items?.items || []).map((it) => it.values));
+  const isAudioCollection = media?.kind === "audio" || (dim === 128 && media?.kind !== "image");
+  const canUploadImage = dim > 0 && cube ** 3 === dim;
+  const canUploadAudio = isAudioCollection && dim === 128;
+  const canUpload = canUploadImage || canUploadAudio;
+  const hasImagenes = vecTables.some((t) => t.Name.toLowerCase() === "imagenes" && t.Records > 0);
+  const hasCanciones = vecTables.some((t) => t.Name.toLowerCase() === "canciones" && t.Records > 0);
+
   const tIdx = titleIndex(columns, media?.index ?? -1);
   const cIdx = categoryIndex(columns);
   const labelOf = (values, row) => (tIdx >= 0 ? values?.[tIdx] : `Fila ${row + 1}`);
@@ -171,8 +191,16 @@ function VectorSearchPanel({ tables, onClose, onOpenSQL, onTablesChanged, active
     if (!file) return;
     setError(null);
     try {
-      const res = await extractVector(file, dim);
-      const q = { type: "upload", name: file.name, preview: URL.createObjectURL(file), vector: res.vector, extractor: res.extractor };
+      const isAudio = canUploadAudio || /\.(wav|mp3|ogg|flac|m4a|aac)$/i.test(file.name);
+      const res = await extractVector(file, dim, isAudio ? "audio" : "image");
+      const q = { 
+        type: "upload", 
+        kind: isAudio ? "audio" : "image",
+        name: file.name, 
+        preview: URL.createObjectURL(file), 
+        vector: res.vector, 
+        extractor: res.extractor 
+      };
       setQuery((old) => {
         if (old?.preview) URL.revokeObjectURL(old.preview);
         return q;
@@ -183,14 +211,17 @@ function VectorSearchPanel({ tables, onClose, onOpenSQL, onTablesChanged, active
     }
   };
 
-  const handleDemo = async () => {
+  const handleDemo = async (kind = "vector") => {
     setDemoBusy(true);
     setError(null);
     try {
-      await loadDemo("vector", tables);
+      await loadDemo(kind, tables);
       await onTablesChanged?.();
-      setTableName("imagenes");
+      setTableName(kind === "audio" ? "canciones" : "imagenes");
       setColumnName("v");
+      setQuery(null);
+      setData(null);
+      setTab("collection");
     } catch (err) {
       setError(err.message);
     } finally {
@@ -238,6 +269,18 @@ function VectorSearchPanel({ tables, onClose, onOpenSQL, onTablesChanged, active
 
   const hitCount = results.reduce((m, r) => Math.max(m, r.hits?.length || 0), 0);
 
+  const vecColIdx = (table?.Columns || []).findIndex((c) => c.Name === column);
+    const firstRowVec =
+      vecColIdx >= 0 ? parseVec(items?.items?.[0]?.values?.[vecColIdx]): null;
+    const queryRowVec = 
+      query?.type === "row" && vecColIdx >= 0 ? parseVec(query?.values?.[vecColIdx]) : null;
+    const sqlVector = 
+      data?.query ||
+      query?.vector ||
+      queryRowVec ||
+      firstRowVec ||
+      (dim > 0 ? Array.from({length: dim}, (_, i) => (i === 0 ? 1 : 0)) : null);
+
   return (
     <section className="search-panel vector-search-panel">
       <div className="search-panel-header">
@@ -249,6 +292,26 @@ function VectorSearchPanel({ tables, onClose, onOpenSQL, onTablesChanged, active
           </div>
         </div>
         <div className="panel-header-actions">
+          {!hasImagenes && (
+            <button
+              type = "button"
+              className="spatial-secondary-button"
+              onClick={() => handleDemo("vector")}
+              disabled={demoBusy} >
+              <Images size={14} />
+              Cargar galería de Demo imágenes
+            </button>
+          )}
+          {!hasCanciones && (
+            <button
+              type = "button"
+              className="spatial-secondary-button"
+              onClick={() => handleDemo("audio")}
+              disabled={demoBusy} >
+              <Music size={14} />
+              Cargar galería de Demo audio
+            </button>
+          )}
           <div className="map-result-count">{data ? `${hitCount} vecino(s)` : `${items?.count ?? 0} elemento(s)`}</div>
           <button className="expand-toggle" onClick={onClose} title="Cerrar (Esc)">
             <X size={16} />
@@ -261,13 +324,19 @@ function VectorSearchPanel({ tables, onClose, onOpenSQL, onTablesChanged, active
           <Images size={34} />
           <h3>No hay tablas con columnas VECTOR</h3>
           <p>
-            Crea una tabla con una columna <code>VECTOR(n)</code> o carga la galería de ejemplo: 48 imágenes de 8
-            categorías con su histograma de color (64 dimensiones) ya calculado.
+            Crea una tabla con una columna <code>VECTOR(n)</code> o carga una colección de ejemplo: 48 imágenes con
+            histograma RGB (64 dim) o 40 pistas de audio con histograma BoAW/MFCC (128 dim).
           </p>
-          <button className="btn-primary" onClick={handleDemo} disabled={demoBusy}>
-            <Database size={15} />
-            {demoBusy ? "Cargando…" : "Cargar galería de ejemplo"}
-          </button>
+          <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", justifyContent: "center" }}>
+            <button className="btn-primary" onClick={() => handleDemo("vector")} disabled={demoBusy}>
+              <Database size={15} />
+              {demoBusy ? "Cargando…" : "Cargar galería de Imágenes"}
+            </button>
+            <button className="btn-primary" onClick={() => handleDemo("audio")} disabled={demoBusy}>
+              <Music size={15} />
+              {demoBusy ? "Cargando…" : "Cargar galería de audio"}
+            </button>
+          </div>
           {error && <div className="search-error">{error}</div>}
         </div>
       ) : (
@@ -365,7 +434,14 @@ function VectorSearchPanel({ tables, onClose, onOpenSQL, onTablesChanged, active
                 <div className="vector-query-card">
                   <div className="vector-hit-media">
                     {query.type === "upload" ? (
-                      <img className="thumb-img" src={query.preview} alt={query.name} />
+                      query.kind === "audio" ? (
+                        <div className="thumb-audio">
+                          <Music size={26} />
+                          <audio controls src={query.preview} />
+                        </div>
+                      ) : (
+                        <img className="thumb-img" src={query.preview} alt={query.name} /> 
+                      )
                     ) : (
                       <Thumb values={query.values} media={media} label={labelOf(query.values, query.row)} />
                     )}
@@ -373,10 +449,15 @@ function VectorSearchPanel({ tables, onClose, onOpenSQL, onTablesChanged, active
                   <strong>{query.type === "upload" ? query.name : String(labelOf(query.values, query.row))}</strong>
                   {query.type === "row" && cIdx >= 0 && <span className="chip">{String(query.values[cIdx])}</span>}
                   {query.type === "upload" && <small>{query.extractor}</small>}
-                  <VectorBars vector={data?.query || query.vector} />
+                  <VectorBars vector= {data?.query || query.vector || queryRowVec} />
                 </div>
               ) : (
-                <p className="muted">Elige un elemento de la colección o sube una imagen.</p>
+                <p className="muted">
+                  {isAudioCollection 
+                    ? "Elige un elemento de la colección o sube un archivo de audio." 
+                    : "Elige un elemento de la colección o sube una imagen."
+                  }
+                </p>
               )}
 
               <button
@@ -390,18 +471,31 @@ function VectorSearchPanel({ tables, onClose, onOpenSQL, onTablesChanged, active
                   if (canUpload) handleUpload(e.dataTransfer.files?.[0]);
                 }}
                 title={
-                  canUpload
-                    ? "Se extrae su histograma de color en el servidor"
-                    : `La columna tiene ${dim} dimensiones; el extractor de color produce b³ (8, 27, 64…). Para SIFT/MFCC hace falta su extractor.`
+                  canUploadAudio
+                    ? "Extrae su histograma Bag of Audio Words (MFCC + K-Means) en el servidor"
+                    : canUploadImage
+                      ? "Extrae su histograma de color RGB en el servidor"
+                      : `La columna tiene ${dim} dimensiones; sube imágenes para b³ (64) o audio para K=128.`
                 }
               >
-                <ImageUp size={20} />
-                <span>{canUpload ? "Subir imagen (PNG, JPG)" : "Subir: requiere extractor"}</span>
+                {canUploadAudio ? <Music size={20} /> 
+                : <ImageUp size={20} /> }
+                <span>
+                  {canUploadAudio 
+                    ? "Subir audio (MP3, WAV)" 
+                    : canUploadImage
+                      ? "Subir imagen (PNG, JPG)"
+                      : "Subir: requiere extractor"}
+                </span>
               </button>
               <input
                 ref={fileRef}
                 type="file"
-                accept="image/png,image/jpeg,image/gif"
+                accept={
+                  canUploadAudio
+                    ? "audio/wav,audio/mpeg,audio/ogg,audio/flac,.wav,.mp3,.ogg,.flac"
+                    : "image/png,image/jpeg,image/gif"
+                  }
                 hidden
                 onChange={(e) => {
                   handleUpload(e.target.files?.[0]);
@@ -412,10 +506,16 @@ function VectorSearchPanel({ tables, onClose, onOpenSQL, onTablesChanged, active
               <button
                 type="button"
                 className="spatial-secondary-button"
-                disabled={!data}
+                disabled={!table || !column || !sqlVector?.length}
                 onClick={() =>
                   onOpenSQL?.(
-                    vectorSearchSQL({ table: table.Name, column, vector: data.query, metric, k: Number(k) || 8, columns: table.Columns.map((c) => c.Name) }),
+                    vectorSearchSQL({ 
+                      table: table.Name, 
+                      column, 
+                      vector: sqlVector, 
+                      metric, 
+                      k: Number(k) || 8, 
+                      columns: table.Columns.map((c) => c.Name) }),
                   )
                 }
                 title="Escribe en el editor el k-NN equivalente con vector_distance (usa el IVF si la columna tiene uno)"

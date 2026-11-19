@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="500" viewBox="0 0 900 500" font-family="DejaVu Sans, Helvetica, Arial, sans-serif">
+  <rect width="900" height="500" fill="#ffffff"/>
+  <text x="50" y="28" font-size="17" font-weight="bold" fill="#1c1c1c">Búsqueda k-NN (k = 10) de audio · Similitud del Coseno</text>
+  <text x="50" y="48" font-size="12" fill="#555">ms por consulta (media de 100)</text>
+  <line x1="110" y1="390.0" x2="860" y2="390.0" stroke="#e3e3e3"/>
+  <text x="102" y="394.0" font-size="11" fill="#555" text-anchor="end">0.010</text>
+  <line x1="110" y1="326.0" x2="860" y2="326.0" stroke="#e3e3e3"/>
+  <text x="102" y="330.0" font-size="11" fill="#555" text-anchor="end">0.048</text>
+  <line x1="110" y1="262.0" x2="860" y2="262.0" stroke="#e3e3e3"/>
+  <text x="102" y="266.0" font-size="11" fill="#555" text-anchor="end">0.232</text>
+  <line x1="110" y1="198.0" x2="860" y2="198.0" stroke="#e3e3e3"/>
+  <text x="102" y="202.0" font-size="11" fill="#555" text-anchor="end">1.12</text>
+  <line x1="110" y1="134.0" x2="860" y2="134.0" stroke="#e3e3e3"/>
+  <text x="102" y="138.0" font-size="11" fill="#555" text-anchor="end">5.38</text>
+  <line x1="110" y1="70.0" x2="860" y2="70.0" stroke="#e3e3e3"/>
+  <text x="102" y="74.0" font-size="11" fill="#555" text-anchor="end">25.9</text>
+  <line x1="110" y1="390" x2="860" y2="390" stroke="#888"/>
+  <rect x="145.0" y="270.9" width="58.0" height="119.1" fill="#2f6fb2" opacity="0.85"/>
+  <text x="174.0" y="266.9" font-size="10" fill="#333" text-anchor="middle">0.186</text>
+  <rect x="205.0" y="342.8" width="58.0" height="47.2" fill="#d1704a" opacity="0.85"/>
+  <text x="234.0" y="338.8" font-size="10" fill="#333" text-anchor="middle">0.032</text>
+  <rect x="265.0" y="354.7" width="58.0" height="35.3" fill="#4f9d69" opacity="0.85"/>
+  <text x="294.0" y="350.7" font-size="10" fill="#333" text-anchor="middle">0.024</text>
+  <text x="235.0" y="412" font-size="12" fill="#1c1c1c" text-anchor="middle">1 000</text>
+  <rect x="395.0" y="172.0" width="58.0" height="218.0" fill="#2f6fb2" opacity="0.85"/>
+  <text x="424.0" y="168.0" font-size="10" fill="#333" text-anchor="middle">2.12</text>
+  <rect x="455.0" y="257.8" width="58.0" height="132.2" fill="#d1704a" opacity="0.85"/>
+  <text x="484.0" y="253.8" font-size="10" fill="#333" text-anchor="middle">0.257</text>
+  <rect x="515.0" y="327.6" width="58.0" height="62.4" fill="#4f9d69" opacity="0.85"/>
+  <text x="544.0" y="323.6" font-size="10" fill="#333" text-anchor="middle">0.046</text>
+  <text x="485.0" y="412" font-size="12" fill="#1c1c1c" text-anchor="middle">10 000</text>
+  <rect x="645.0" y="70.0" width="58.0" height="320.0" fill="#2f6fb2" opacity="0.85"/>
+  <text x="674.0" y="66.0" font-size="10" fill="#333" text-anchor="middle">25.9</text>
+  <rect x="705.0" y="168.7" width="58.0" height="221.3" fill="#d1704a" opacity="0.85"/>
+  <text x="734.0" y="164.7" font-size="10" fill="#333" text-anchor="middle">2.29</text>
+  <rect x="765.0" y="289.6" width="58.0" height="100.4" fill="#4f9d69" opacity="0.85"/>
+  <text x="794.0" y="285.6" font-size="10" fill="#333" text-anchor="middle">0.118</text>
+  <text x="735.0" y="412" font-size="12" fill="#1c1c1c" text-anchor="middle">100 000</text>
+  <text x="450" y="434" font-size="12" fill="#555" text-anchor="middle">pistas de audio (N)</text>
+  <rect x="110" y="452" width="12" height="12" fill="#2f6fb2"/>
+  <text x="127" y="462" font-size="12" fill="#333">Secuencial</text>
+  <rect x="204" y="452" width="12" height="12" fill="#d1704a"/>
+  <text x="221" y="462" font-size="12" fill="#333">IVF-Flat (nprobe = √N/4)</text>
+  <rect x="396" y="452" width="12" height="12" fill="#4f9d69"/>
+  <text x="413" y="462" font-size="12" fill="#333">HNSW (M = 16, efC = 100)</text>
+  <text x="50" y="496" font-size="10" fill="#888">escala logarítmica</text>
+</svg>
