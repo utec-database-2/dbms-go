@@ -1,0 +1,3 @@
+dataset_size,index,metric,build_ms,query_avg_ms,recall_at_10,memory_mb,index_size_mb,queries,dimension
+1000,IVF-Flat,Euclidean,27.353400,0.000000,0.999000,0.171051,N/A (memoria),100,26
+1000,HNSW,Euclidean,111.799700,0.053123,0.376000,1.538483,0.454942,100,26
