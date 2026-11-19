@@ -58,7 +58,7 @@ func main() {
 	mux.HandleFunc("POST /api/text/search", handleTextSearch(db))
 	mux.HandleFunc("POST /api/vector/search", handleVectorSearch(db))
 	mux.HandleFunc("POST /api/vector/items", handleVectorItems(db))
-	mux.HandleFunc("POST /api/vector/extract", handleVectorExtract())
+	mux.HandleFunc("POST /api/vector/extract", handleVectorExtract(*media))
 	// Archivos multimedia (imágenes, audio) referenciados por las tablas con
 	// rutas relativas a --media.
 	mux.Handle("GET /api/media/", http.StripPrefix("/api/media/", http.FileServer(http.Dir(*media))))

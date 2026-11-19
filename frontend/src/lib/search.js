@@ -96,7 +96,8 @@ export function textSearchSQL({ table, column, query, k, columns }) {
 // SQL equivalente del k-NN vectorial (usa el IVF si la columna tiene uno).
 export function vectorSearchSQL({ table, column, vector, metric, k, columns }) {
   const title = columns?.[titleIndex(columns)] ?? "id";
-  const cols = ["id", title].filter((c, i, a) => c && a.indexOf(c) === i && columns?.includes(c));
+  const cat = columns?.[categoryIndex(columns)];
+  const cols = ["id", title, cat].filter((c, i, a) => c && a.indexOf(c) === i && columns?.includes(c));
   const lit = `VECTOR(${(vector || []).map((x) => Number(x).toFixed(5)).join(", ")})`;
   const m = metric === "dot" ? "dot" : metric;
   return `SELECT ${cols.length ? cols.join(", ") : "*"}, vector_distance(${column}, ${lit}, '${m}') AS distancia\nFROM ${table}\nORDER BY vector_distance(${column}, ${lit}, '${m}')\nLIMIT ${k};`;
@@ -115,6 +116,12 @@ export const DEMOS = {
     csv: "imagenes.csv",
     create:
       "CREATE TABLE imagenes CLUSTERED BY (id) (id INT PRIMARY KEY, nombre VARCHAR(60), categoria VARCHAR(30), archivo VARCHAR(120), v VECTOR(64));",
+  },
+  audio: {
+    table: "canciones",
+    csv: "audio.csv",
+    create:
+      "CREATE TABLE canciones CLUSTERED BY (id) (id INT PRIMARY KEY, titulo VARCHAR(80), genero VARCHAR(40), archivo VARCHAR(120), v VECTOR(128));",
   },
 };
 

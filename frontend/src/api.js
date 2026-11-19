@@ -115,10 +115,11 @@ export function listVectorItems(table, column) {
 }
 
 // Extrae el vector de una imagen subida (histograma de color en el servidor).
-export async function extractVector(file, dim) {
+export async function extractVector(file, dim, kind) {
   const form = new FormData();
   form.append("file", file);
   if (dim) form.append("dim", String(dim));
+  if (kind) form.append("kind", String(kind));
   const res = await fetch(`${BASE_URL}/api/vector/extract`, { method: "POST", body: form });
   return parseJSON(res);
 }
