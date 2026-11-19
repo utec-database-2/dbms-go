@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="500" viewBox="0 0 900 500" font-family="DejaVu Sans, Helvetica, Arial, sans-serif">
+  <rect width="900" height="500" fill="#ffffff"/>
+  <text x="50" y="28" font-size="17" font-weight="bold" fill="#1c1c1c">Construcción del índice vectorial de audio (BoAW 128D)</text>
+  <text x="50" y="48" font-size="12" fill="#555">ms</text>
+  <line x1="110" y1="390.0" x2="860" y2="390.0" stroke="#e3e3e3"/>
+  <text x="102" y="394.0" font-size="11" fill="#555" text-anchor="end">10.0</text>
+  <line x1="110" y1="326.0" x2="860" y2="326.0" stroke="#e3e3e3"/>
+  <text x="102" y="330.0" font-size="11" fill="#555" text-anchor="end">50.4</text>
+  <line x1="110" y1="262.0" x2="860" y2="262.0" stroke="#e3e3e3"/>
+  <text x="102" y="266.0" font-size="11" fill="#555" text-anchor="end">254.3</text>
+  <line x1="110" y1="198.0" x2="860" y2="198.0" stroke="#e3e3e3"/>
+  <text x="102" y="202.0" font-size="11" fill="#555" text-anchor="end">1.3k</text>
+  <line x1="110" y1="134.0" x2="860" y2="134.0" stroke="#e3e3e3"/>
+  <text x="102" y="138.0" font-size="11" fill="#555" text-anchor="end">6.5k</text>
+  <line x1="110" y1="70.0" x2="860" y2="70.0" stroke="#e3e3e3"/>
+  <text x="102" y="74.0" font-size="11" fill="#555" text-anchor="end">32.6k</text>
+  <line x1="110" y1="390" x2="860" y2="390" stroke="#888"/>
+  <rect x="145.0" y="253.6" width="43.0" height="136.4" fill="#2f6fb2" opacity="0.85"/>
+  <text x="166.5" y="249.6" font-size="10" fill="#333" text-anchor="middle">314.5</text>
+  <rect x="190.0" y="322.5" width="43.0" height="67.5" fill="#d1704a" opacity="0.85"/>
+  <text x="211.5" y="318.5" font-size="10" fill="#333" text-anchor="middle">55.1</text>
+  <rect x="235.0" y="310.5" width="43.0" height="79.5" fill="#4f9d69" opacity="0.85"/>
+  <text x="256.5" y="306.5" font-size="10" fill="#333" text-anchor="middle">74.5</text>
+  <rect x="280.0" y="290.2" width="43.0" height="99.8" fill="#8a5fa8" opacity="0.85"/>
+  <text x="301.5" y="286.2" font-size="10" fill="#333" text-anchor="middle">124.6</text>
+  <text x="235.0" y="412" font-size="12" fill="#1c1c1c" text-anchor="middle">1 000</text>
+  <rect x="395.0" y="118.7" width="43.0" height="271.3" fill="#2f6fb2" opacity="0.85"/>
+  <text x="416.5" y="114.7" font-size="10" fill="#333" text-anchor="middle">9.5k</text>
+  <rect x="440.0" y="209.8" width="43.0" height="180.2" fill="#d1704a" opacity="0.85"/>
+  <text x="461.5" y="205.8" font-size="10" fill="#333" text-anchor="middle">952.9</text>
+  <rect x="485.0" y="138.4" width="43.0" height="251.6" fill="#4f9d69" opacity="0.85"/>
+  <text x="506.5" y="134.4" font-size="10" fill="#333" text-anchor="middle">5.8k</text>
+  <rect x="530.0" y="189.6" width="43.0" height="200.4" fill="#8a5fa8" opacity="0.85"/>
+  <text x="551.5" y="185.6" font-size="10" fill="#333" text-anchor="middle">1.6k</text>
+  <text x="485.0" y="412" font-size="12" fill="#1c1c1c" text-anchor="middle">10 000</text>
+  <rect x="645.0" y="70.0" width="43.0" height="320.0" fill="#2f6fb2" opacity="0.85"/>
+  <text x="666.5" y="66.0" font-size="10" fill="#333" text-anchor="middle">32.6k</text>
+  <rect x="690.0" y="105.7" width="43.0" height="284.3" fill="#d1704a" opacity="0.85"/>
+  <text x="711.5" y="101.7" font-size="10" fill="#333" text-anchor="middle">13.2k</text>
+  <rect x="735.0" y="127.3" width="43.0" height="262.7" fill="#4f9d69" opacity="0.85"/>
+  <text x="756.5" y="123.3" font-size="10" fill="#333" text-anchor="middle">7.7k</text>
+  <rect x="780.0" y="88.7" width="43.0" height="301.3" fill="#8a5fa8" opacity="0.85"/>
+  <text x="801.5" y="84.7" font-size="10" fill="#333" text-anchor="middle">20.3k</text>
+  <text x="735.0" y="412" font-size="12" fill="#1c1c1c" text-anchor="middle">100 000</text>
+  <text x="450" y="434" font-size="12" fill="#555" text-anchor="middle">pistas de audio (N)</text>
+  <rect x="110" y="452" width="12" height="12" fill="#2f6fb2"/>
+  <text x="127" y="462" font-size="12" fill="#333">IVF-Flat (Coseno)</text>
+  <rect x="253" y="452" width="12" height="12" fill="#d1704a"/>
+  <text x="270" y="462" font-size="12" fill="#333">HNSW (Coseno)</text>
+  <rect x="368" y="452" width="12" height="12" fill="#4f9d69"/>
+  <text x="385" y="462" font-size="12" fill="#333">IVF-Flat (Euclidiana)</text>
+  <rect x="539" y="452" width="12" height="12" fill="#8a5fa8"/>
+  <text x="556" y="462" font-size="12" fill="#333">HNSW (Euclidiana)</text>
+  <text x="50" y="496" font-size="10" fill="#888">escala logarítmica</text>
+</svg>

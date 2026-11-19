@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="500" viewBox="0 0 900 500" font-family="DejaVu Sans, Helvetica, Arial, sans-serif">
+  <rect width="900" height="500" fill="#ffffff"/>
+  <text x="50" y="28" font-size="17" font-weight="bold" fill="#1c1c1c">Compromiso Recall@10 vs. Latencia en audio (FMA Small, N = 7 997)</text>
+  <text x="50" y="48" font-size="12" fill="#555">Recall@10 (%) · mayor es mejor (arriba-izquierda = óptimo)</text>
+  <line x1="110" y1="390.0" x2="860" y2="390.0" stroke="#e3e3e3"/>
+  <text x="102" y="394.0" font-size="11" fill="#555" text-anchor="end">0%</text>
+  <line x1="110" y1="329.0" x2="860" y2="329.0" stroke="#e3e3e3"/>
+  <text x="102" y="333.0" font-size="11" fill="#555" text-anchor="end">20%</text>
+  <line x1="110" y1="268.1" x2="860" y2="268.1" stroke="#e3e3e3"/>
+  <text x="102" y="272.1" font-size="11" fill="#555" text-anchor="end">40%</text>
+  <line x1="110" y1="207.1" x2="860" y2="207.1" stroke="#e3e3e3"/>
+  <text x="102" y="211.1" font-size="11" fill="#555" text-anchor="end">60%</text>
+  <line x1="110" y1="146.2" x2="860" y2="146.2" stroke="#e3e3e3"/>
+  <text x="102" y="150.2" font-size="11" fill="#555" text-anchor="end">80%</text>
+  <line x1="110" y1="85.2" x2="860" y2="85.2" stroke="#e3e3e3"/>
+  <text x="102" y="89.2" font-size="11" fill="#555" text-anchor="end">100%</text>
+  <line x1="110.5" y1="70" x2="110.5" y2="390" stroke="#efefef"/>
+  <text x="110.5" y="410" font-size="11" fill="#555" text-anchor="middle">0.020 ms</text>
+  <line x1="286.0" y1="70" x2="286.0" y2="390" stroke="#efefef"/>
+  <text x="286.0" y="410" font-size="11" fill="#555" text-anchor="middle">0.050 ms</text>
+  <line x1="418.8" y1="70" x2="418.8" y2="390" stroke="#efefef"/>
+  <text x="418.8" y="410" font-size="11" fill="#555" text-anchor="middle">0.100 ms</text>
+  <line x1="551.6" y1="70" x2="551.6" y2="390" stroke="#efefef"/>
+  <text x="551.6" y="410" font-size="11" fill="#555" text-anchor="middle">0.200 ms</text>
+  <line x1="727.2" y1="70" x2="727.2" y2="390" stroke="#efefef"/>
+  <text x="727.2" y="410" font-size="11" fill="#555" text-anchor="middle">0.500 ms</text>
+  <line x1="860.0" y1="70" x2="860.0" y2="390" stroke="#efefef"/>
+  <text x="860.0" y="410" font-size="11" fill="#555" text-anchor="middle">1.00 ms</text>
+  <line x1="110" y1="390" x2="860" y2="390" stroke="#888"/>
+  <line x1="110" y1="70" x2="110" y2="390" stroke="#888"/>
+  <polyline fill="none" stroke="#2f6fb2" stroke-width="2.4" points="142.2,192.2 204.1,140.1 287.9,106.6 392.6,91.6 501.6,87.4 553.6,86.2 679.1,85.5 805.5,85.2"/>
+  <circle cx="142.2" cy="192.2" r="4.2" fill="#2f6fb2"/>
+  <text x="142.2" y="184.2" font-size="9.5" fill="#333" text-anchor="middle">np=1</text>
+  <circle cx="204.1" cy="140.1" r="4.2" fill="#2f6fb2"/>
+  <circle cx="287.9" cy="106.6" r="4.2" fill="#2f6fb2"/>
+  <text x="287.9" y="98.6" font-size="9.5" fill="#333" text-anchor="middle">np=4</text>
+  <circle cx="392.6" cy="91.6" r="4.2" fill="#2f6fb2"/>
+  <text x="392.6" y="105.6" font-size="9.5" fill="#333" text-anchor="middle">np=8</text>
+  <circle cx="501.6" cy="87.4" r="4.2" fill="#2f6fb2"/>
+  <circle cx="553.6" cy="86.2" r="4.2" fill="#2f6fb2"/>
+  <text x="553.6" y="100.2" font-size="9.5" fill="#333" text-anchor="middle">np=22</text>
+  <circle cx="679.1" cy="85.5" r="4.2" fill="#2f6fb2"/>
+  <circle cx="805.5" cy="85.2" r="4.2" fill="#2f6fb2"/>
+  <text x="805.5" y="99.2" font-size="9.5" fill="#333" text-anchor="middle">np=89</text>
+  <polyline fill="none" stroke="#d1704a" stroke-width="2.4" points="187.5,185.2 287.9,126.7 427.1,99.6 538.8,91.0 647.4,87.1 683.1,86.5 742.2,85.2 778.1,85.2"/>
+  <circle cx="187.5" cy="185.2" r="4.2" fill="#d1704a"/>
+  <text x="187.5" y="177.2" font-size="9.5" fill="#333" text-anchor="middle">np=1</text>
+  <circle cx="287.9" cy="126.7" r="4.2" fill="#d1704a"/>
+  <circle cx="427.1" cy="99.6" r="4.2" fill="#d1704a"/>
+  <text x="427.1" y="91.6" font-size="9.5" fill="#333" text-anchor="middle">np=4</text>
+  <circle cx="538.8" cy="91.0" r="4.2" fill="#d1704a"/>
+  <text x="538.8" y="105.0" font-size="9.5" fill="#333" text-anchor="middle">np=8</text>
+  <circle cx="647.4" cy="87.1" r="4.2" fill="#d1704a"/>
+  <circle cx="683.1" cy="86.5" r="4.2" fill="#d1704a"/>
+  <text x="683.1" y="100.5" font-size="9.5" fill="#333" text-anchor="middle">np=22</text>
+  <circle cx="742.2" cy="85.2" r="4.2" fill="#d1704a"/>
+  <circle cx="778.1" cy="85.2" r="4.2" fill="#d1704a"/>
+  <text x="778.1" y="99.2" font-size="9.5" fill="#333" text-anchor="middle">np=89</text>
+  <polyline fill="none" stroke="#4f9d69" stroke-width="2.4" points="247.1,255.9 260.2,255.9 264.5,255.9 374.9,255.9 326.9,255.9 292.4,255.9"/>
+  <circle cx="247.1" cy="255.9" r="4.2" fill="#4f9d69"/>
+  <text x="247.1" y="247.9" font-size="9.5" fill="#333" text-anchor="middle">ef=10</text>
+  <circle cx="260.2" cy="255.9" r="4.2" fill="#4f9d69"/>
+  <text x="260.2" y="269.9" font-size="9.5" fill="#333" text-anchor="middle">ef=16</text>
+  <circle cx="264.5" cy="255.9" r="4.2" fill="#4f9d69"/>
+  <text x="264.5" y="247.9" font-size="9.5" fill="#333" text-anchor="middle">ef=32</text>
+  <circle cx="374.9" cy="255.9" r="4.2" fill="#4f9d69"/>
+  <text x="374.9" y="269.9" font-size="9.5" fill="#333" text-anchor="middle">ef=64</text>
+  <circle cx="326.9" cy="255.9" r="4.2" fill="#4f9d69"/>
+  <text x="326.9" y="247.9" font-size="9.5" fill="#333" text-anchor="middle">ef=128</text>
+  <circle cx="292.4" cy="255.9" r="4.2" fill="#4f9d69"/>
+  <text x="292.4" y="269.9" font-size="9.5" fill="#333" text-anchor="middle">ef=256</text>
+  <polyline fill="none" stroke="#8a5fa8" stroke-width="2.4" points="308.4,313.8 298.6,313.8 322.5,313.8 353.2,313.8 374.4,313.8 340.9,313.8"/>
+  <circle cx="308.4" cy="313.8" r="4.2" fill="#8a5fa8"/>
+  <text x="308.4" y="305.8" font-size="9.5" fill="#333" text-anchor="middle">ef=10</text>
+  <circle cx="298.6" cy="313.8" r="4.2" fill="#8a5fa8"/>
+  <text x="298.6" y="327.8" font-size="9.5" fill="#333" text-anchor="middle">ef=16</text>
+  <circle cx="322.5" cy="313.8" r="4.2" fill="#8a5fa8"/>
+  <text x="322.5" y="305.8" font-size="9.5" fill="#333" text-anchor="middle">ef=32</text>
+  <circle cx="353.2" cy="313.8" r="4.2" fill="#8a5fa8"/>
+  <text x="353.2" y="327.8" font-size="9.5" fill="#333" text-anchor="middle">ef=64</text>
+  <circle cx="374.4" cy="313.8" r="4.2" fill="#8a5fa8"/>
+  <text x="374.4" y="305.8" font-size="9.5" fill="#333" text-anchor="middle">ef=128</text>
+  <circle cx="340.9" cy="313.8" r="4.2" fill="#8a5fa8"/>
+  <text x="340.9" y="327.8" font-size="9.5" fill="#333" text-anchor="middle">ef=256</text>
+  <text x="450" y="434" font-size="12" fill="#555" text-anchor="middle">latencia media por consulta (ms, escala logarítmica)</text>
+  <rect x="110" y="452" width="12" height="12" fill="#2f6fb2"/>
+  <text x="127" y="462" font-size="11.5" fill="#333">IVF-Flat · Coseno</text>
+  <rect x="240.5" y="452" width="12" height="12" fill="#d1704a"/>
+  <text x="257.5" y="462" font-size="11.5" fill="#333">IVF-Flat · Euclidiana</text>
+  <rect x="397.0" y="452" width="12" height="12" fill="#4f9d69"/>
+  <text x="414.0" y="462" font-size="11.5" fill="#333">HNSW · Coseno</text>
+  <rect x="501.5" y="452" width="12" height="12" fill="#8a5fa8"/>
+  <text x="518.5" y="462" font-size="11.5" fill="#333">HNSW · Euclidiana</text>
+  <text x="50" y="496" font-size="10" fill="#888">eje X logarítmico · N = 7 997 pistas reales FMA</text>
+</svg>
