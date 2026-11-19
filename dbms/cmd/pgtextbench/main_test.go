@@ -129,7 +129,7 @@ func TestPGTextbenchBatchPrecisionAndError(t *testing.T) {
 	}
 }
 func TestPGTextbenchCSVHeader(t *testing.T) {
-	if len(header) != 46 {
+	if len(header) != 66 {
 		t.Fatalf("cabecera inesperada %d", len(header))
 	}
 	required := map[string]bool{"n_documents": true, "corpus_sha256": true, "method": true, "query_id": true, "query_median_us": true, "postgres_gin_bytes": true, "gin_used": true}
@@ -141,12 +141,21 @@ func TestPGTextbenchCSVHeader(t *testing.T) {
 	}
 }
 
-// La consulta debe recibir texto original. PostgreSQL hace stemming nativo.
+// La normalización se hace en PostgreSQL fuera del cronómetro de búsqueda.
 func TestPGTextbenchNativeSQLAndCorpus(t *testing.T) {
-	if !strings.Contains(querySQL, "websearch_to_tsquery('spanish'") ||
-		strings.Contains(querySQL, "to_tsquery('simple'") ||
-		!strings.Contains(querySQL, "search_vector @@") {
-		t.Fatalf("SQL no utiliza el analizador spanish nativo: %s", querySQL)
+	for _, rank := range []string{"ts_rank", "ts_rank_cd"} {
+		sqlText, err := rankingQuerySQL(rank)
+		if err != nil || !strings.Contains(sqlText, rank+"(search_vector, $1::tsquery)") ||
+			!strings.Contains(sqlText, "WHERE search_vector @@ $1::tsquery") ||
+			strings.Contains(sqlText, "websearch_to_tsquery") {
+			t.Fatalf("SQL incorrecto para %s: %q (%v)", rank, sqlText, err)
+		}
+	}
+	if _, err := rankingQuerySQL("ts_rank_fake"); err == nil {
+		t.Fatal("debe rechazar ranking desconocido")
+	}
+	if !strings.Contains(prepareTSQuerySQL, "websearch_to_tsquery('spanish'") {
+		t.Fatal("falta configuración spanish")
 	}
 	dir := fixture(t)
 	qs, err := readQueries(dir, 3)
@@ -156,7 +165,43 @@ func TestPGTextbenchNativeSQLAndCorpus(t *testing.T) {
 	if qs[0].Expression != "gato" || qs[1].Expression != "gato OR casa OR perro" || qs[2].RawWords != 7 {
 		t.Fatalf("expresiones originales: %+v", qs)
 	}
-	if !strings.Contains(strings.Join(header, "|"), "postgres_fts_config") {
-		t.Fatal("falta configuración FTS")
+	if !strings.Contains(strings.Join(header, "|"), "server_execution_median_ms") {
+		t.Fatal("falta tiempo del servidor")
+	}
+}
+
+func TestPGTextbenchParseExplainAnalyze(t *testing.T) {
+	raw := []byte(`[{"Plan":{"Node Type":"Limit","Plans":[{"Node Type":"Bitmap Index Scan","Index Name":"documents_search_vector_gin_idx"}]},"Planning Time":0.124,"Execution Time":6.789}]`)
+	e, p, nodes, used, err := readExplainTiming(raw)
+	if err != nil || e != 6.789 || p != 0.124 || !used || !strings.Contains(nodes, "Bitmap Index Scan") {
+		t.Fatalf("EXPLAIN ANAYZE incorrecto: e=%v p=%v nodes=%q gin=%t err=%v", e, p, nodes, used, err)
+	}
+	if _, _, _, _, err = readExplainTiming([]byte(`[{"Plan": {"Node Type": "Limit"}}]`)); err == nil {
+		t.Fatal("EXPLAIN incompleto debe fallar")
+	}
+}
+
+func TestPGTextbenchPlanCacheChoice(t *testing.T) {
+	for _, mode := range []string{"auto", "force_custom_plan", "force_generic_plan"} {
+		if !validPlanMode(mode) {
+			t.Fatalf("modo valido rechazado: %s", mode)
+		}
+	}
+	for _, mode := range []string{"", "off", "GIN", "auto; DROP TABLE documents"} {
+		if validPlanMode(mode) {
+			t.Fatalf("modo invalido aceptado: %s", mode)
+		}
+	}
+	cases := []struct {
+		custom, generic int64
+		want            string
+	}{
+		{0, 0, "none"}, {5, 0, "custom_only"}, {0, 15, "generic_only"},
+		{5, 15, "mixed"}, {-1, 1, "invalid"},
+	}
+	for _, x := range cases {
+		if got := planUsage(x.custom, x.generic); got != x.want {
+			t.Errorf("planes custom=%d generic=%d: %s != %s", x.custom, x.generic, got, x.want)
+		}
 	}
 }

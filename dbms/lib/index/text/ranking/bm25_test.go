@@ -11,30 +11,9 @@ import (
 	"github.com/dbms-go/v2/dbms/lib/index/text/textindex"
 )
 
-// buildBM25RealSPIMI construye un índice real sin depender de helpers TF-IDF.
 func buildBM25RealSPIMI(t *testing.T, docs [][]string) *spimi.Reader {
 	t.Helper()
-	dir := t.TempDir()
-	builder, err := spimi.NewBuilder(spimi.Options{Dir: dir, MaxBlockPostings: 2, MaxFanIn: 2})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = builder.Close() })
-	for i, doc := range docs {
-		id, err := builder.AddDocument(doc)
-		if err != nil || id != uint32(i) {
-			t.Fatalf("documento %d: id=%d, err=%v", i, id, err)
-		}
-	}
-	if _, err := builder.Finish(); err != nil {
-		t.Fatal(err)
-	}
-	reader, err := spimi.Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = reader.Close() })
-	return reader
+	return buildRealSPIMI(t, docs)
 }
 
 func TestBM25ManualWithRealSPIMI(t *testing.T) {

@@ -2,37 +2,82 @@ package ranking_test
 
 import (
 	"errors"
-	"math"
-	"reflect"
-	"testing"
-
 	"github.com/dbms-go/v2/dbms/lib/index/text/ranking"
 	"github.com/dbms-go/v2/dbms/lib/index/text/spimi"
 	"github.com/dbms-go/v2/dbms/lib/index/text/textindex"
+	"math"
+	"os"
+	"reflect"
+	"runtime"
+	"testing"
+	"time"
 )
 
 func buildRealSPIMI(t *testing.T, docs [][]string) *spimi.Reader {
 	t.Helper()
+
 	dir := t.TempDir()
-	b, err := spimi.NewBuilder(spimi.Options{Dir: dir, MaxBlockPostings: 2, MaxFanIn: 2})
+
+	t.Cleanup(func() {
+		var err error
+
+		for intento := 0; intento < 40; intento++ {
+			err = os.RemoveAll(dir)
+
+			if err == nil {
+				return
+			}
+
+			if runtime.GOOS != "windows" {
+				break
+			}
+
+			time.Sleep(50 * time.Millisecond)
+		}
+
+		t.Errorf("Error al limpiar índice temporal: %v", err)
+	})
+
+	b, err := spimi.NewBuilder(spimi.Options{
+		Dir:              dir,
+		MaxBlockPostings: 2,
+		MaxFanIn:         2,
+	})
+
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = b.Close() })
+
+	t.Cleanup(func() {
+		if err := b.Close(); err != nil {
+			t.Errorf("Error cerrando constructor: %v", err)
+		}
+	})
+
 	for i, tokens := range docs {
 		id, err := b.AddDocument(tokens)
+
 		if err != nil || id != uint32(i) {
 			t.Fatalf("AddDocument(%d) id=%d, err=%v", i, id, err)
 		}
 	}
+
 	if _, err := b.Finish(); err != nil {
 		t.Fatal(err)
 	}
+
 	r, err := spimi.Open(dir)
+
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = r.Close() })
+
+	t.Cleanup(func() {
+		if err := r.Close(); err != nil {
+			t.Errorf("Error cerrando lector: %v", err)
+		}
+	})
+
 	return r
 }
 

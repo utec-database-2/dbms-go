@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/dbms-go/v2/dbms/lib/benchclock"
 	"time"
 
 	"github.com/dbms-go/v2/dbms/lib/index/text/ranking"
@@ -22,7 +23,7 @@ func runSearchBatch(call searchCall, n int) ([]ranking.SearchResult, time.Durati
 	if n < 1 || call == nil {
 		return nil, 0, fmt.Errorf("lote inválido: n=%d", n)
 	}
-	start := time.Now()
+	start := benchclock.Now()
 	var last []ranking.SearchResult
 	for i := 0; i < n; i++ {
 		hits, err := call()
@@ -31,7 +32,7 @@ func runSearchBatch(call searchCall, n int) ([]ranking.SearchResult, time.Durati
 		}
 		last = hits
 	}
-	return last, time.Since(start), nil
+	return last, benchclock.Since(start), nil
 }
 
 // calibrateBatch selecciona cuántas búsquedas contiene cada lote de ESTA
