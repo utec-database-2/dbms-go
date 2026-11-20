@@ -4,7 +4,7 @@ Minigestor de base de datos multimodal escrito en Go para el curso de Base de Da
 
 ## Funcionalidades
 
-**Parte 1: base de datos relacional**
+**Parte 1: Base de datos relacional**
 
 - **Almacenamiento**: Heap File con páginas *slotted* y reutilización de espacio libre (*free list* o *move the last*), y Archivo Secuencial Paginado con inserción ordenada, borrado *lazy* (tombstones) y reorganización automática.
 - **Índices**: B+ agrupado (sobre el archivo secuencial), B+ no agrupado (sobre el heap) y Hash Extensible.
@@ -25,7 +25,9 @@ Minigestor de base de datos multimodal escrito en Go para el curso de Base de Da
 - **Ventana de búsqueda multimedia**: k-NN sobre una columna `VECTOR(n)` con HNSW, IVF (`nlist`, `nprobe`) o búsqueda secuencial, con distancia euclidiana, coseno o producto punto. Muestra una galería con aciertos y errores por categoría, el Recall@k de cada índice frente al secuencial y los tiempos de construcción y consulta. La consulta puede ser un elemento de la colección o una imagen subida.
 - Ambas ventanas pueden cargar datos de ejemplo de `datos_demo/` con un botón y pasar su consulta al editor como SQL (`MATCH` y `vector_distance`).
 
-**Parte 3: búsqueda vectorial**
+**Comparaciones experimentales**: `dbms bench` mide Heap vs Secuencial, B+ agrupado vs no agrupado vs Hash, Secuencial vs R-Tree vs GiST de PostgreSQL, y búsqueda vectorial/multimedia (IVF, HNSW y secuencial en imágenes y audio), generando CSV y gráficas.
+
+**Búsqueda vectorial**
 
 - **Tipo `VECTOR(K)`**: K componentes `float32` almacenadas en la propia tabla (Opción B), sin depender de OpenCV para consultar.
 - **Índice IVF-Flat**: cuantización por `nlist` listas y búsqueda aproximada con `nprobe`; métricas Euclidiana y coseno. El código de entrenamiento es Go puro y determinista.
@@ -56,7 +58,7 @@ Minigestor de base de datos multimodal escrito en Go para el curso de Base de Da
 ┌──────────────▼───────────────────┐ ┌────────────▼─────────────────────┐
 │ Índices (dbms/lib/index)         │ │ Índice espacial (index/rtree)    │
 │ B+ agrupado · B+ no agrupado ·   │ │ radio · k-NN · polígono          │
-│ Hash extensible                  │ │                                  │
+│ Hash extensible · IVF · HNSW     │ │                                  │
 └──────────────┬───────────────────┘ └────────────┬─────────────────────┘
 ┌──────────────▼──────────────────────────────────▼─────────────────────┐
 │ Almacenamiento (dbms/lib/storage): Heap File · Archivo Secuencial     │
@@ -71,16 +73,18 @@ Cada sesión toma bloqueos de tabla (S para leer, X para escribir) antes de ejec
 | Carpeta | Contenido |
 | - | - |
 | `dbms/lib/storage` | Tipos, codificación de tuplas, Heap File (`heap/`) y Archivo Secuencial Paginado (`sequential/`). |
-| `dbms/lib/index` | B+ agrupado y no agrupado (`bplus/`), Hash Extensible (`extendible/`), R-Tree (`rtree/`) e IVF-Flat (`ivf/`). |
+| `dbms/lib/index` | B+ agrupado y no agrupado (`bplus/`), Hash Extensible (`extendible/`), R-Tree (`rtree/`), IVF-Flat (`ivf/`) y HNSW (`hnsw/`). |
+| `dbms/lib/local_features` | Extracción de descriptores locales (SIFT, MFCC) y cuantización BoVW / BoAW para imágenes y audio. |
 | `dbms/lib/external` | External sorting (`sorting/`) y external hashing (`hashing/`). |
 | `dbms/lib/dsl` | Lexer, tokens, parser y AST del SQL. |
-| `dbms/lib/sql` | Motor: catálogo, planificador, ejecución, JOIN, SQL espacial, sesiones y transacciones. |
+| `dbms/lib/sql` | Motor: catálogo, planificador, ejecución, JOIN, SQL espacial/vectorial/multimedia, sesiones y transacciones. |
 | `dbms/lib/transaction` | Write-ahead log, rollback, savepoints y recuperación. |
 | `dbms/lib/lockmanager` | Tabla de bloqueos S/X, 2PL y detección de deadlocks. |
 | `dbms/lib/spatial` | Capa espacial que usa el panel de mapa (radio, k-NN y polígono). |
-| `dbms/cmd/server` | Servidor HTTP para el frontend (`search.go`: búsqueda textual y vectorial). |
-| `dbms/cmd/imgcsv` | Extrae el vector de cada imagen de una carpeta y genera un CSV para importarlo. |
-| `datos_demo` | Datos de ejemplo de las partes 3 y 4: documentos y una galería de imágenes con sus vectores. |
+| `dbms/cmd/server` | Servidor HTTP para el frontend (`search.go`: búsqueda textual y vectorial/multimedia). |
+| `dbms/cmd/imgcsv` | Extrae el vector BoVW de cada imagen de una carpeta y genera un CSV para importarlo. |
+| `dbms/cmd/audiocsv` | Extrae muestras `.wav` y vectores BoAW de audio y genera `datos_demo/audio.csv`. |
+| `datos_demo` | Datos de ejemplo de las partes 3 y 4: documentos, galería de imágenes y muestras de audio con sus vectores. |
 | `dbms/cli` | `dbms bench` (comparaciones experimentales) y `dbms concurrencia` (demo con hilos). |
 | `frontend` | Interfaz web (React + Vite + Leaflet). |
 | `informe`, `presentacion` | Informe (LaTeX) y presentación (Beamer). |
@@ -108,7 +112,7 @@ cd frontend && npm install
 go run ./dbms/cmd/server -addr :8080 -dir ./data -media ./datos_demo
 ```
 
-Los archivos de las tablas, el catálogo y el WAL se guardan en `-dir` y se recuperan al reiniciar. `-media` es la carpeta de imágenes y audio que se sirve en `/api/media/`: las tablas multimedia guardan rutas relativas a ella.
+Los archivos de las tablas, el catálogo y el WAL se guardan en `-dir` y se recuperan al reiniciar. `-media` es la carpeta de imágenes y audio que se sirve en `/api/media/` (acepta tanto rutas relativas a `-media` como rutas con el prefijo `datos_demo/` usadas por el motor SQL).
 
 ### 2. Frontend
 
@@ -119,11 +123,12 @@ npm run dev
 
 Abre la URL que imprime Vite (por defecto http://localhost:5173). El frontend usa `http://localhost:8080` como servidor; para usar otro, define `VITE_API_URL`. El Panel de Consultas trae ejemplos para cada funcionalidad.
 
-Las búsquedas textual y multimedia se abren desde la barra lateral izquierda. Si no hay tablas adecuadas, cada ventana ofrece cargar los datos de `datos_demo/`: 42 documentos y 48 imágenes en 8 categorías. Para regenerar la galería o crear otra desde una carpeta de imágenes:
+Las búsquedas textual y multimedia se abren desde la barra lateral izquierda. Si no hay tablas adecuadas, cada ventana ofrece cargar los datos de `datos_demo/`: 42 documentos, 48 imágenes en 8 categorías y 40 pistas de audio en 8 géneros. Para regenerar los CSV multimedia desde carpetas locales:
 
 ```bash
 python3 datos_demo/generar_imagenes.py
 go run ./dbms/cmd/imgcsv -dir datos_demo/imagenes -out datos_demo/imagenes.csv
+go run ./dbms/cmd/audiocsv -src /ruta/fma_small -media datos_demo -out datos_demo/audio.csv
 ```
 
 Las tablas de documentos y de vectores grandes deben ser agrupadas (`CLUSTERED BY (id)`), porque el heap usa slots de 128 bytes.
@@ -184,10 +189,33 @@ CREATE INDEX ivf_imagen ON imagen USING IVF (embedding)
 SELECT id FROM imagen
   ORDER BY vector_distance(embedding, VECTOR(1, 0, 0), 'cosine') LIMIT 5;
 
-CREATE INDEX hnsw_imagen ON imagen USING HNSW(embedding)
-  WITH (ef_construction = 64, ef_search= 32, m = 16, ml = 0.15, metric = 'cosine');
-SELECT id FROM imagen 
-  ORDER BY vector_distance(embedding, VECTOR(0, 0, 0), 'cosine') LIMIT 5;
+CREATE INDEX hnsw_imagen ON imagen USING HNSW (embedding)
+  WITH (ef_construction = 64, ef_search = 32, m = 16, ml = 0.15, metric = 'cosine');
+SELECT id, vector_distance(embedding, VECTOR(1, 0, 0), 'cosine') AS distancia
+FROM imagen
+ORDER BY vector_distance(embedding, VECTOR(1, 0, 0), 'cosine')
+LIMIT 5;
+
+-- Multimedia por contenido: Audio (MFCC + BoAW) e Imágenes (SIFT + BoVW)
+CREATE TABLE canciones CLUSTERED BY (id) (
+  id INT PRIMARY KEY, titulo VARCHAR(80), genero VARCHAR(40), archivo VARCHAR(120), v VECTOR(128)
+);
+CREATE INDEX idx_audio ON canciones USING AUDIO (archivo) WITH (k = 128);
+SELECT id, titulo, genero, archivo,
+       vector_distance(archivo, AUDIO_VECTOR('datos_demo/audio/muestras/000002.wav')) AS distancia
+FROM canciones
+ORDER BY vector_distance(archivo, AUDIO_VECTOR('datos_demo/audio/muestras/000002.wav'))
+LIMIT 5;
+
+CREATE TABLE imagenes CLUSTERED BY (id) (
+  id INT PRIMARY KEY, nombre VARCHAR(60), categoria VARCHAR(30), archivo VARCHAR(120), v VECTOR(64)
+);
+CREATE INDEX idx_img ON imagenes USING IMAGE (archivo) WITH (k = 64);
+SELECT id, nombre, categoria, archivo,
+       vector_distance(archivo, IMAGE_VECTOR('datos_demo/imagenes/bosque_1.png')) AS distancia
+FROM imagenes
+ORDER BY vector_distance(archivo, IMAGE_VECTOR('datos_demo/imagenes/bosque_1.png'))
+LIMIT 5;
 
 ```
 
@@ -195,7 +223,11 @@ El tipo de índice se elige por nombre: `pk_<tabla>` es el índice de la clave p
 
 Los índices secundarios se eliminan con `DROP INDEX [IF EXISTS] nombre [ON tabla]`. El motor mantiene un registro global de índice a tabla para resolver el dueño; si dos tablas usan el mismo nombre de índice, `ON tabla` deshace la ambigüedad. El índice primario (o el B+ agrupado) no se puede eliminar por separado: para eso hay que usar `DROP TABLE`.
 
-`nlist` es el número de listas del IVF (si se omite se calcula a partir de los vectores disponibles al construir o al primer entrenamiento), `nprobe` cuántas listas se recorren en cada consulta y `metric` puede ser `euclidean` o `cosine`. El atajo de índice se aplica a `ORDER BY vector_distance(...) LIMIT k` sin `WHERE`; con filtros se usa el ordenamiento normal. El índice se reconstruye de forma determinista desde la columna al reabrir el catálogo; no se persisten centroides ni hace falta OpenCV para el kNN.
+En índices vectoriales y multimedia:
+- `USING IVF` admite `nlist`, `nprobe` y `metric` (`euclidean` o `cosine`).
+- `USING HNSW` admite `m`, `ef_construction`, `ef_search`, `ml` y `metric` (`euclidean`, `cosine` o `dot`).
+- `USING AUDIO` y `USING IMAGE` entrenan y persisten un *codebook* de `k` palabras acústicas o visuales sobre columnas `VARCHAR` de rutas, habilitando `AUDIO_VECTOR(...)` e `IMAGE_VECTOR(...)`.
+- El atajo de índice se activa en `ORDER BY vector_distance(...) LIMIT k` sin `WHERE`; con filtros adicionales se utiliza el ordenamiento estándar.
 
 ## API del servidor
 
@@ -210,8 +242,8 @@ Los índices secundarios se eliminan con `DROP INDEX [IF EXISTS] nombre [ON tabl
 | `POST /api/text/search` | `{table, column, query, methods: ["tfidf","bm25"], k, k1, b}` | Términos preprocesados con su `df`, estadísticas del índice SPIMI y, por técnica, los documentos con su score, las palabras encontradas y los pasos del plan |
 | `POST /api/vector/search` | `{table, column, row \| vector, methods: ["hnsw","ivf","seq"], metric, k, nlist, nprobe, efSearch}` | Por técnica: vecinos con distancia y similitud, Recall@k frente al secuencial, tiempos de construcción y consulta, y los pasos del plan |
 | `POST /api/vector/items` | `{table, column}` | Filas que tienen vector (sin el vector), para elegir la consulta |
-| `POST /api/vector/extract` | multipart con `file` (imagen) y `dim` | Vector de la imagen (histograma de color RGB de `dim` = b³ dimensiones) |
-| `GET /api/media/{ruta}` | | Archivo de la carpeta `-media` |
+| `POST /api/vector/extract` | multipart con `file` (imagen o audio) y `dim` | Vector de la imagen (histograma de color RGB de `dim` = b³ dimensiones) o Vector del audio (histograma de BagOfAudioWords) |
+| `GET /api/media/{ruta}` | | Archivo de la carpeta `-media` (acepta rutas con o sin el prefijo `datos_demo/`) |
 
 Los índices de búsqueda textual y vectorial se construyen en la primera consulta sobre cada columna y se reconstruyen cuando un script o una importación modifica la tabla. `metric` de `/api/vector/search` es `cosine`, `euclidean` o `dot`; IVF no admite `dot`, porque no puede entrenar sus centroides con producto punto.
 
