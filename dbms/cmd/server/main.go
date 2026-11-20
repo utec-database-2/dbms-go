@@ -61,7 +61,16 @@ func main() {
 	mux.HandleFunc("POST /api/vector/extract", handleVectorExtract(*media))
 	// Archivos multimedia (imágenes, audio) referenciados por las tablas con
 	// rutas relativas a --media.
-	mux.Handle("GET /api/media/", http.StripPrefix("/api/media/", http.FileServer(http.Dir(*media))))
+	mediaFS := http.StripPrefix("/api/media/", http.FileServer(http.Dir(*media)))
+	mux.Handle("GET /api/media/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if after, ok := strings.CutPrefix(r.URL.Path, "/api/media/datos_demo/"); ok {
+			r2 := r.Clone(r.Context())
+			r2.URL.Path = "/api/media/" + after
+			mediaFS.ServeHTTP(w, r2)
+			return
+		}
+		mediaFS.ServeHTTP(w, r)
+	}))
 
 	log.Printf("MinigestorBD escuchando en %s (datos en %s)", *addr, *dir)
 	log.Fatal(http.ListenAndServe(*addr, withCORS(mux)))

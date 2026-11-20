@@ -128,7 +128,7 @@ export async function extractVector(file, dim, kind) {
 export function mediaUrl(path) {
   if (!path) return "";
   if (/^(https?:|data:|blob:)/i.test(path)) return path;
-  return `${BASE_URL}/api/media/${String(path).replace(/^\.?\/+/, "").split("/").map(encodeURIComponent).join("/")}`;
+  return `${BASE_URL}/api/media/${String(path).replace(/^\.?\/+/, "").replace(/^datos_demo\//, "").split("/").map(encodeURIComponent).join("/")}`;
 }
 
 // Descarga un archivo del directorio --media (p. ej. los CSV de la demo).

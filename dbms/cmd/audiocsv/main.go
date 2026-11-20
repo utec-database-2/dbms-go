@@ -174,7 +174,6 @@ func main() {
 
 		id++
 		genreCounts[genre]++
-		rel, _ := filepath.Rel(*media, dst)
 		parts := make([]string, len(vec))
 		for j, val := range vec {
 			parts[j] = strconv.FormatFloat(float64(val), 'f', 5, 32)
@@ -183,7 +182,7 @@ func main() {
 			strconv.Itoa(id),
 			title,
 			genre,
-			filepath.ToSlash(rel),
+			filepath.ToSlash(dst),
 			"[" + strings.Join(parts, " ") + "]",
 		})
 	}
