@@ -1,7 +1,10 @@
-% Informe del proyecto dbms-go (Parte 1 y Parte 2).
+% Informe del proyecto dbms-go (Partes 1, 2, 3 y 4).
 % Compilar con pdflatex. Las figuras se esperan en la carpeta figuras/.
 \documentclass[11pt,a4paper]{article}
 
+% ---------------------------------------------------------------------------
+% PAQUETES
+% ---------------------------------------------------------------------------
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
 \usepackage[spanish,es-noshorthands,es-tabla]{babel}
@@ -11,6 +14,7 @@
 \usepackage{graphicx}
 \usepackage{subcaption}
 \usepackage{booktabs}
+\usepackage{array}
 \usepackage{multirow}
 \usepackage{float}
 \usepackage{xcolor}
@@ -30,6 +34,9 @@
 \setlist{itemsep=2pt,topsep=4pt}
 \setlength{\parskip}{4pt}
 
+% ---------------------------------------------------------------------------
+% ESTILOS DE CÓDIGO
+% ---------------------------------------------------------------------------
 \lstset{
   basicstyle=\ttfamily\small,
   backgroundcolor=\color{suave},
@@ -39,8 +46,18 @@
   columns=fullflexible,
   keepspaces=true,
   showstringspaces=false,
+  breaklines=true,
   keywordstyle=\color{primario}\bfseries,
   literate={á}{{\'a}}1 {é}{{\'e}}1 {í}{{\'i}}1 {ó}{{\'o}}1 {ú}{{\'u}}1 {ñ}{{\~n}}1,
+}
+
+\lstdefinestyle{sql}{
+  language=SQL,
+  morekeywords={MATCH,USING,TF_IDF,BM25,SCORE,CLUSTERED,POINT,POLYGON,AUDIO,IMAGE,IVF,HNSW,VECTOR,AUDIO_VECTOR,IMAGE_VECTOR,vector_distance,WITH}
+}
+
+\lstdefinestyle{pseudo}{
+  keywords={para,cada,si,al,finalizar,mientras,devolver}
 }
 
 % Una gráfica del benchmark ocupando el ancho de su celda.
@@ -48,89 +65,118 @@
 
 \begin{document}
 
-% ---------------------------------------------------------------------------
-% Portada
-% ---------------------------------------------------------------------------
+% ===========================================================================
+% PORTADA
+% ===========================================================================
 \begin{titlepage}
   \centering
-  \vspace*{1.5cm}
+  \thispagestyle{empty}
+
   {\large Universidad de Ingeniería y Tecnología -- UTEC\par}
   {\large Base de Datos 2 \;--\; 2026-2\par}
-  \vspace{3cm}
-  {\color{primario}\Huge\bfseries dbms-go\par}
+  \vspace{0.8cm}
+
+  \IfFileExists{UTEC-Logo.png}{%
+    \includegraphics[width=0.38\textwidth]{UTEC-Logo.png}\par
+    \vspace{0.8cm}
+  }{%
+    \vspace{1.2cm}
+  }
+
+  \rule{\linewidth}{0.5mm}
+  \vspace{0.4cm}
+  {\color{primario}\Huge\bfseries Motor de Base de Datos:\\[0.25cm] dbms-go\par}
+  \vspace{0.4cm}
+  \rule{\linewidth}{0.5mm}
+
   \vspace{0.5cm}
-  {\Large Motor de base de datos en Go con índices\\clásicos e índice espacial\par}
-  \vspace{0.8cm}
-  {\large\color{acento} Informe del proyecto: Parte 1 y Parte 2\par}
-  \vspace{0.8cm}
-  {\normalsize Repositorio: \url{https://github.com/utec-database-2/dbms-go}\par}
-  \vfill
-  {\large\bfseries Integrantes\par}
-  \vspace{0.3cm}
-  % Completar con los nombres completos del equipo.
+  \textbf{Profesor:} Heider Sanchez
+
+  \vspace{0.5cm}
+  \textbf{Integrantes:}
+
+  \vspace{0.2cm}
   \begin{tabular}{c}
-    Ashly Veliz \\
-    {[}Integrante 2{]} \\
-    {[}Integrante 3{]} \\
-    {[}Integrante 4{]} \\
-    {[}Integrante 5{]} \\
+    Corne Flores, Yofer Mauricio (202220097) \\
+    Donayre Epifania, Salvador (202310375) \\
+    Fierro Neyra, Sergio Luis (201910164) \\
+    Chumbe Ñahui, Herbert Armando (202020041) \\
   \end{tabular}
+  \vspace{0.2cm}
+
+
   \vfill
-  {\large Octubre de 2026\par}
+  {\normalsize Repositorio: \url{https://github.com/utec-database-2/dbms-go}\par}
+  \vspace{0.5cm}
+  {\large Noviembre de 2026\par}
 \end{titlepage}
 
+% ===========================================================================
+% RESUMEN E ÍNDICE
+% ===========================================================================
+\pagenumbering{roman}
+
 \begin{abstract}
-\texttt{dbms-go} es un motor de base de datos relacional escrito en Go, con una interfaz web en React. En la Parte 1 se implementaron dos organizaciones de archivo (\emph{heap file} y archivo secuencial paginado), tres estructuras de indexación (B+ agrupado, B+ no agrupado y hashing extensible), un lenguaje SQL con planificador de consultas y \emph{external sorting}. En la Parte 2 se agregó un índice espacial R-Tree con división estilo R*, consultas por radio, por polígono y de $k$ vecinos más cercanos, expuestas por una API REST y un mapa interactivo. Se presentan tres comparaciones experimentales con 1\,000, 10\,000 y 100\,000 registros. El archivo secuencial busca por clave primaria unas 760 veces más rápido que el \emph{heap file}, pero inserta unas 7.7 veces más lento. El hash extensible es la mejor opción para igualdad y para altas y bajas, y el B+ agrupado lo es para rangos y recorridos en orden. El R-Tree resuelve $k$-NN unas 580 veces más rápido que la búsqueda secuencial y unas 8 veces más rápido que el GiST de PostgreSQL.
+\texttt{dbms-go} es un motor de base de datos multimodal escrito en Go desde cero, acompañado de una interfaz web en React. En la \textbf{Parte 1} se implementaron dos organizaciones físicas de archivo (\emph{heap file} y archivo secuencial paginado), tres estructuras de indexación (B+ agrupado, B+ no agrupado y hashing extensible), un lenguaje SQL con planificador de consultas, \emph{external sorting}, \emph{external hashing} y control de concurrencia con 2PL estricto y WAL. En la \textbf{Parte 2} se agregó un índice espacial R-Tree con división estilo R*, consultas por radio, por polígono y de $k$ vecinos más cercanos ($k$-NN), expuestas por una API REST y un mapa interactivo. En la \textbf{Parte 3} se incorporó búsqueda de texto completo (\emph{Full-Text Search}) mediante construcción de índices invertidos en disco con \textbf{SPIMI} y ordenamiento por relevancia con \textbf{TF-IDF} (similitud del coseno) y \textbf{BM25}. En la \textbf{Parte 4} se extendió el motor al dominio multimedia (imágenes y audio) mediante extracción de descriptores locales (\textbf{SIFT} y \textbf{MFCC}), cuantización vectorial por \emph{k-means} (\emph{Bag of Visual/Audio Words}) e indexación aproximada de alta dimensión con \textbf{IVF-Flat} y \textbf{HNSW}. Se presentan evaluaciones experimentales sobre escalas de $1\,000$, $10\,000$ y $100\,000$ registros que cuantifican los compromisos entre latencia, precisión y costo de almacenamiento en cada subsistema.
 \end{abstract}
 
 \tableofcontents
 \newpage
 
+\pagenumbering{arabic}
+
 % ===========================================================================
-\section{Introducción}
+\section{Introducción y objetivos}
 % ===========================================================================
 
-El objetivo del proyecto es construir, desde cero, las piezas internas de un sistema gestor de bases de datos y medir experimentalmente el efecto de cada decisión de diseño. En lugar de usar una librería de almacenamiento, el equipo implementó la organización física de los datos en disco, los índices, el procesamiento de consultas y una interfaz para usarlos.
+El objetivo del proyecto es construir, desde cero, las piezas internas de un sistema gestor de bases de datos multimodal y medir experimentalmente el efecto de cada decisión de diseño. En lugar de depender de motores de almacenamiento externos, el equipo implementó la organización física de los datos en disco, los índices clásicos, espaciales, textuales y vectoriales, el procesamiento de consultas SQL y una interfaz web para interactuar con ellos.
 
-El informe cubre las dos primeras partes del proyecto:
+El informe cubre las siguientes partes del proyecto:
 
 \begin{itemize}
-  \item \textbf{Parte 1 -- Organización de archivos e indexación.} \emph{Heap file}, archivo secuencial paginado, B+ agrupado, B+ no agrupado, hashing extensible, lenguaje SQL y \emph{external sorting}.
-  \item \textbf{Parte 2 -- Índice espacial.} R-Tree con consultas por radio, por polígono y $k$-NN, integrado con una API REST y un mapa en el frontend.
+  \item \textbf{Parte 1 -- Organización de archivos e indexación.} \emph{Heap file}, archivo secuencial paginado, B+ agrupado, B+ no agrupado, hashing extensible, lenguaje SQL, \emph{external sorting}, \emph{external hashing} y transacciones concurrentes.
+  \item \textbf{Parte 2 -- Índice espacial.} R-Tree con división estilo R* y consultas por radio, por polígono y $k$-NN, integrado con una API REST y un mapa en el frontend.
+  \item \textbf{Parte 3 -- Búsqueda de texto completo (\emph{Full-Text Search}).} Índice invertido construido por bloques mediante \emph{SPIMI} y métodos de ranking probabilístico y vectorial: \emph{TF-IDF con similitud del coseno} y \emph{BM25}, integrados en SQL mediante \texttt{MATCH}, \texttt{USING} y \texttt{SCORE()}.
+  \item \textbf{Parte 4 -- Soporte multimedia (imágenes y audio).} Extracción de patrones locales mediante \emph{SIFT (Scale-Invariant Feature Transform)} para imágenes y \emph{MFCC (Mel-Frequency Cepstral Coefficients)} para audio, cuantización mediante \emph{k-means} para construir diccionarios de $K$ palabras visuales/acústicas e histogramas ponderados, e índices vectoriales \emph{IVF-Flat (Inverted File Index)} y \emph{HNSW (Hierarchical Navigable Small World)} bajo similitud del coseno, distancia euclidiana y producto punto.
+  \item \textbf{Parte 5 -- Aplicaciones.} Integración de búsqueda multimodal en la interfaz web y aplicación de reconocimiento facial sobre el motor.
 \end{itemize}
 
-Cada parte termina con una comparación experimental. Los resultados se generaron con el comando de \emph{benchmarks} del propio proyecto (Anexo~\ref{sec:reproducir}).
+Cada parte culmina con una comparación experimental generada mediante los comandos de \emph{benchmark} del propio repositorio (Anexo~\ref{sec:reproducir}).
 
 % ===========================================================================
 \section{Arquitectura del sistema}
 % ===========================================================================
 
-El sistema se organiza en capas (Figura~\ref{fig:arquitectura}). El frontend envía consultas SQL y consultas espaciales a un servidor HTTP escrito en Go. El servidor delega en el motor SQL, que planifica cada consulta sobre los índices y los archivos de datos.
+El sistema se organiza en capas (Figura~\ref{fig:arquitectura}). El frontend envía consultas SQL, espaciales, textuales y multimedia a un servidor HTTP escrito en Go. El servidor delega en el motor SQL, que planifica cada consulta sobre los índices especializados y los archivos de datos en disco.
 
 \begin{figure}[H]
   \centering
   \begin{tikzpicture}[
-      capa/.style={draw=primario,fill=suave,rounded corners=3pt,minimum width=12cm,minimum height=0.85cm,font=\small,align=center},
+      capa/.style={draw=primario,fill=suave,rounded corners=3pt,minimum width=12.6cm,minimum height=0.82cm,font=\small,align=center},
+      sub/.style={draw=primario,fill=suave,rounded corners=3pt,minimum width=3.95cm,minimum height=1.05cm,font=\scriptsize,align=center},
       flecha/.style={-{Stealth},thick,primario}]
-    \node[capa] (front) {\textbf{Frontend} (React + Vite + Leaflet): panel SQL, plan de ejecución, archivos y mapa};
-    \node[capa,below=0.35cm of front] (api) {\textbf{Servidor HTTP}: \texttt{/api/query}, \texttt{/api/tables}, \texttt{/api/spatial/\{range,knn,polygon\}}};
-    \node[capa,below=0.35cm of api] (sql) {\textbf{Motor SQL}: parser, planificador, sesiones con 2PL y WAL, \emph{external sorting} y \emph{hashing}};
-    \node[capa,below=0.35cm of sql,minimum width=5.8cm,xshift=-3.1cm] (idx) {\textbf{Índices}: B+ agrupado, B+ no\\agrupado, hashing extensible};
-    \node[capa,below=0.35cm of sql,minimum width=5.8cm,xshift=3.1cm] (rt) {\textbf{Índice espacial}: R-Tree\\(rango, $k$-NN, polígono)};
-    \node[capa,below=0.35cm of idx,xshift=3.1cm] (sto) {\textbf{Almacenamiento}: \emph{heap file} y archivo secuencial paginado (páginas de 4\,KB)};
+    \node[capa] (front) {\textbf{Frontend} (React + Vite + Leaflet): editor SQL, plan de ejecución, mapa y búsqueda multimedia};
+    \node[capa,below=0.32cm of front] (api) {\textbf{Servidor HTTP}: \texttt{/api/query}, \texttt{/api/tables}, \texttt{/api/spatial/*}, \texttt{/api/search/*}};
+    \node[capa,below=0.32cm of api] (sql) {\textbf{Motor SQL}: parser, planificador, sesiones con 2PL y WAL, \emph{external sort} y \emph{hashing}};
+    \node[sub,below=0.35cm of sql,xshift=-4.32cm] (idx) {\textbf{Índices clásicos}\\B+ agrupado, B+ no\\agrupado, hash extensible};
+    \node[sub,below=0.35cm of sql,xshift=4.32cm] (mm) {\textbf{Texto y Multimedia}\\SPIMI (TF-IDF / BM25),\\IVF-Flat y HNSW};
+    \node[sub,below=0.35cm of sql] (rt) {\textbf{Índice espacial}\\R-Tree (radio, $k$-NN,\\polígono)};
+    \node[capa,below=0.35cm of rt] (sto) {\textbf{Almacenamiento}: \emph{heap file}, archivo secuencial paginado (4\,KB) y bloques invertidos};
     \draw[flecha] (front) -- (api);
     \draw[flecha] (api) -- (sql);
     \draw[flecha] (sql.south -| idx.north) -- (idx);
-    \draw[flecha] (sql.south -| rt.north) -- (rt);
-    \draw[flecha] (api.east) -- ++(0.5,0) |- (rt.east);
+    \draw[flecha] (sql.south -| mm.north) -- (mm);
+    \draw[flecha] (sql.south) -- (rt);
+    \draw[flecha] (api.east) -- ++(0.45,0) |- (rt.east);
     \draw[flecha] (idx) -- (idx |- sto.north);
-    \draw[flecha] (rt) -- (rt |- sto.north);
+    \draw[flecha] (rt) -- (sto);
+    \draw[flecha] (mm) -- (mm |- sto.north);
   \end{tikzpicture}
-  \caption{Arquitectura de \texttt{dbms-go}.}
+  \caption{Arquitectura general de \texttt{dbms-go}.}
   \label{fig:arquitectura}
 \end{figure}
 
-Todo el motor está escrito en Go, sin dependencias de bases de datos externas. El frontend usa React con Vite, y Leaflet para el mapa. PostgreSQL solo se usa como referencia en la comparación espacial (Sección~\ref{sec:exp-espacial}).
+Todo el motor está escrito en Go sin dependencias de gestores externos. El frontend usa React con Vite y Leaflet para el mapa interactivo. PostgreSQL se emplea únicamente como línea base externa en las comparaciones experimentales (Secciones~\ref{sec:exp-espacial} y~\ref{sec:exp-texto}).
 
 % ===========================================================================
 \section{Parte 1: organización de archivos}
@@ -251,7 +297,7 @@ Es un índice dinámico de igualdad: un \textbf{directorio} de $2^{d}$ punteros 
 
 El motor incluye un lexer y un parser propios. El subconjunto soportado incluye:
 
-\begin{lstlisting}[language=SQL]
+\begin{lstlisting}[style=sql]
 CREATE TABLE alumno (id INT PRIMARY KEY, nombre VARCHAR(64), edad INT);
 CREATE TABLE curso CLUSTERED BY (id) (id INT PRIMARY KEY, nombre VARCHAR(64));
 CREATE INDEX hash_nombre ON alumno (nombre);   -- hashing extensible
@@ -266,7 +312,7 @@ SELECT a.nombre, m.curso FROM alumno a
 BEGIN TRANSACTION;                            -- END TRANSACTION / COMMIT / ROLLBACK
 \end{lstlisting}
 
-Las consultas espaciales (\texttt{POINT}, \texttt{distancia}, \texttt{dentro}) se describen en la Sección~\ref{sec:sql-espacial}.
+Las consultas espaciales (\texttt{POINT}, \texttt{distancia}, \texttt{dentro}) se describen en la Sección~\ref{sec:sql-espacial}, las de texto completo (\texttt{MATCH}, \texttt{USING}, \texttt{SCORE}) en la Sección~\ref{sec:sql-texto}, y las consultas vectoriales y multimedia (\texttt{VECTOR}, \texttt{AUDIO\_VECTOR}, \texttt{IMAGE\_VECTOR}, \texttt{vector\_distance}) en la Sección~\ref{sec:sql-multimedia}.
 
 El tipo de índice se elige con una convención de nombres: el índice de la clave primaria de una tabla agrupada es el B+ agrupado; los nombres que empiezan con \texttt{hash} crean un hashing extensible, y cualquier otro nombre crea un B+ no agrupado.
 
@@ -278,7 +324,9 @@ El planificador descompone el \texttt{WHERE} en condiciones unidas por \texttt{A
   \item Igualdad sobre una columna indexada: \emph{index seek} en el hash o en el B+.
   \item Desigualdades o rangos: \emph{index scan} sobre un B+. El hash nunca se usa para rangos.
   \item Condiciones espaciales sobre una columna \texttt{POINT}: búsqueda por radio, $k$-NN o polígono en el R-Tree (Sección~\ref{sec:sql-espacial}).
+  \item Condiciones de texto completo (\texttt{MATCH}): recorrido del índice invertido SPIMI con ranking TF-IDF o BM25 (Sección~\ref{sec:sql-texto}).
   \item Sin índice aplicable: recorrido secuencial del archivo.
+  \item Consultas $k$-NN vectoriales y multimedia (\texttt{ORDER BY vector\_distance(...) LIMIT k}): búsqueda aproximada sobre índices \texttt{IVF}, \texttt{HNSW}, \texttt{AUDIO} o \texttt{IMAGE} (Sección~\ref{sec:sql-multimedia}).
 \end{itemize}
 
 Cuando el índice resuelve solo una parte del \texttt{WHERE}, el resto de la condición se aplica como filtro residual sobre las filas que devolvió el índice.
@@ -298,7 +346,7 @@ El paquete \texttt{external/hashing} reparte un conjunto de filas en $P$ partici
 \textbf{JOIN.} El resultado de un \emph{join} es una tabla virtual cuyas columnas se califican como \texttt{alias.columna}; el resto del \emph{pipeline} del \texttt{SELECT} (\texttt{WHERE}, \texttt{GROUP BY}, \texttt{ORDER BY}, \texttt{LIMIT}) trabaja sobre ella como si fuera una tabla. Para cada \texttt{JOIN} el planificador elige una estrategia:
 
 \begin{itemize}
-  \item \textbf{Index nested loop}: si la tabla de la derecha tiene un índice (B+ o hash) sobre su columna de unión, por cada fila de la izquierda se hace una búsqueda exacta en el índice. Es el uso estratégico de índices que pide el enunciado.
+  \item \textbf{Index nested loop}: si la tabla de la derecha tiene un índice (B+ o hash) sobre su columna de unión, por cada fila de la izquierda se hace una búsqueda exacta en el índice.
   \item \textbf{Grace hash join}: si no hay índice, los dos lados se particionan con el mismo $P$ y la misma función de hash, y cada par de particiones se une con una tabla hash construida sobre la derecha (\emph{build}) y recorrida con la izquierda (\emph{probe}).
   \item \textbf{Nested loop}: para \texttt{CROSS JOIN} o condiciones que no son igualdades entre columnas.
 \end{itemize}
@@ -602,7 +650,7 @@ El motor tiene un tipo de columna \texttt{POINT}. Un punto se guarda como texto 
   \item \texttt{dentro(p, polígono)} indica si el punto cae dentro del polígono.
 \end{itemize}
 
-\begin{lstlisting}[language=SQL]
+\begin{lstlisting}[style=sql]
 CREATE TABLE tiendas (id INT PRIMARY KEY, nombre VARCHAR(40), ubicacion POINT);
 INSERT INTO tiendas VALUES (1, 'Centro', POINT(-12.0464, -77.0428));
 -- rango: tiendas a menos de 5 km
@@ -767,16 +815,488 @@ Los puntos se generan uniformemente en una caja de Lima (latitud $-12.10$ a $-11
 \end{table}
 
 % ===========================================================================
+\section{Parte 3: búsqueda de texto completo (\emph{Full-Text Search})}
+% ===========================================================================
+
+La búsqueda de texto completo (\emph{Full-Text Search}) permite recuperar documentos por su contenido y ordenarlos según su relevancia. A diferencia de una comparación literal con \texttt{LIKE}, considera la frecuencia e importancia discriminativa de los términos buscados. El objetivo de esta parte es construir un índice invertido escalable en disco mediante \textbf{SPIMI} y evaluar dos esquemas de ranking: \textbf{TF-IDF con similitud del coseno} y \textbf{BM25}.
+
+\subsection{Flujo de procesamiento}
+
+El procesamiento de texto sigue un flujo en cuatro etapas:
+\begin{center}
+\fbox{Documentos} $\longrightarrow$ \fbox{Preprocesamiento} $\longrightarrow$ \fbox{Índice SPIMI}
+$\longrightarrow$ \fbox{Ranking TF-IDF / BM25} $\longrightarrow$ \fbox{Resultados SQL}
+\end{center}
+
+SPIMI organiza los términos en listas de publicaciones para localizar documentos candidatos sin recorrer la colección completa. Posteriormente, TF-IDF o BM25 asigna una puntuación numérica que permite ordenar los resultados por relevancia.
+
+\subsection{Preprocesamiento e índice invertido}
+
+Antes de indexar un texto se aplica: conversión a minúsculas, normalización de acentos, eliminación de signos de puntuación, tokenización, filtrado de palabras vacías (\emph{stop words}) y reducción a raíces (\emph{stemming}) con Snowball . Se emplea exactamente el mismo preprocesamiento tanto para los documentos indexados como para las consultas.
+
+Un \textbf{índice invertido} relaciona cada término del vocabulario con la lista de documentos donde aparece:
+\begin{table}[H]
+  \centering
+  \small
+  \begin{tabular}{@{}ll@{}}
+    \toprule
+    \textbf{Término} & \textbf{Lista de publicaciones (\emph{postings})} \\
+    \midrule
+    \texttt{base} & $(D_0,2), (D_1,1)$ \\
+    \texttt{vectorial} & $(D_1,1)$ \\
+    \texttt{datos} & $(D_0,1), (D_1,1)$ \\
+    \bottomrule
+  \end{tabular}
+  \caption{Ejemplo de estructura de listas de publicaciones en el índice invertido.}
+\end{table}
+
+Cada par $(D_i, tf)$ indica el identificador del documento y la frecuencia de aparición del término dentro de él.
+
+\subsection{Construcción del índice con SPIMI y gestión de memoria}
+
+\textbf{SPIMI} (\emph{Single-Pass In-Memory Indexing})~\cite{manning2008} construye el índice por bloques en una sola pasada. En lugar de mantener todas las publicaciones de la colección en RAM, acumula entradas en un diccionario en memoria hasta alcanzar un umbral y vuelca cada bloque ordenado a disco.
+
+\begin{lstlisting}[style=pseudo,caption={Pseudocódigo simplificado de construcción con SPIMI}]
+para cada documento:
+    tokens = preprocesar(documento)
+    contar frecuencia de cada termino
+    agregar (DocID, frecuencia) al diccionario
+    si publicaciones_pendientes >= limite:
+        escribir bloque ordenado en disco
+        liberar diccionario de RAM
+al finalizar:
+    escribir ultimo bloque
+    mezclar bloques y publicar indice
+\end{lstlisting}
+
+\paragraph{Administración de memoria RAM.} La construcción controla el consumo mediante un \textbf{límite de publicaciones pendientes}, no un límite rígido en bytes. En \texttt{builder.go}, el umbral predeterminado es:
+\[
+\texttt{MaxBlockPostings} = 2^{19} = 524\,288.
+\]
+Cada publicación corresponde a un par término--documento; las repeticiones de una palabra dentro de un mismo documento se acumulan en su frecuencia $tf$. El volcado a disco se ejecuta al finalizar el documento que alcanza o supera el umbral, por lo que el límite puede excederse ligeramente sin fragmentar documentos.
+
+\subsection{Proceso Merge y uso del Min-Heap}
+
+Cuando un término aparece en múltiples bloques intermedios, sus listas de publicaciones deben fusionarse en orden. Para ello, la implementación abre lectores secuenciales por bloque y emplea un \textbf{Min-Heap} ordenado lexicográficamente por término:
+
+\begin{table}[H]
+  \centering
+  \small
+  \begin{tabular}{@{}ll@{}}
+    \toprule
+    \textbf{Bloque} & \textbf{Contenido} \\
+    \midrule
+    Bloque 1 & \texttt{base} $\to (D_0,1)$; \texttt{datos} $\to (D_0,2)$ \\
+    Bloque 2 & \texttt{base} $\to (D_1,2)$; \texttt{indice} $\to (D_1,1)$ \\
+    \midrule
+    Resultado combinado & \texttt{base} $\to (D_0,1), (D_1,2)$ \\
+    \bottomrule
+  \end{tabular}
+  \caption{Fusión externa de listas de publicaciones entre bloques SPIMI.}
+\end{table}
+
+El algoritmo extrae repetidamente el término mínimo del \emph{heap}, reúne todas sus listas desde los lectores que comparten ese término, escribe la entrada consolidada en el archivo final y avanza únicamente los cursores involucrados. De este modo, \textbf{el Merge nunca carga los bloques completos en RAM}. Si el número de bloques supera el factor máximo de apertura simultánea (\texttt{MaxFanIn} $= 64$), la función \texttt{reduceBlocks()} ejecuta rondas jerárquicas de fusión.
+
+\subsection{Ranking TF-IDF y similitud del coseno}
+
+\textbf{TF-IDF} pondera cada término según su frecuencia local en el documento y su rareza global en la colección:
+\begin{align*}
+  \mathrm{TF}(t,d) &= 1 + \ln(tf_{t,d}), \\
+  \mathrm{IDF}(t)  &= \ln\!\left(\frac{N}{df_t}\right), \\
+  w_{t,d}          &= \mathrm{TF}(t,d)\,\mathrm{IDF}(t),
+\end{align*}
+donde $tf_{t,d}$ es la frecuencia del término $t$ en el documento $d$, $df_t$ es el número de documentos que contienen a $t$ y $N$ el total de documentos. Documentos y consulta se modelan como vectores dispersos y se comparan mediante la \textbf{similitud del coseno}:
+\[
+\operatorname{sim}(d,q) = \frac{\vec{d}\cdot\vec{q}}{\|\vec{d}\|\,\|\vec{q}\|}.
+\]
+Las normas euclidianas $\|\vec{d}\|$ se precalculan al construir el índice y, durante la consulta, se recorren únicamente las listas de \emph{postings} de los términos presentes en $q$, manteniendo los $k$ mejores resultados en un \emph{Min-Heap}.
+
+\subsection{Ranking BM25}
+
+\textbf{BM25}~\cite{robertson2009} es un modelo probabilístico de recuperación de información que incorpora saturación no lineal de frecuencia de término y normalización explícita respecto a la longitud del documento:
+\[
+\operatorname{BM25}(d,q) = \sum_{t \in q} \ln\!\left(1 + \frac{N - df_t + 0.5}{df_t + 0.5}\right)
+\frac{tf_{t,d}(k_1 + 1)}{tf_{t,d} + k_1\left(1 - b + b\frac{|d|}{\mathrm{avgdl}}\right)},
+\]
+donde $|d|$ es la longitud en tokens del documento $d$ y $\mathrm{avgdl}$ la longitud promedio de la colección. El parámetro $k_1$ regula la saturación por repetición de términos y $b$ controla la penalización por longitud del documento; en el motor se fijan por defecto en $k_1 = 1.2$ y $b = 0.75$.
+
+\begin{table}[H]
+  \centering
+  \small
+  \begin{tabular}{@{}p{3.2cm}p{5.2cm}p{5.2cm}@{}}
+    \toprule
+    \textbf{Criterio} & \textbf{TF-IDF + coseno} & \textbf{BM25} \\
+    \midrule
+    Enfoque & Espacio vectorial ponderado & Modelo probabilístico de relevancia \\
+    Frecuencia ($tf$) & Crecimiento logarítmico ($1 + \ln tf$) & Saturación asintótica controlada por $k_1$ \\
+    Longitud del doc. & Normalización L2 implícita del vector & Normalización explícita mediante $|d|/\mathrm{avgdl}$ y $b$ \\
+    Escala de salida & Acotada en $[0, 1]$ & No acotada (se compara orden relativo) \\
+    \bottomrule
+  \end{tabular}
+  \caption{Comparación entre los esquemas de ranking TF-IDF y BM25.}
+  \label{tab:tfidf-bm25}
+\end{table}
+
+\subsection{Extensión SQL e integración con el motor}
+\label{sec:sql-texto}
+
+El parser y el planificador incorporan el predicado \texttt{MATCH(columna, 'consulta')}, la cláusula \texttt{USING TF\_IDF | BM25} y la función escalar \texttt{SCORE()}:
+
+\begin{lstlisting}[style=sql,caption={Consultas de búsqueda de texto completo con TF-IDF y BM25}]
+SELECT *, SCORE() AS relevancia
+FROM documentos
+WHERE MATCH(contenido, 'base de datos vectorial')
+USING TF_IDF
+ORDER BY relevancia DESC
+LIMIT 10;
+
+SELECT *, SCORE() AS relevancia
+FROM articulos
+WHERE MATCH(texto, 'machine learning')
+USING BM25
+ORDER BY relevancia DESC;
+\end{lstlisting}
+
+Al ejecutar por primera vez una búsqueda textual sobre una columna, el motor construye el índice SPIMI en disco y lo reutiliza en consultas posteriores. Ante operaciones de modificación (\texttt{INSERT}, \texttt{UPDATE}, \texttt{DELETE}), el índice textual se invalida para garantizar consistencia. El plan de ejecución reporta un nodo \texttt{IndexScan} sobre SPIMI junto con el algoritmo de ranking seleccionado.
+
+\subsection{Resultados experimentales (Parte 3)}
+\label{sec:exp-texto}
+
+% TODO: Completar con las tablas y gráficas comparativas de SPIMI vs. GIN de PostgreSQL
+% (tiempos de construcción, latencia por número de términos, tamaño en disco y Precisión@10 / Recall@10).
+\emph{Pendiente de integrar las métricas experimentales de \texttt{textbench} y \texttt{pgtextbench} (construcción, latencia de consulta, espacio en disco y calidad de ranking frente a PostgreSQL GIN).}
+
+% ===========================================================================
+\section{Parte 4: soporte multimedia (imágenes y audio)}
+\label{sec:parte4}
+% ===========================================================================
+
+Los índices clásicos (árboles B+ y hashing) y espaciales (R-Tree) pierden eficiencia cuando los objetos se representan mediante vectores densos o dispersos de decenas o cientos de dimensiones debido a la \emph{maldición de la dimensionalidad}. Para soportar consultas por similitud de contenido sobre imágenes y pistas de audio, el motor incorpora una tubería en dos etapas: (1) transformación de los archivos multimedia en vectores numéricos normalizados mediante extracción de descriptores locales y cuantización vectorial, y (2) indexación aproximada de vecinos más cercanos (\emph{Approximate Nearest Neighbors}, ANN) con \textbf{IVF-Flat} y \textbf{HNSW}.
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[
+      caja/.style={draw=primario,fill=suave,rounded corners=3pt,minimum width=2.7cm,minimum height=1.0cm,font=\scriptsize,align=center},
+      flecha/.style={-{Stealth},thick,primario}]
+    \node[caja] (raw) {\textbf{Objeto Multimedia}\\Imagen / Audio WAV};
+    \node[caja,right=0.45cm of raw] (feat) {\textbf{Descriptores Locales}\\SIFT (img) / MFCC (audio)};
+    \node[caja,right=0.45cm of feat] (bow) {\textbf{Cuantización BoVW/BoAW}\\$k$-means ($K$) + TF-IDF + L2};
+    \node[caja,right=0.45cm of bow] (idx) {\textbf{Índice Vectorial}\\IVF-Flat / HNSW};
+    \draw[flecha] (raw) -- (feat);
+    \draw[flecha] (feat) -- (bow);
+    \draw[flecha] (bow) -- (idx);
+  \end{tikzpicture}
+  \caption{Tubería de procesamiento e indexación multimedia en \texttt{dbms-go}.}
+  \label{fig:multimedia-pipeline}
+\end{figure}
+
+\subsection{Extracción de descriptores locales: SIFT y MFCC}
+
+En lugar de comparar archivos binarios completos, el motor extrae firmas acústicas o visuales compactas (\texttt{dbms/lib/local\_features/}):
+
+\begin{itemize}
+  \item \textbf{Imágenes -- SIFT (\emph{Scale-Invariant Feature Transform})~\cite{lowe2004}:} detecta puntos clave extremos en el espacio de escalas mediante diferencias de gaussianas (DoG), asigna una orientación dominante a cada punto y construye histogramas locales de gradientes de $128$ dimensiones invariantes a traslación, escala y rotación (\texttt{local\_features/sift}).
+  \item \textbf{Audio -- MFCC (\emph{Mel-Frequency Cepstral Coefficients})~\cite{davis1980}:} segmenta la señal de audio PCM en tramas cortas solapadas con ventana de Hamming, calcula el espectro de potencia mediante Transformada Rápida de Fourier (FFT), proyecta las energías sobre un banco de filtros triangulares espaciados en la escala perceptual Mel, aplica compresión logarítmica y extrae los coeficientes cepstrales mediante Transformada Discreta del Coseno (DCT) (\texttt{local\_features/mfcc}).
+\end{itemize}
+
+\subsection{Cuantización vectorial y representación BoVW / BoAW}
+
+Dado que cada imagen o pista de audio produce un número variable de descriptores locales, estos se proyectan a un espacio vectorial de dimensión fija $K$ mediante el modelo de \emph{Bolsa de Palabras Visuales/Acústicas} (\emph{Bag of Visual/Audio Words}, BoVW / BoAW)~\cite{jegou2011}:
+
+\begin{enumerate}
+  \item \textbf{Construcción del vocabulario:} sobre una muestra de descriptores locales de la colección se ejecuta agrupamiento \emph{k-means} para obtener $K$ centroides representativos ($\mathcal{C} = \{c_1, \dots, c_K\}$). El vocabulario resultante se serializa en disco (\texttt{vocab.gob}) para reutilizarlo en inserciones y consultas posteriores.
+  \item \textbf{Codificación y ponderación TF-IDF:} cada descriptor local $x_j$ de un objeto se asigna a su centroide más cercano $c_i = \arg\min_{c \in \mathcal{C}} \|x_j - c\|_2$, generando un histograma de frecuencias $tf_i$. Para atenuar el peso de patrones acústicos o visuales omnipresentes, cada componente se pondera con su frecuencia inversa de documento y se normaliza bajo norma euclidiana L2:
+  \[
+    v_i = tf_i \cdot \ln\!\left(\frac{N}{df_i}\right), \qquad \hat{v} = \frac{\vec{v}}{\|\vec{v}\|_2}.
+  \]
+\end{enumerate}
+
+En el módulo de audio (\texttt{dbms/lib/vector/audio\_features.go}), este proceso produce vectores normalizados de $K = 128$ dimensiones por pista.
+
+\subsection{Índices vectoriales de alta dimensión: IVF-Flat y HNSW}
+
+Para acelerar las consultas de $k$ vecinos más cercanos ($k$-NN) bajo \textbf{Similitud del Coseno}, \textbf{Distancia Euclidiana} y \textbf{Producto Punto}, se implementaron dos estructuras de indexación (\texttt{dbms/lib/index/}):
+
+\paragraph{IVF-Flat (\emph{Inverted File Index}).}
+Particiona el espacio vectorial en $\text{nlist}$ celdas de Voronoi mediante entrenamiento \emph{k-means++} determinista (\texttt{ivf/ivfflat.go}). Cuando la métrica es \texttt{Cosine}, el algoritmo aplica \emph{k-means} esférico (normalizando tanto vectores como centroides en cada iteración); para \texttt{Euclidean}, utiliza \emph{k-means} clásico. Cada vector insertado se almacena sin compresión en la lista invertida (\texttt{invertedList}) de su centroide más cercano, manteniendo un mapa de posiciones (\texttt{positions}) para soportar actualizaciones y borrados. Durante una consulta, se calculan las distancias a los $\text{nlist}$ centroides y se exploran únicamente las $\text{nprobe}$ listas más próximas ($\text{nprobe} \le \text{nlist}$), reduciendo el espacio de búsqueda a una fracción $\approx \text{nprobe}/\text{nlist}$ del total.
+
+\paragraph{HNSW (\emph{Hierarchical Navigable Small World})~\cite{malkov2020}.}
+Construye un grafo de proximidad multicapa (\texttt{hnsw/hnsw.go}) donde los niveles superiores contienen enlaces de largo alcance que permiten saltar rápidamente hacia la vecindad de la consulta, mientras que la capa base (nivel 0) concentra conexiones densas de corto alcance. Su construcción y búsqueda se gobiernan por el grado máximo por nodo $M$, el ancho de haz durante la inserción (\texttt{efConstruction}) y el ancho de exploración en consulta (\texttt{efSearch}).
+
+\begin{table}[H]
+  \centering
+  \small
+  \begin{tabular}{@{}p{2.4cm}p{3.4cm}p{4.3cm}p{4.3cm}@{}}
+    \toprule
+    \textbf{Método} & \textbf{Parámetros clave} & \textbf{Ventajas} & \textbf{Desventajas} \\
+    \midrule
+    Escaneo secuencial & Ninguno (exacto) & Sin costo de construcción; $100\%$ de \emph{recall} garantizado. & Latencia lineal $O(N \cdot D)$; degrada al saturar caché en $N \ge 10\,000$. \\
+    IVF-Flat & $\text{nlist}$ (celdas), $\text{nprobe}$ (celdas visitadas) & Control continuo entre velocidad y precisión; alcanza $>98\%$ de \emph{recall} visitando $<10\%$ de listas. & Requiere fase previa de entrenamiento \emph{k-means++}; sensible al tamaño de $\text{nprobe}$. \\
+    HNSW & $M$ (grado), $\text{efConstruction}$, $\text{efSearch}$ & Búsqueda logarítmica $O(\log N)$ en submilisegundos incluso para $N = 100\,000$. & Mayor costo de construcción e inserción incremental; mayor consumo de memoria por enlaces. \\
+    \bottomrule
+  \end{tabular}
+  \caption{Comparación cualitativa de los métodos de búsqueda vectorial implementados.}
+  \label{tab:indices-vectoriales}
+\end{table}
+
+\subsection{Extensión SQL multimedia e integración con el sistema}
+\label{sec:sql-multimedia}
+
+El motor extiende el lenguaje SQL con el tipo de dato vectorial \texttt{VECTOR(D)}, cuatro variantes de índices aproximados (\texttt{IVF}, \texttt{HNSW}, \texttt{AUDIO} e \texttt{IMAGE}) y funciones escalares de extracción y distancia (\texttt{dbms/lib/sql/vector.go}, \texttt{hnsw.go}, \texttt{audio.go}, \texttt{image.go}):
+
+\begin{itemize}
+  \item \textbf{Índices sobre vectores explícitos (\texttt{VECTOR(D)}):} mediante \texttt{USING IVF} y \texttt{USING HNSW} con parámetros configurables en la cláusula \texttt{WITH} (\texttt{nlist}, \texttt{nprobe}, \texttt{M}, \texttt{ef\_construction}, \texttt{ef\_search} y \texttt{metric} $\in \{\text{\texttt{'cosine'}}, \text{\texttt{'euclidean'}}, \text{\texttt{'dot'}}\}$).
+  \item \textbf{Índices multimedia (\texttt{USING AUDIO} y \texttt{USING IMAGE}):} operan directamente sobre columnas de texto (\texttt{VARCHAR}) que almacenan la ruta del archivo multimedia. Al crearse el índice, el motor extrae los descriptores locales de toda la tabla (MFCC o SIFT), entrena y persiste el vocabulario de $k$ palabras acústicas o visuales (\emph{codebook}) y construye el índice vectorial subyacente, manteniéndolo sincronizado ante inserciones, actualizaciones y borrados.
+  \item \textbf{Funciones de consulta y distancia:}
+  \begin{itemize}
+    \item \texttt{VECTOR($x_1, \dots, x_D$)}: construye un vector literal de dimensión $D$.
+    \item \texttt{AUDIO\_VECTOR(ruta | bytes)}: extrae MFCC y proyecta el vector BoAW ponderado con TF-IDF usando el \emph{codebook} del índice \texttt{AUDIO} de la tabla.
+    \item \texttt{IMAGE\_VECTOR(ruta | bytes)}: extrae puntos clave SIFT y cuantiza su histograma BoVW con el \emph{codebook} del índice \texttt{IMAGE} de la tabla.
+    \item \texttt{vector\_distance(col, consulta [, metrica])}: calcula la distancia entre el registro y el vector de consulta (menor valor indica mayor similitud).
+  \end{itemize}
+\end{itemize}
+
+El motor extiende el lenguaje SQL con soporte declarativo para columnas e índices multimedia (\texttt{dbms/lib/sql/audio.go}, \texttt{image.go}, \texttt{vector.go}), además de funciones de extracción de características y operadores de ranking por similitud:
+
+\begin{lstlisting}[style=sql,caption={Creación de índices vectoriales (IVF / HNSW) y multimedia (AUDIO / IMAGE) en SQL}]
+-- 1. Indice HNSW e IVF sobre columnas VECTOR(D) explicitas
+CREATE TABLE embeddings (id INT PRIMARY KEY, v VECTOR(128));
+CREATE INDEX idx_emb_hnsw ON embeddings USING HNSW (v) WITH (M = 16, ef_search = 64, metric = 'cosine');
+CREATE INDEX idx_emb_ivf  ON embeddings USING IVF  (v) WITH (nlist = 32, nprobe = 8, metric = 'euclidean');
+
+SELECT id, vector_distance(v, VECTOR(0.12, 0.85, ...), 'cosine') AS distancia
+FROM embeddings
+ORDER BY vector_distance(v, VECTOR(0.12, 0.85, ...), 'cosine')
+LIMIT 10;
+
+-- 2. Búsqueda k-NN de audio por contenido (MFCC + BoAW)
+CREATE TABLE canciones CLUSTERED BY (id) (
+    id INT PRIMARY KEY, titulo VARCHAR(80), genero VARCHAR(40), archivo VARCHAR(120), v VECTOR(128)
+);
+CREATE INDEX idx_audio ON canciones USING AUDIO (archivo) WITH (k = 128);
+
+SELECT id, titulo, genero, archivo,
+       vector_distance(archivo, AUDIO_VECTOR('datos_demo/audio/muestras/000002.wav')) AS distancia
+FROM canciones
+ORDER BY vector_distance(archivo, AUDIO_VECTOR('datos_demo/audio/muestras/000002.wav'))
+LIMIT 5;
+
+-- 3. Búsqueda k-NN de imágenes por contenido (SIFT + BoVW)
+CREATE TABLE imagenes CLUSTERED BY (id) (
+    id INT PRIMARY KEY, nombre VARCHAR(60), categoria VARCHAR(30), archivo VARCHAR(120), v VECTOR(64)
+);
+CREATE INDEX idx_img ON imagenes USING IMAGE (archivo) WITH (k = 64);
+
+SELECT id, nombre, categoria, archivo,
+       vector_distance(archivo, IMAGE_VECTOR('datos_demo/imagenes/bosque_1.png')) AS distancia
+FROM imagenes
+ORDER BY vector_distance(archivo, IMAGE_VECTOR('datos_demo/imagenes/bosque_1.png'))
+LIMIT 5;
+\end{lstlisting}
+
+Cuando el planificador (\texttt{planVectorKNN}) detecta el patrón \texttt{ORDER BY vector\_distance(col\_indexada, ...) LIMIT k} en orden ascendente, evita el recorrido secuencial y resuelve el top-$k$ directamente mediante el índice vectorial (\texttt{IVF}, \texttt{HNSW}, \texttt{AUDIO} o \texttt{IMAGE}). Desde la interfaz web (\texttt{VectorSearchPanel.jsx}) y el servidor HTTP (\texttt{dbms/cmd/server/}), el usuario puede consultar tanto por archivo subido como seleccionando una pista o imagen existente, reproduciendo o previsualizando los resultados mediante el \emph{endpoint} \texttt{/api/media/}.
+
+\subsection{Resultados experimentales (Parte 4)}
+\label{sec:exp-audio}
+
+\subsubsection{Metodología}
+
+La evaluación experimental se ejecutó sobre el conjunto real \textbf{FMA Small} (\emph{Free Music Archive}), compuesto por \textbf{$7\,997$ pistas de audio} proyectadas a vectores \textbf{BoAW + TF-IDF de $D = 128$ dimensiones} (\texttt{resultados/audio.csv}). Se diseñaron dos experimentos utilizando el comando \texttt{audiobench}:
+
+\begin{enumerate}
+  \item \textbf{Escalabilidad ($N \in \{1\,000, 10\,000, 100\,000\}$, $k = 10$):} para $N = 1\,000$ se emplean las primeras $1\,000$ pistas reales. Para $N = 10\,000$ y $N = 100\,000$ se conservan intactas las $7\,997$ pistas reales y se completa hasta $N$ mediante \emph{bootstrap} determinista con perturbación gaussiana controlada ($\sigma = 0.03$) sobre las dimensiones activas y renormalización L2. En cada escala se promedian $100$ consultas ejecutadas siempre sobre pistas reales, comparando el escaneo secuencial contra \textbf{IVF-Flat} ($\text{nlist} = \lfloor\sqrt{N}\rceil$, $\text{nprobe} = \max(1, \lfloor\text{nlist}/4\rceil)$) y \textbf{HNSW} ($M = 16$, $\text{efConstruction} = 100$, $\text{efSearch} = 64$). Para $N = 100\,000$, el entrenamiento \emph{k-means++} de IVF utiliza una muestra de $32 \cdot \text{nlist} = 10\,112$ vectores antes de insertar los $100\,000$ registros.
+  \item \textbf{Compromiso precisión vs.\ velocidad ($N = 7\,997$ pistas reales):} con $\text{nlist} = 89$, se evalúa el barrido $\text{nprobe} \in \{1, 2, 4, 8, 16, 22, 45, 89\}$ en IVF-Flat y $\text{efSearch} \in \{10, 16, 32, 64, 128, 256\}$ en HNSW bajo similitud del coseno y distancia euclidiana, midiendo latencia media, percentil 95 (P95), aceleración (\emph{speedup}) y \texttt{Recall@k} para $k \in \{5, 10, 20\}$.
+\end{enumerate}
+
+\subsubsection{Escalabilidad en construcción y consulta ($k = 10$)}
+
+\begin{table}[H]
+  \centering
+  \small
+  \resizebox{\textwidth}{!}{%
+  \begin{tabular}{@{}lrlrrrrrr@{}}
+    \toprule
+    \textbf{Métrica} & $N$ & \textbf{Método} & \textbf{Parámetros} & \textbf{Const.\ (ms)} & \textbf{Media (ms)} & \textbf{P95 (ms)} & \textbf{Speedup} & \textbf{Recall@10} \\
+    \midrule
+    \multirow{9}{*}{Cosine}
+      & \multirow{3}{*}{1\,000}
+        & Secuencial & exacto                     & 0.00      & 0.186  & 0.199  & 1.00$\times$   & 100.0\% \\
+      & & IVF-Flat   & $\text{nlist}=32,\ \text{np}=8$   & 314.46    & 0.032  & 0.043  & 5.84$\times$   & 98.6\% \\
+      & & HNSW       & $M=16,\ \text{efC}=100$    & 55.05     & \textbf{0.024}  & 0.027  & \textbf{7.83$\times$}   & 70.1\% \\
+    \cmidrule(lr){2-9}
+      & \multirow{3}{*}{10\,000}
+        & Secuencial & exacto                     & 0.00      & 2.118  & 2.372  & 1.00$\times$   & 100.0\% \\
+      & & IVF-Flat   & $\text{nlist}=100,\ \text{np}=25$ & 9\,532.00 & 0.257  & 0.297  & 8.23$\times$   & 99.7\% \\
+      & & HNSW       & $M=16,\ \text{efC}=100$    & 952.90    & \textbf{0.046}  & 0.058  & \textbf{45.73$\times$}  & 46.2\% \\
+    \cmidrule(lr){2-9}
+      & \multirow{3}{*}{100\,000}
+        & Secuencial & exacto                     & 0.00      & 25.915 & 28.407 & 1.00$\times$   & 100.0\% \\
+      & & IVF-Flat   & $\text{nlist}=316,\ \text{np}=79$ & 32\,616.94& 2.293  & 2.694  & 11.30$\times$  & \textbf{100.0\%} \\
+      & & HNSW       & $M=16,\ \text{efC}=100$    & 13\,216.94& \textbf{0.118}  & 0.151  & \textbf{220.08$\times$} & 56.6\% \\
+    \midrule
+    \multirow{9}{*}{Euclidean}
+      & \multirow{3}{*}{1\,000}
+        & Secuencial & exacto                     & 0.00      & 0.173  & 0.179  & 1.00$\times$   & 100.0\% \\
+      & & IVF-Flat   & $\text{nlist}=32,\ \text{np}=8$   & 74.54     & 0.061  & 0.065  & 2.85$\times$   & 99.2\% \\
+      & & HNSW       & $M=16,\ \text{efC}=100$    & 124.61    & \textbf{0.046}  & 0.094  & \textbf{3.77$\times$}   & 43.0\% \\
+    \cmidrule(lr){2-9}
+      & \multirow{3}{*}{10\,000}
+        & Secuencial & exacto                     & 0.00      & 2.015  & 2.502  & 1.00$\times$   & 100.0\% \\
+      & & IVF-Flat   & $\text{nlist}=100,\ \text{np}=25$ & 5\,785.05 & 0.421  & 0.441  & 4.78$\times$   & 99.9\% \\
+      & & HNSW       & $M=16,\ \text{efC}=100$    & 1\,584.93 & \textbf{0.067}  & 0.122  & \textbf{30.30$\times$}  & 25.3\% \\
+    \cmidrule(lr){2-9}
+      & \multirow{3}{*}{100\,000}
+        & Secuencial & exacto                     & 0.00      & 25.059 & 27.734 & 1.00$\times$   & 100.0\% \\
+      & & IVF-Flat   & $\text{nlist}=316,\ \text{np}=79$ & 7\,657.02 & 2.275  & 2.434  & 11.02$\times$  & \textbf{100.0\%} \\
+      & & HNSW       & $M=16,\ \text{efC}=100$    & 20\,343.72& \textbf{0.085}  & 0.116  & \textbf{295.01$\times$} & 32.7\% \\
+    \bottomrule
+  \end{tabular}}
+  \caption{Escalabilidad de construcción y búsqueda $k$-NN ($k=10$) sobre vectores de audio BoAW de 128 dimensiones (\texttt{audio.csv}).}
+  \label{tab:audio-escalabilidad}
+\end{table}
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}{0.49\textwidth}\grafica{audio_construccion.jpg}\caption{Tiempo de construcción del índice (log).}\end{subfigure}\hfill
+  \begin{subfigure}{0.49\textwidth}\grafica{audio_knn10_coseno.jpg}\caption{Consulta $k=10$ en Coseno (log).}\end{subfigure}\\[0.4em]
+  \begin{subfigure}{0.49\textwidth}\grafica{audio_knn10_euclidiana.jpg}\caption{Consulta $k=10$ en Euclidiana (log).}\end{subfigure}\hfill
+  \begin{subfigure}{0.49\textwidth}\grafica{audio_recall_latencia.jpg}\caption{Curva Recall@10 vs.\ Latencia ($N = 7\,997$).}\end{subfigure}
+  \caption{Evaluación experimental de búsqueda vectorial de audio: construcción, escalabilidad en consulta y compromiso precisión-latencia.}
+  \label{fig:audio-escalabilidad}
+\end{figure}
+
+\subsubsection{Curva de compromiso precisión vs.\ velocidad ($N = 7\,997$ pistas reales)}
+
+\begin{table}[H]
+  \centering
+  \small
+  \resizebox{\textwidth}{!}{%
+  \begin{tabular}{@{}llrrrrrr@{}}
+    \toprule
+    \textbf{Índice} & \textbf{Configuración} & \textbf{Coseno (ms)} & \textbf{Speedup Cos.} & \textbf{Recall@10 Cos.} & \textbf{Euclidiana (ms)} & \textbf{Speedup Euc.} & \textbf{Recall@10 Euc.} \\
+    \midrule
+    Secuencial & recorrido exacto       & 1.640 & 1.00$\times$  & 100.0\% & 1.622 & 1.00$\times$  & 100.0\% \\
+    \midrule
+    IVF-Flat   & $\text{nprobe}=1/89$   & 0.024 & 69.49$\times$ & 64.9\%  & 0.030 & 54.59$\times$ & 67.2\% \\
+    IVF-Flat   & $\text{nprobe}=2/89$   & 0.033 & 50.44$\times$ & 82.0\%  & 0.050 & 32.29$\times$ & 86.4\% \\
+    IVF-Flat   & $\text{nprobe}=4/89$   & 0.050 & 32.54$\times$ & 93.0\%  & 0.104 & 15.61$\times$ & 95.3\% \\
+    IVF-Flat   & $\text{nprobe}=8/89$   & 0.087 & 18.82$\times$ & \textbf{97.9\%}  & 0.187 & 8.72$\times$  & \textbf{98.1\%} \\
+    IVF-Flat   & $\text{nprobe}=16/89$  & 0.154 & 10.66$\times$ & 99.3\%  & 0.330 & 4.94$\times$  & 99.4\% \\
+    IVF-Flat   & $\text{nprobe}=22/89$  & 0.202 & 8.12$\times$  & 99.7\%  & 0.397 & 4.10$\times$  & 99.6\% \\
+    IVF-Flat   & $\text{nprobe}=45/89$  & 0.389 & 4.22$\times$  & 99.9\%  & 0.541 & 3.02$\times$  & 100.0\% \\
+    IVF-Flat   & $\text{nprobe}=89/89$  & 0.752 & 2.18$\times$  & 100.0\% & 0.652 & 2.50$\times$  & 100.0\% \\
+    \midrule
+    HNSW       & $\text{efSearch}=10$   & 0.041 & 40.28$\times$ & 44.0\%  & 0.056 & 29.02$\times$ & 25.0\% \\
+    HNSW       & $\text{efSearch}=64$   & 0.080 & 20.64$\times$ & 44.0\%  & 0.071 & 22.97$\times$ & 25.0\% \\
+    HNSW       & $\text{efSearch}=256$  & 0.052 & 31.73$\times$ & 44.0\%  & 0.067 & 24.48$\times$ & 25.0\% \\
+    \bottomrule
+  \end{tabular}}
+  \caption{Barrido de compromiso precisión vs.\ velocidad sobre las $N = 7\,997$ pistas reales de FMA Small ($\text{nlist} = 89$).}
+  \label{tab:audio-tradeoff}
+\end{table}
+
+\subsubsection{Análisis de resultados}
+
+\begin{itemize}
+  \item \textbf{Punto de quiebre en escalabilidad ($N = 100\,000$).} Al crecer $100\times$ el catálogo de audio, la latencia del escaneo secuencial se degrada más de $139\times$ ($0.186\text{ ms} \rightarrow 25.915\text{ ms}$ en coseno) debido a que los $51.2\text{ MB}$ de vectores exceden la caché L3 y obligan a leer continuamente de memoria principal. En ese escenario, \textbf{IVF-Flat} mantiene un \texttt{Recall@10} del \textbf{100.0\%} respondiendo en $2.293\text{ ms}$ (\textbf{11.30$\times$} de aceleración), mientras que \textbf{HNSW} responde en apenas \textbf{0.118 ms} en coseno (\textbf{220.08$\times$}) y \textbf{0.085 ms} en euclidiana (\textbf{295.01$\times$}), manteniendo una latencia prácticamente submilisegundo en todo el rango evaluado.
+  \item \textbf{Costo de construcción.} En distancia euclidiana con $N = 100\,000$, gracias al submuestreo de entrenamiento ($32 \cdot \text{nlist} = 10\,112$ vectores para \emph{k-means++}), \textbf{IVF-Flat se construye 2.65 veces más rápido que HNSW} ($7.66\text{ s}$ frente a $20.34\text{ s}$). En similitud del coseno, la construcción de IVF asciende a $32.62\text{ s}$ debido a la renormalización esférica de vectores y centroides exigida en cada iteración del entrenamiento.
+  \item \textbf{Curva de compromiso en datos reales ($N = 7\,997$).} Como muestra la Figura~\ref{fig:audio-escalabilidad}(d), \textbf{IVF-Flat} exhibe una frontera de Pareto altamente sintonizable: con $\text{nprobe} = 8/89$ (inspeccionando solo el \textbf{9.0\%} de las celdas) alcanza \textbf{97.9\% de Recall@10 en 0.087 ms} (\textbf{18.82$\times$} de \emph{speedup} en coseno) y \textbf{98.1\% en 0.187 ms} en euclidiana. Con $\text{nprobe} = 16/89$ supera el \textbf{99.3\%} de precisión en ambas métricas.
+  \item \textbf{Comportamiento de HNSW ante \texttt{efSearch}.} En la Tabla~\ref{tab:audio-tradeoff} se observa que el \emph{recall} de HNSW permanece constante ($44.0\%$ en coseno y $25.0\%$ en euclidiana) al variar $\text{efSearch}$ entre $10$ y $256$. Esto responde a un detalle de implementación del paquete subyacente (\texttt{coder/hnsw}), cuya primitiva \texttt{Search(q, k)} acota el tamaño de la lista dinámica de candidatos al valor solicitado $k$ ($k = 21$) en lugar de expandir el haz de búsqueda hasta \texttt{efSearch}. En consecuencia, HNSW ofrece la máxima velocidad de respuesta ($< 0.12\text{ ms}$ en $N = 100\,000$), mientras que IVF-Flat resulta preferible cuando la aplicación exige garantizar $\text{Recall@10} \ge 98\%$.
+\end{itemize}
+
+
+\subsubsection{Evaluación de rendimiento de índices vectoriales}
+
+Se realizó una evaluación comparativa de los índices \textbf{IVF-Flat} y \textbf{HNSW} utilizando las métricas de distancia euclidiana y similitud del coseno. El objetivo fue analizar su comportamiento en búsquedas de vecinos más cercanos (k-NN), considerando $k=10$.
+
+Se trabajó con tres conjuntos de aproximadamente 1\,000, 10\,000 y 100\,000 imágenes. Debido a que algunas imágenes no generaron descriptores válidos, los tamaños finales fueron 997, 9\,987 y 99\,785.
+
+Para cada configuración se evaluaron cuatro métricas: tiempo de construcción, tiempo promedio de consulta, Recall@10 y consumo de memoria RAM (\emph{heap}).
+
+% \subsubsection{Resultados experimentales}
+
+La Tabla~\ref{tab:resultados_indices} presenta los resultados obtenidos.
+
+\begin{table}[htbp]
+\centering
+\caption{Comparación de IVF-Flat y HNSW}
+\label{tab:resultados_indices}
+\scriptsize
+\resizebox{\textwidth}{!}{
+\begin{tabular}{llrrrr}
+\hline
+\textbf{Tamaño} &
+\textbf{Índice y métrica} &
+\textbf{Construcción (ms)} &
+\textbf{Consulta (ms)} &
+\textbf{Recall@10 (\%)} &
+\textbf{Memoria (MB)} \\
+\hline
+997 & IVF-Euclidiana & 19.64 & 0.030 & 82.63 & 0.35 \\
+997 & HNSW-Euclidiana & 105.10 & 0.040 & 22.12 & 1.74 \\
+997 & IVF-Coseno & 177.16 & 0.020 & 84.14 & 0.34 \\
+997 & HNSW-Coseno & 66.93 & 0.030 & 20.00 & 1.63 \\
+\hline
+9\,987 & IVF-Euclidiana & 1336.75 & 0.111 & 92.63 & 3.25 \\
+9\,987 & HNSW-Euclidiana & 1408.35 & 0.051 & 8.99 & 16.70 \\
+9\,987 & IVF-Coseno & 3571.51 & 0.172 & 92.53 & 3.30 \\
+9\,987 & HNSW-Coseno & 1007.95 & 0.061 & 7.47 & 16.64 \\
+\hline
+99\,785 & IVF-Euclidiana & 28010.23 & 1.881 & 95.15 & 30.53 \\
+99\,785 & HNSW-Euclidiana & 21745.29 & 0.082 & 3.23 & 164.93 \\
+99\,785 & IVF-Coseno & 36333.65 & 1.407 & 94.95 & 30.84 \\
+99\,785 & HNSW-Coseno & 13019.10 & 0.072 & 3.64 & 164.88 \\
+\hline
+\end{tabular}
+}
+\end{table}
+
+\paragraph{Análisis de resultados en imágenes.}
+
+\begin{itemize}
+  \item \textbf{Tiempo de construcción.} En los conjuntos pequeños, IVF-Flat presentó tiempos de construcción generalmente menores. Por ejemplo, con 997 imágenes y distancia euclidiana, IVF necesitó 19.64 ms, mientras que HNSW requirió 105.10 ms. Sin embargo, con aproximadamente 100\,000 imágenes, HNSW presentó menores tiempos de construcción en ambas métricas. Con similitud del coseno, HNSW tardó 13.02 segundos, frente a los 36.33 segundos de IVF. Estos resultados muestran que el comportamiento de construcción depende del tamaño del conjunto y de la configuración utilizada.
+  \item \textbf{Tiempo promedio de consulta.} Para conjuntos grandes, HNSW fue considerablemente más rápido durante las consultas. Con 99\,785 imágenes y distancia euclidiana, IVF necesitó 1.881 ms por consulta, mientras que HNSW utilizó solamente 0.082 ms, aproximadamente 23 veces menos tiempo. Esto muestra una ventaja importante de HNSW: su tiempo de consulta creció poco al aumentar el número de imágenes. 
+  \item \textbf{Precisión de búsqueda (\texttt{Recall@10}).} El Recall@10 mide qué proporción de los diez vecinos más cercanos reales fue recuperada por el índice. En nuestros experimentos, IVF-Flat obtuvo los mejores resultados de precisión en todos los tamaños evaluados. Con aproximadamente 100\,000 imágenes, IVF alcanzó un Recall@10 de 95.15\% utilizando distancia euclidiana y 94.95\% con similitud del coseno. Por el contrario, HNSW presentó valores considerablemente menores. En el conjunto más grande, su Recall@10 fue de 3.23\% y 3.64\%, respectivamente. Esto significa que, aunque HNSW respondió más rápido, recuperó pocos de los diez vecinos esperados.
+  \item \textbf{Consumo de memoria.} IVF-Flat presentó un consumo de memoria menor en todos los experimentos. Con aproximadamente 100\,000 imágenes, IVF utilizó entre 30.53 y 30.84 MB, mientras que HNSW necesitó alrededor de 164.9 MB. Esta diferencia se relaciona con las estructuras utilizadas por los algoritmos. HNSW mantiene conexiones entre vectores mediante un grafo, lo que requiere memoria adicional.
+\end{itemize}
+
+
+\paragraph{Gráficas de rendimiento.}
+
+Las siguientes figuras muestran el comportamiento de IVF-Flat y HNSW al aumentar la cantidad de imágenes indexadas.
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}
+    {0.49\textwidth}\grafica{construccion.png}\caption{Tiempo de construcción.}\label{fig:tiempo_construccion}\hfill
+  \end{subfigure}
+  \begin{subfigure}{0.49\textwidth}\grafica{consulta.png}\caption{Tiempo promedio de consulta ($k = 10$).}\label{fig:tiempo_consulta}\end{subfigure}\\[0.4em]
+  \begin{subfigure}{0.49\textwidth}\grafica{recall_at_10.png}\caption{Precisión \texttt{Recall@10}.}\label{fig:recall_at_10}\end{subfigure}\hfill
+  \begin{subfigure}{0.49\textwidth}\grafica{memoria_heap.png}\caption{Consumo de memoria RAM (\emph{heap}).}\label{fig:consumo_memoria}\end{subfigure}
+  \caption{Comportamiento de IVF-Flat y HNSW al escalar el catálogo de imágenes SIFT + BoVW.}
+  \label{fig:imagenes-rendimiento}
+\end{figure}
+
+
+
+
+
+
+
+
+
+% ===========================================================================
 \section{Limitaciones y trabajo futuro}
 % ===========================================================================
 
 \begin{itemize}
-  \item \textbf{Eliminación en el B+.} Hoy reconstruye el árbol en $O(N)$. Implementar redistribución y fusión de nodos debería bajar el costo de altas y bajas a $O(\log N)$.
-  \item \textbf{Índices en memoria.} Los índices se reconstruyen al abrir la tabla. Persistirlos en disco reduciría el tiempo de arranque.
-  \item \textbf{Granularidad de los bloqueos.} El aislamiento entre transacciones se hace por tabla: dos transacciones que escriben filas distintas de la misma tabla se ejecutan una después de otra. Bloqueos de intención (IS/IX) permitirían bloquear solo filas.
-  \item \textbf{Tipos numéricos.} El almacenamiento no tiene tipo decimal; las coordenadas se guardan como texto en las columnas \texttt{POINT}.
-  \item \textbf{JOIN.} \texttt{RIGHT} y \texttt{FULL JOIN} no están soportados.
+  \item \textbf{Eliminación en el B+.} Hoy reconstruye el árbol en $O(N)$. Implementar redistribución y fusión de nodos bajará el costo de altas y bajas a $O(\log N)$.
+  \item \textbf{Persistencia de índices en memoria.} Los índices clásicos y el R-Tree se reconstruyen al abrir la tabla; serializarlos en disco reduciría el tiempo de arranque.
+  \item \textbf{Actualización incremental en SPIMI.} Actualmente una escritura invalida el índice invertido completo; incorporar segmentos delta fusionables en segundo plano evitaría reconstrucciones totales.
+  \item \textbf{Granularidad de los bloqueos.} El aislamiento entre transacciones opera por tabla; bloqueos de intención (IS/IX) permitirían concurrencia a nivel de fila.
+  \item \textbf{Tipos numéricos y JOIN.} Incorporar tipo flotante nativo (hoy las coordenadas \texttt{POINT} se almacenan como texto) y soporte para \texttt{RIGHT} y \texttt{FULL JOIN}.
   \item \textbf{Antimeridiano.} El cálculo de MINDIST con Haversine no contempla rectángulos que crucen $\pm180^\circ$.
+  \item \textbf{Ampliación del haz \texttt{efSearch} en HNSW.} Sustituir o extender la rutina de búsqueda en la capa base de HNSW para desacoplar el tamaño del haz de exploración (\texttt{efSearch}) de $k$, permitiendo elevar el \emph{recall} por encima del $95\%$ en espacios dispersos TF-IDF sin reconstruir el grafo.
 \end{itemize}
 
 % ===========================================================================
@@ -784,11 +1304,12 @@ Los puntos se generan uniformemente en una caja de Lima (latitud $-12.10$ a $-11
 % ===========================================================================
 
 \begin{itemize}
-  \item No hay una organización de archivo ni un índice óptimo para todo. El \emph{heap file} favorece la inserción y el archivo secuencial favorece la búsqueda por clave y el espacio; los experimentos cuantifican ese compromiso (7.7 veces en inserción contra 760 veces en búsqueda).
-  \item Entre los índices, el hashing extensible domina en igualdad y en actualizaciones, y el B+ agrupado en rangos, recorridos ordenados y espacio en disco; el B+ no agrupado es la opción para rangos sobre columnas que no son la clave primaria.
-  \item El R-Tree con división estilo R* y búsqueda \emph{best-first} resuelve $k$-NN en tiempo casi independiente del tamaño de los datos, y supera a la referencia de PostgreSQL en este escenario.
-  \item Con sesiones, 2PL estricto y detección de \emph{deadlocks}, varias transacciones pueden trabajar a la vez sin perder actualizaciones ni leer datos sin confirmar; la demostración con hilos muestra la diferencia frente a no usar transacciones.
-  \item Los experimentos también mostraron puntos débiles concretos de la implementación: el rango del B+ agrupado recorría el archivo entero (ya corregido, unas 120 veces más rápido) y la eliminación en el B+ sigue siendo $O(N)$.
+  \item No existe una organización física ni un índice óptimo para todas las cargas de trabajo: el \emph{heap file} favorece la inserción (7.7$\times$ frente al secuencial), mientras que el archivo secuencial domina en búsqueda por clave primaria (760$\times$) y espacio en disco (4$\times$).
+  \item Entre los índices clásicos, el hashing extensible lidera en igualdad (0.29~$\mu$s) y actualizaciones frecuentes (100$\times$), mientras que el B+ agrupado es superior en rangos y recorridos ordenados al aprovechar la contigüidad física.
+  \item El R-Tree con división estilo R* y búsqueda \emph{best-first} resuelve consultas $k$-NN en tiempo casi independiente del tamaño del conjunto (0.023~ms con 100\,000 puntos), superando en 580$\times$ al escaneo secuencial y en 8$\times$ al GiST de PostgreSQL.
+  \item La arquitectura SPIMI permite construir índices invertidos escalables mediante bloques acotados en RAM y fusión externa con \emph{Min-Heap}, habilitando consultas SQL ordenadas por relevancia con TF-IDF y BM25 mediante \texttt{MATCH}, \texttt{USING} y \texttt{SCORE()}.
+  \item Con sesiones, 2PL estricto, WAL y detección de \emph{deadlocks}, el motor soporta transacciones concurrentes sin pérdida de actualizaciones ni lecturas sucias.
+  \item En búsqueda multimedia sobre vectores BoAW/BoVW de 128 dimensiones, \textbf{IVF-Flat} y \textbf{HNSW} resuelven el cuello de botella del escaneo secuencial hasta $N = 100\,000$: IVF-Flat logra \textbf{95.0\%--100.0\% de Recall@10} con menor huella de memoria, mientras que HNSW alcanza latencias submilisegundo de \textbf{0.072--0.118 ms} (hasta \textbf{295$\times$} más rápido que el recorrido lineal).
 \end{itemize}
 
 % ===========================================================================
@@ -799,7 +1320,13 @@ Los puntos se generan uniformemente en una caja de Lima (latitud $-12.10$ a $-11
 \bibitem{fagin1979} R.~Fagin, J.~Nievergelt, N.~Pippenger y H.~R.~Strong. \emph{Extendible hashing: A fast access method for dynamic files}. ACM Transactions on Database Systems, 4(3), 1979.
 \bibitem{comer1979} D.~Comer. \emph{The ubiquitous B-tree}. ACM Computing Surveys, 11(2), 1979.
 \bibitem{ramakrishnan2003} R.~Ramakrishnan y J.~Gehrke. \emph{Database Management Systems}, 3.\textsuperscript{a} ed. McGraw-Hill, 2003.
+\bibitem{manning2008} C.~D.~Manning, P.~Raghavan y H.~Schütze. \emph{Introduction to Information Retrieval}. Cambridge University Press, 2008.
+\bibitem{robertson2009} S.~Robertson y H.~Zaragoza. \emph{The Probabilistic Relevance Framework: BM25 and Beyond}. Foundations and Trends in Information Retrieval, 3(4), 2009.
+\bibitem{malkov2020} Y.~A.~Malkov y D.~A.~Yashunin. \emph{Efficient and Robust Approximate Nearest Neighbor Search Using Hierarchical Navigable Small World Graphs}. IEEE Transactions on Pattern Analysis and Machine Intelligence, 42(4), 2020.
+\bibitem{jegou2011} H.~Jégou, M.~Douze y C.~Schmid. \emph{Product Quantization for Nearest Neighbor Search}. IEEE Transactions on Pattern Analysis and Machine Intelligence, 33(1), 2011.
 \bibitem{postgresgist} The PostgreSQL Global Development Group. \emph{GiST Indexes}. Documentación de PostgreSQL.
+\bibitem{lowe2004} D.~G.~Lowe. \emph{Distinctive Image Features from Scale-Invariant Keypoints}. International Journal of Computer Vision, 60(2), 91--110, 2004.
+\bibitem{davis1980} S.~Davis y P.~Mermelstein. \emph{Comparison of Parametric Representations for Monosyllabic Word Recognition in Continuously Spoken Sentences}. IEEE Transactions on Acoustics, Speech, and Signal Processing, 28(4), 357--366, 1980.
 \end{thebibliography}
 
 \appendix
@@ -808,15 +1335,15 @@ Los puntos se generan uniformemente en una caja de Lima (latitud $-12.10$ a $-11
 \label{sec:reproducir}
 % ===========================================================================
 
-El código fuente está en \url{https://github.com/utec-database-2/dbms-go}, rama \texttt{conexion}. El \texttt{README} del repositorio explica la instalación y el uso.
+El código fuente está disponible en \url{https://github.com/utec-database-2/dbms-go}. El archivo \texttt{README.md} del repositorio detalla la instalación y ejecución.
 
 \begin{lstlisting}
-git clone -b conexion https://github.com/utec-database-2/dbms-go.git
+git clone https://github.com/utec-database-2/dbms-go.git
 cd dbms-go
 go build ./...
 \end{lstlisting}
 
-Los tres experimentos se ejecutan con el comando de línea del proyecto. Cada uno escribe sus resultados en CSV (\texttt{archivos.csv}, \texttt{indices.csv} y \texttt{espacial.csv}) y genera las gráficas.
+Los experimentos de las Partes 1 y 2 se ejecutan con el comando principal del proyecto, escribiendo los resultados en \texttt{resultados/} (\texttt{archivos.csv}, \texttt{indices.csv} y \texttt{espacial.csv}) y generando las gráficas:
 
 \begin{lstlisting}
 dbms bench files    -n 1000,10000,100000 -queries 200
@@ -825,8 +1352,12 @@ dbms bench spatial  -n 1000,10000,100000 -queries 100 -pg-socket <socket>
 dbms bench all      -n 1000,10000,100000
 \end{lstlisting}
 
-La demostración de concurrencia (Sección~\ref{sec:concurrencia}) se ejecuta con \texttt{dbms concurrencia [-hilos 5] [-depositos 3]}.
+La demostración de concurrencia (Sección~\ref{sec:concurrencia}) se ejecuta con \texttt{dbms concurrencia [-hilos 5] [-depositos 3]}. Los experimentos de búsqueda textual (Parte 3) y multimedia de audio (Parte 4) se reproducen mediante:
 
-La comparación espacial necesita un servidor de PostgreSQL accesible por el \emph{socket} indicado; con \texttt{-sin-gist} se omite GiST. La semilla de los datos se fija con \texttt{-seed}.
+\begin{lstlisting}
+go run ./dbms/cmd/textbench
+go run ./dbms/cmd/audiobench -sizes 1000,10000,100000 -queries 100 -metric all -csv resultados/audio.csv
+dbms bench multimedia -sizes 1000,10000,100000 -queries 100
+\end{lstlisting}
 
 \end{document}
