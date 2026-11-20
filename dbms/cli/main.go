@@ -47,6 +47,7 @@ func uso() {
   dbms bench files    [-n 1000,10000,100000] [-queries 200] [-dir /tmp/bench] [-out resultados]
   dbms bench indexes  [-n 1000,10000,100000] [-queries 500] [-dir /tmp/bench] [-out resultados]
   dbms bench spatial  [-n 1000,10000,100000] [-queries 100] [-out resultados] [-pg-socket /tmp/pgsock]
+  dbms bench multimedia [-vectors archivo.csv] [-queries-file archivo.csv] [-n 1000] [-query-limit 100] [-k 10] [-out resultados]
   dbms bench all      [-n ...] [-queries ...] [-dir ...] [-out resultados]
   dbms bench charts   [-out resultados]   Regenera las gráficas desde los CSV
   dbms concurrencia   [-hilos 5] [-depositos 3] [-pausa 15ms]
@@ -149,6 +150,10 @@ func runBench(args []string) {
 			fatal(err)
 		}
 		if err := benchSpatial(cfg); err != nil {
+			fatal(err)
+		}
+	case "multimedia", "imagenes":
+		if err := benchMultimedia(rest); err != nil {
 			fatal(err)
 		}
 	case "all":
