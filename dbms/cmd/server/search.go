@@ -640,16 +640,17 @@ func (e *vecEntry) hnswFor(m metricpkg.Metric) *builtHNSW {
 }
 
 type vectorSearchRequest struct {
-	Table    string    `json:"table"`
-	Column   string    `json:"column"`
-	Vector   []float32 `json:"vector"`
-	Row      *int      `json:"row"`
-	Methods  []string  `json:"methods"`
-	Metric   string    `json:"metric"`
-	K        int       `json:"k"`
-	NList    int       `json:"nlist"`
-	NProbe   int       `json:"nprobe"`
-	EfSearch int       `json:"efSearch"`
+	Table      string    `json:"table"`
+	Column     string    `json:"column"`
+	Vector     []float32 `json:"vector"`
+	Row        *int      `json:"row"`
+	Methods    []string  `json:"methods"`
+	Metric     string    `json:"metric"`
+	K          int       `json:"k"`
+	NList      int       `json:"nlist"`
+	NProbe     int       `json:"nprobe"`
+	EfSearch   int       `json:"efSearch"`
+	SkipRecall bool      `json:"skipRecall"`
 }
 
 type vectorHit struct {
@@ -665,7 +666,7 @@ type vectorMethodResult struct {
 	Label     string      `json:"label"`
 	ElapsedMs float64     `json:"elapsedMs"`
 	BuildMs   float64     `json:"buildMs"`
-	Recall    float64     `json:"recall"`
+	Recall    *float64    `json:"recall,omitempty"`
 	Hits      []vectorHit `json:"hits"`
 	Steps     []string    `json:"steps"`
 	Error     string      `json:"error,omitempty"`
@@ -773,20 +774,32 @@ func handleVectorSearch(db *database) http.HandlerFunc {
 			}
 		}
 
-		// La búsqueda secuencial exacta es la referencia para Recall@k.
-		seqStart := time.Now()
-		order := make([]int, len(e.vecs))
-		dists := make([]float64, len(e.vecs))
-		for i := range e.vecs {
-			order[i] = i
-			dists[i] = metricpkg.RankingDistance(query, e.vecs[i], metric)
+		// Por defecto conservamos la comparación experimental. Los clientes
+		// interactivos pueden omitirla si solo necesitan consultas ANN.
+		needExact := !req.SkipRecall
+		for _, m := range req.Methods {
+			switch strings.ToLower(m) {
+			case "seq", "secuencial", "scan":
+				needExact = true
+			}
 		}
-		sort.SliceStable(order, func(a, b int) bool { return dists[order[a]] < dists[order[b]] })
-		exact := order[:k]
-		seqMs := ms(time.Since(seqStart))
+		var exact []int
+		var seqMs float64
 		truth := make(map[int]bool, k)
-		for _, i := range exact {
-			truth[i] = true
+		if needExact {
+			seqStart := time.Now()
+			order := make([]int, len(e.vecs))
+			dists := make([]float64, len(e.vecs))
+			for i := range e.vecs {
+				order[i] = i
+				dists[i] = metricpkg.RankingDistance(query, e.vecs[i], metric)
+			}
+			sort.SliceStable(order, func(a, b int) bool { return dists[order[a]] < dists[order[b]] })
+			exact = order[:k]
+			seqMs = ms(time.Since(seqStart))
+			for _, i := range exact {
+				truth[i] = true
+			}
 		}
 		recall := func(found []int) float64 {
 			if k == 0 {
@@ -893,7 +906,10 @@ func handleVectorSearch(db *database) http.HandlerFunc {
 			}
 
 			if res.Error == "" {
-				res.Recall = recall(found)
+				if needExact {
+					value := recall(found)
+					res.Recall = &value
+				}
 				res.Hits = make([]vectorHit, 0, len(found))
 				for _, i := range found {
 					if i >= 0 && i < len(e.vecs) {

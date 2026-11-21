@@ -134,3 +134,32 @@ func TestVectorSearchAllIndexes(t *testing.T) {
 		t.Fatalf("errores inesperados: %+v", res.Results)
 	}
 }
+
+func TestVectorSearchSkipRecall(t *testing.T) {
+	db := newTestDB(t)
+	mustExec(t, db, `CREATE TABLE vec CLUSTERED BY (id) (id INT PRIMARY KEY, v VECTOR(2));
+		INSERT INTO vec VALUES (1, VECTOR(1, 0)), (2, VECTOR(0, 1));`)
+	var res struct {
+		Results []struct {
+			Method string
+			Recall *float64
+			Error  string
+			Hits   []struct{ Row int }
+		}
+	}
+	h := handleVectorSearch(db)
+	for _, methods := range [][]string{{"hnsw"}, {"ivf"}, {"hnsw", "seq"}} {
+		res.Results = nil
+		if code := post(t, h, map[string]any{"table": "vec", "column": "v", "vector": []float32{1, 0}, "k": 1, "methods": methods, "skipRecall": true}, &res); code != 200 {
+			t.Fatalf("código %d", code)
+		}
+		for _, r := range res.Results {
+			if r.Error != "" || len(r.Hits) != 1 || r.Hits[0].Row != 0 {
+				t.Fatalf("%s: resultado inesperado %+v", r.Method, r)
+			}
+			if (r.Recall != nil) != (len(methods) > 1) {
+				t.Fatalf("%s: Recall inesperado: %v", r.Method, r.Recall)
+			}
+		}
+	}
+}
