@@ -29,6 +29,8 @@ go.work.sum
 
 # Datos del servidor local (dbms/cmd/server --dir), archivos .heap generados
 /data/
+/data-face/
+/data-face-eval/
 
 # Editor/IDE
 # .idea/

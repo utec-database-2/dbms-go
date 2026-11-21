@@ -36,6 +36,8 @@ Minigestor de base de datos multimodal escrito en Go para el curso de Base de Da
 
 ## Arquitectura
 
+**Parte 5 (aplicación de IA):** [FaceLab](apps/face_demo/README.md), una demo local con cámara, MTCNN, FaceNet y consulta a la API del motor mediante HNSW/IVF.
+
 ```
 ┌───────────────────────────────────────────────────────────────────────┐
 │ Frontend (React + Vite + Leaflet)                                     │
